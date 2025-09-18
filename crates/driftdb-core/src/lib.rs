@@ -11,6 +11,9 @@ pub mod observability;
 pub mod backup;
 pub mod transaction;
 pub mod connection;
+pub mod migration;
+pub mod optimizer;
+pub mod encryption;
 
 #[cfg(test)]
 mod tests;
