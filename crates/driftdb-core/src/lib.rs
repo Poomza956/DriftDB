@@ -9,6 +9,8 @@ pub mod engine;
 pub mod wal;
 pub mod observability;
 pub mod backup;
+pub mod transaction;
+pub mod connection;
 
 #[cfg(test)]
 mod tests;
