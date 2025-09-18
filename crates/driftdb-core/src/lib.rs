@@ -6,6 +6,9 @@ pub mod index;
 pub mod snapshot;
 pub mod query;
 pub mod engine;
+pub mod wal;
+pub mod observability;
+pub mod backup;
 
 #[cfg(test)]
 mod tests;
