@@ -174,7 +174,8 @@ impl Engine {
             return Err(DriftError::Other("No snapshots available for compaction".into()));
         }
 
-        let latest_snapshot_seq = *snapshots.last().unwrap();
+        let latest_snapshot_seq = *snapshots.last()
+            .ok_or_else(|| DriftError::Other("Snapshots list unexpectedly empty".into()))?;
         let latest_snapshot = snapshot_mgr
             .find_latest_before(u64::MAX)?
             .ok_or_else(|| DriftError::Other("Failed to load snapshot".into()))?;
@@ -186,8 +187,13 @@ impl Engine {
 
         for (pk, row_str) in latest_snapshot.state {
             // Parse the JSON string back to Value
-            let row: serde_json::Value = serde_json::from_str(&row_str)
-                .unwrap_or(serde_json::Value::Null);
+            let row: serde_json::Value = match serde_json::from_str(&row_str) {
+                Ok(val) => val,
+                Err(e) => {
+                    tracing::error!("Failed to parse row during compaction: {}, pk: {}", e, pk);
+                    continue; // Skip corrupted rows instead of defaulting to null
+                }
+            };
             let event = Event::new_insert(
                 table_name.to_string(),
                 serde_json::Value::String(pk.clone()),
