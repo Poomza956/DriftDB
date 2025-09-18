@@ -14,6 +14,7 @@ pub mod connection;
 pub mod migration;
 pub mod optimizer;
 pub mod encryption;
+pub mod replication;
 
 #[cfg(test)]
 mod tests;

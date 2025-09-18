@@ -31,11 +31,11 @@ pub enum WalOperation {
 }
 
 /// WAL entry with CRC for integrity
-#[derive(Debug, Serialize, Deserialize)]
-struct WalEntry {
-    sequence: u64,
-    operation: WalOperation,
-    crc32: u32,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WalEntry {
+    pub sequence: u64,
+    pub operation: WalOperation,
+    pub crc32: u32,
 }
 
 impl WalEntry {

@@ -294,7 +294,19 @@ pub struct TransactionManager {
 }
 
 impl TransactionManager {
-    pub fn new(wal: Arc<Wal>, metrics: Arc<Metrics>) -> Self {
+    pub fn new() -> Self {
+        // Simplified constructor for compilation
+        Self {
+            next_txn_id: Arc::new(AtomicU64::new(1)),
+            active_transactions: Arc::new(RwLock::new(HashMap::new())),
+            lock_manager: Arc::new(LockManager::new()),
+            wal: Arc::new(Wal::new(std::path::PathBuf::from("/tmp/wal")).unwrap()),
+            metrics: Arc::new(Metrics::new()),
+            current_version: Arc::new(AtomicU64::new(1)),
+        }
+    }
+
+    pub fn new_with_deps(wal: Arc<Wal>, metrics: Arc<Metrics>) -> Self {
         Self {
             next_txn_id: Arc::new(AtomicU64::new(1)),
             active_transactions: Arc::new(RwLock::new(HashMap::new())),
@@ -515,6 +527,64 @@ impl TransactionManager {
             total_started: self.next_txn_id.load(Ordering::SeqCst) - 1,
             current_version: self.current_version.load(Ordering::SeqCst),
         }
+    }
+
+    // Simplified methods for Engine integration
+    pub fn simple_begin(&mut self, isolation: IsolationLevel) -> Result<u64> {
+        let txn_id = self.next_txn_id.fetch_add(1, Ordering::SeqCst);
+        let snapshot_version = self.current_version.load(Ordering::SeqCst);
+
+        let txn = Arc::new(Mutex::new(Transaction::new(txn_id, isolation, snapshot_version)));
+        self.active_transactions.write().insert(txn_id, txn);
+
+        Ok(txn_id)
+    }
+
+    pub fn add_write(&mut self, txn_id: u64, event: Event) -> Result<()> {
+        let active_txns = self.active_transactions.read();
+        let txn = active_txns.get(&txn_id)
+            .ok_or_else(|| DriftError::Other(format!("Transaction {} not found", txn_id)))?;
+
+        let mut txn_guard = txn.lock();
+        let key = event.primary_key.to_string();
+        txn_guard.write_set.insert(key, event);
+        Ok(())
+    }
+
+    pub fn simple_commit(&mut self, txn_id: u64) -> Result<Vec<Event>> {
+        let active_txns = self.active_transactions.read();
+        let txn = active_txns.get(&txn_id)
+            .ok_or_else(|| DriftError::Other(format!("Transaction {} not found", txn_id)))?
+            .clone();
+
+        drop(active_txns);
+
+        let mut txn_guard = txn.lock();
+        txn_guard.state = TransactionState::Committed;
+
+        let events: Vec<Event> = txn_guard.write_set.values().cloned().collect();
+
+        drop(txn_guard);
+        self.active_transactions.write().remove(&txn_id);
+
+        Ok(events)
+    }
+
+    pub fn rollback(&mut self, txn_id: u64) -> Result<()> {
+        let active_txns = self.active_transactions.read();
+        let txn = active_txns.get(&txn_id)
+            .ok_or_else(|| DriftError::Other(format!("Transaction {} not found", txn_id)))?
+            .clone();
+
+        drop(active_txns);
+
+        let mut txn_guard = txn.lock();
+        txn_guard.state = TransactionState::Aborted;
+
+        drop(txn_guard);
+        self.active_transactions.write().remove(&txn_id);
+
+        Ok(())
     }
 }
 

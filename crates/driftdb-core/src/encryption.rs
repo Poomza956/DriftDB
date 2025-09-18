@@ -309,7 +309,8 @@ impl EncryptionService {
     pub fn encrypt_field(&self, value: &serde_json::Value, field_name: &str) -> Result<serde_json::Value> {
         let json_str = value.to_string();
         let encrypted = self.encrypt(json_str.as_bytes(), field_name)?;
-        let encoded = base64::encode(&encrypted);
+        use base64::Engine;
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&encrypted);
         Ok(serde_json::json!({
             "encrypted": true,
             "algorithm": "AES-256-GCM",
@@ -322,7 +323,8 @@ impl EncryptionService {
         if let Some(obj) = value.as_object() {
             if obj.get("encrypted") == Some(&serde_json::json!(true)) {
                 if let Some(ciphertext) = obj.get("ciphertext").and_then(|v| v.as_str()) {
-                    let decoded = base64::decode(ciphertext)
+                    use base64::Engine;
+                    let decoded = base64::engine::general_purpose::STANDARD.decode(ciphertext)
                         .map_err(|e| DriftError::Other(format!("Base64 decode failed: {}", e)))?;
                     let decrypted = self.decrypt(&decoded, field_name)?;
                     let json_str = String::from_utf8(decrypted)

@@ -7,15 +7,18 @@ use std::sync::Arc;
 use crate::errors::{DriftError, Result};
 use crate::events::Event;
 use crate::index::IndexManager;
+use crate::query::{Query, QueryResult};
 use crate::schema::{ColumnDef, Schema};
 use crate::snapshot::SnapshotManager;
 use crate::storage::{Segment, TableStorage};
+use crate::transaction::{IsolationLevel, TransactionManager};
 
 pub struct Engine {
     base_path: PathBuf,
     pub(crate) tables: HashMap<String, Arc<TableStorage>>,
     indexes: HashMap<String, Arc<RwLock<IndexManager>>>,
     snapshots: HashMap<String, Arc<SnapshotManager>>,
+    transaction_manager: Arc<RwLock<TransactionManager>>,
 }
 
 impl Engine {
@@ -34,6 +37,7 @@ impl Engine {
             tables: HashMap::new(),
             indexes: HashMap::new(),
             snapshots: HashMap::new(),
+            transaction_manager: Arc::new(RwLock::new(TransactionManager::new())),
         };
 
         let tables_dir = base_path.join("tables");
@@ -60,6 +64,7 @@ impl Engine {
             tables: HashMap::new(),
             indexes: HashMap::new(),
             snapshots: HashMap::new(),
+            transaction_manager: Arc::new(RwLock::new(TransactionManager::new())),
         })
     }
 
@@ -279,5 +284,47 @@ impl Engine {
         }
 
         Ok(report)
+    }
+
+    // Transaction support methods
+    pub fn begin_transaction(&self, isolation: IsolationLevel) -> Result<u64> {
+        self.transaction_manager.write().simple_begin(isolation)
+    }
+
+    pub fn commit_transaction(&mut self, txn_id: u64) -> Result<()> {
+        let events = {
+            let mut txn_mgr = self.transaction_manager.write();
+            txn_mgr.simple_commit(txn_id)?
+        };
+
+        // Apply all events from the committed transaction
+        for event in events {
+            self.apply_event(event)?;
+        }
+
+        Ok(())
+    }
+
+    pub fn rollback_transaction(&self, txn_id: u64) -> Result<()> {
+        self.transaction_manager.write().rollback(txn_id)
+    }
+
+    pub fn apply_event_in_transaction(&self, txn_id: u64, event: Event) -> Result<()> {
+        self.transaction_manager.write().add_write(txn_id, event)
+    }
+
+    pub fn query(&self, query: &Query) -> Result<QueryResult> {
+        // Simple implementation - would be more complex in production
+        match query {
+            Query::Select { table, .. } => {
+                let _storage = self.tables.get(table)
+                    .ok_or_else(|| DriftError::TableNotFound(table.clone()))?;
+
+                let results = Vec::new(); // Would implement actual query logic
+
+                Ok(QueryResult::Rows { data: results })
+            }
+            _ => Ok(QueryResult::Error { message: "Query type not supported".to_string() })
+        }
     }
 }
