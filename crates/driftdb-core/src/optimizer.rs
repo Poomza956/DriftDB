@@ -7,17 +7,15 @@
 //! - Predicate pushdown
 //! - Query plan caching
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info, instrument};
+use tracing::{debug, instrument};
 
 use crate::errors::Result;
 use crate::query::{Query, WhereCondition, AsOf};
-use crate::schema::Schema;
-use crate::index::IndexManager;
 
 /// Query execution plan
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -272,7 +270,7 @@ impl QueryOptimizer {
 
         if let Some(table_stats) = stats.get(table) {
             // Check each index
-            for (index_name, index_stats) in &table_stats.index_stats {
+            for (index_name, _index_stats) in &table_stats.index_stats {
                 // Check if any condition can use this index
                 for condition in conditions {
                     if condition.column == *index_name {
@@ -362,6 +360,10 @@ impl QueryOptimizer {
             }
             AsOf::Timestamp(_ts) => {
                 // Convert timestamp to sequence (simplified)
+                (None, None)
+            }
+            AsOf::Now => {
+                // No time travel needed for current state
                 (None, None)
             }
         }

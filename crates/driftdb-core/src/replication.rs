@@ -11,17 +11,15 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
 
-use async_trait::async_trait;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tracing::{debug, error, info, warn, instrument};
+use tracing::{error, info, warn, instrument};
 
 use crate::errors::{DriftError, Result};
-use crate::events::Event;
-use crate::wal::{WalEntry, WalOperation};
+use crate::wal::WalEntry;
 
 /// Replication configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -191,7 +189,7 @@ impl ReplicationCoordinator {
     pub async fn start(&mut self) -> Result<()> {
         info!("Starting replication coordinator as {:?}", self.config.role);
 
-        let (shutdown_tx, mut shutdown_rx) = mpsc::channel(1);
+        let (shutdown_tx, shutdown_rx) = mpsc::channel(1);
         self.shutdown_tx = Some(shutdown_tx);
 
         match self.config.role {
@@ -248,7 +246,7 @@ impl ReplicationCoordinator {
         mut stream: TcpStream,
         addr: SocketAddr,
         replicas: Arc<RwLock<HashMap<String, ReplicaConnection>>>,
-        master_id: String,
+        _master_id: String,
     ) {
         // Read handshake
         let mut buf = vec![0u8; 1024];

@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info, instrument, warn};
 
 use crate::errors::{DriftError, Result};
-use crate::events::{Event, EventType};
+use crate::events::Event;
 use crate::observability::Metrics;
 use crate::wal::Wal;
 
@@ -239,7 +239,7 @@ impl LockManager {
 
         // Release write locks and notify waiters
         let released_keys: Vec<String> = {
-            let mut write_locks = self.write_locks.write();
+            let write_locks = self.write_locks.write();
             write_locks
                 .iter()
                 .filter_map(|(key, &owner)| {
@@ -286,7 +286,7 @@ impl LockManager {
 /// Transaction manager
 pub struct TransactionManager {
     next_txn_id: Arc<AtomicU64>,
-    active_transactions: Arc<RwLock<HashMap<u64, Arc<Mutex<Transaction>>>>>,
+    pub(crate) active_transactions: Arc<RwLock<HashMap<u64, Arc<Mutex<Transaction>>>>>,
     lock_manager: Arc<LockManager>,
     wal: Arc<Wal>,
     metrics: Arc<Metrics>,
@@ -605,7 +605,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let wal = Arc::new(Wal::new(temp_dir.path()).unwrap());
         let metrics = Arc::new(Metrics::new());
-        let mgr = TransactionManager::new(wal, metrics);
+        let mgr = TransactionManager::new_with_deps(wal, metrics);
 
         // Begin transaction
         let txn = mgr.begin(IsolationLevel::ReadCommitted).unwrap();
@@ -629,7 +629,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let wal = Arc::new(Wal::new(temp_dir.path()).unwrap());
         let metrics = Arc::new(Metrics::new());
-        let mgr = TransactionManager::new(wal, metrics);
+        let mgr = TransactionManager::new_with_deps(wal, metrics);
 
         let txn = mgr.begin(IsolationLevel::default()).unwrap();
         mgr.abort(&txn).unwrap();

@@ -16,8 +16,6 @@ use tracing::{debug, error, info, instrument, warn};
 
 use crate::errors::{DriftError, Result};
 use crate::schema::{Schema, ColumnDef};
-use crate::storage::TableStorage;
-use crate::wal::Wal;
 
 /// Migration version using semantic versioning
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -407,19 +405,154 @@ impl MigrationManager {
 
     fn add_column(&self, table: &str, column: &ColumnDef, default_value: Option<&serde_json::Value>) -> Result<()> {
         debug!("Adding column {} to table {}", column.name, table);
-        // In production, would modify table schema and backfill data
+
+        // Load the current table schema
+        let table_path = self.data_dir.join("tables").join(table);
+        let schema_path = table_path.join("schema.yaml");
+
+        if !schema_path.exists() {
+            return Err(DriftError::TableNotFound(table.to_string()));
+        }
+
+        // Read and update schema
+        let schema_content = std::fs::read_to_string(&schema_path)?;
+        let mut schema: Schema = serde_yaml::from_str(&schema_content)?;
+
+        // Check if column already exists
+        if schema.columns.iter().any(|c| c.name == column.name) {
+            return Err(DriftError::Other(format!("Column {} already exists", column.name)));
+        }
+
+        // Add the new column
+        schema.columns.push(column.clone());
+
+        // Write updated schema back
+        let updated_schema = serde_yaml::to_string(&schema)?;
+        std::fs::write(&schema_path, updated_schema)?;
+
+        // If there's a default value, backfill existing records
+        if let Some(default) = default_value {
+            // Create a patch event for each existing record
+            let storage = crate::storage::TableStorage::open(&self.data_dir, table)?;
+            let current_state = storage.reconstruct_state_at(None)?;
+
+            for (key, _) in current_state {
+                let patch_event = crate::events::Event::new_patch(
+                    table.to_string(),
+                    serde_json::json!(key),
+                    serde_json::json!({
+                        &column.name: default
+                    })
+                );
+                storage.append_event(patch_event)?;
+            }
+        }
+
+        info!("Added column {} to table {}", column.name, table);
         Ok(())
     }
 
     fn drop_column(&self, table: &str, column: &str) -> Result<()> {
         debug!("Dropping column {} from table {}", column, table);
-        // In production, would remove column from schema
+
+        // Load the current table schema
+        let table_path = self.data_dir.join("tables").join(table);
+        let schema_path = table_path.join("schema.yaml");
+
+        if !schema_path.exists() {
+            return Err(DriftError::TableNotFound(table.to_string()));
+        }
+
+        // Read current schema
+        let schema_content = std::fs::read_to_string(&schema_path)?;
+        let mut schema: Schema = serde_yaml::from_str(&schema_content)?;
+
+        // Check if column is primary key
+        if schema.primary_key == column {
+            return Err(DriftError::Other("Cannot drop primary key column".to_string()));
+        }
+
+        // Remove column from schema
+        let original_count = schema.columns.len();
+        schema.columns.retain(|c| c.name != column);
+
+        if schema.columns.len() == original_count {
+            return Err(DriftError::Other(format!("Column {} not found", column)));
+        }
+
+        // Note: Index removal would be handled separately through drop_index
+
+        // Write updated schema back
+        let updated_schema = serde_yaml::to_string(&schema)?;
+        std::fs::write(&schema_path, updated_schema)?;
+
+        // Note: The actual data still contains the column values in historical events
+        // This is by design for time-travel queries
+        info!("Dropped column {} from table {} schema", column, table);
         Ok(())
     }
 
     fn rename_column(&self, table: &str, old_name: &str, new_name: &str) -> Result<()> {
         debug!("Renaming column {} to {} in table {}", old_name, new_name, table);
-        // In production, would update schema and rewrite data
+
+        // Load the current table schema
+        let table_path = self.data_dir.join("tables").join(table);
+        let schema_path = table_path.join("schema.yaml");
+
+        if !schema_path.exists() {
+            return Err(DriftError::TableNotFound(table.to_string()));
+        }
+
+        // Read current schema
+        let schema_content = std::fs::read_to_string(&schema_path)?;
+        let mut schema: Schema = serde_yaml::from_str(&schema_content)?;
+
+        // Find and rename the column
+        let mut found = false;
+        for column in &mut schema.columns {
+            if column.name == old_name {
+                column.name = new_name.to_string();
+                found = true;
+                break;
+            }
+        }
+
+        if !found {
+            return Err(DriftError::Other(format!("Column {} not found", old_name)));
+        }
+
+        // Update primary key if needed
+        if schema.primary_key == old_name {
+            schema.primary_key = new_name.to_string();
+        }
+
+        // Note: Index renaming would be handled separately if indexes exist
+
+        // Write updated schema back
+        let updated_schema = serde_yaml::to_string(&schema)?;
+        std::fs::write(&schema_path, updated_schema)?;
+
+        // Create migration events to update existing data
+        let storage = crate::storage::TableStorage::open(&self.data_dir, table)?;
+        let current_state = storage.reconstruct_state_at(None)?;
+
+        for (key, mut value) in current_state {
+            if let serde_json::Value::Object(ref mut map) = value {
+                if let Some(old_value) = map.remove(old_name) {
+                    map.insert(new_name.to_string(), old_value);
+
+                    // Create a patch event to record the rename
+                    let patch_event = crate::events::Event::new_patch(
+                        table.to_string(),
+                        serde_json::json!(key),
+                        serde_json::Value::Object(map.clone())
+                    );
+                    storage.append_event(patch_event)?;
+                }
+            }
+        }
+
+        info!("Renamed column {} to {} in table {}", old_name, new_name, table);
         Ok(())
     }
 
@@ -435,7 +568,7 @@ impl MigrationManager {
         Ok(())
     }
 
-    fn create_table(&self, name: &str, schema: &Schema) -> Result<()> {
+    fn create_table(&self, name: &str, _schema: &Schema) -> Result<()> {
         debug!("Creating table {} with schema", name);
         // In production, would create new table directory and schema
         Ok(())
@@ -447,7 +580,7 @@ impl MigrationManager {
         Ok(())
     }
 
-    fn execute_custom_script(&self, script: &str) -> Result<()> {
+    fn execute_custom_script(&self, _script: &str) -> Result<()> {
         debug!("Executing custom migration script");
         // In production, would parse and execute script
         Ok(())
@@ -499,7 +632,7 @@ mod tests {
             "Initial schema".to_string(),
             MigrationType::CreateTable {
                 name: "users".to_string(),
-                schema: Schema::new("users", "id", vec![]),
+                schema: Schema::new("users".to_string(), "id".to_string(), vec![]),
             },
         );
 

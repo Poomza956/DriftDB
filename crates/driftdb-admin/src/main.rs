@@ -298,7 +298,7 @@ async fn show_status(data_dir: &PathBuf, format: &str) -> Result<()> {
         let status = serde_json::json!({
             "version": env!("CARGO_PKG_VERSION"),
             "uptime_seconds": 0, // Would track in production
-            "tables": engine.list_tables()?,
+            "tables": engine.list_tables(),
             "total_events": 0, // Would get from engine stats
             "storage_size_bytes": 0, // Would calculate
         });
@@ -321,7 +321,7 @@ async fn show_status(data_dir: &PathBuf, format: &str) -> Result<()> {
             Cell::new(&format!("{}", data_dir.display())),
         ]));
 
-        let tables = engine.list_tables()?;
+        let tables = engine.list_tables();
         table.add_row(Row::new(vec![
             Cell::new("Tables"),
             Cell::new(&format!("{}", tables.len())),
@@ -329,9 +329,7 @@ async fn show_status(data_dir: &PathBuf, format: &str) -> Result<()> {
 
         table.add_row(Row::new(vec![
             Cell::new("Status"),
-            Cell::new("✓ Healthy").with_style(colored::Styles::ColoredString(
-                "Healthy".green().to_string(),
-            )),
+            Cell::new(&"✓ Healthy".green().to_string()),
         ]));
 
         table.printstd();
@@ -517,9 +515,7 @@ async fn handle_replication(command: ReplicationCommands, data_dir: &PathBuf) ->
             table.add_row(Row::new(vec![
                 Cell::new("node-1"),
                 Cell::new("Master"),
-                Cell::new("✓ Active").with_style(colored::Styles::ColoredString(
-                    "Active".green().to_string(),
-                )),
+                Cell::new(&"✓ Active".green().to_string()),
                 Cell::new("-"),
             ]));
 
@@ -620,7 +616,7 @@ async fn analyze_tables(data_dir: &PathBuf, table: Option<String>) -> Result<()>
     let tables = if let Some(t) = table {
         vec![t]
     } else {
-        engine.list_tables()?
+        engine.list_tables()
     };
 
     for table in tables {

@@ -10,13 +10,13 @@
 use std::sync::Arc;
 
 use aes_gcm::{
-    aead::{Aead, KeyInit, OsRng},
+    aead::{Aead, KeyInit},
     Aes256Gcm, Key, Nonce,
 };
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
-use sha2::{Sha256, Digest};
-use tracing::{debug, error, info, instrument};
+use sha2::Sha256;
+use tracing::{info, instrument};
 
 use crate::errors::{DriftError, Result};
 

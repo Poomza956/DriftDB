@@ -313,18 +313,84 @@ impl Engine {
         self.transaction_manager.write().add_write(txn_id, event)
     }
 
+    pub fn read_in_transaction(&self, txn_id: u64, table: &str, key: &str) -> Result<Option<serde_json::Value>> {
+        // First check transaction's write set
+        let txn_mgr = self.transaction_manager.read();
+        let active_txns = txn_mgr.active_transactions.read();
+
+        if let Some(txn) = active_txns.get(&txn_id) {
+            let txn_guard = txn.lock();
+
+            // Check write set first (read-your-writes)
+            if let Some(event) = txn_guard.write_set.get(key) {
+                return Ok(Some(event.payload.clone()));
+            }
+
+            let snapshot_version = txn_guard.snapshot_version;
+            drop(txn_guard);
+        } else {
+            return Err(DriftError::Other(format!("Transaction {} not found", txn_id)));
+        }
+
+        // Read from storage at snapshot version
+        let storage = self.tables.get(table)
+            .ok_or_else(|| DriftError::TableNotFound(table.to_string()))?;
+
+        // Get state at snapshot version (simplified - in production would use snapshot version)
+        let state = storage.reconstruct_state_at(None)?;
+
+        Ok(state.get(key).cloned())
+    }
+
     pub fn query(&self, query: &Query) -> Result<QueryResult> {
-        // Simple implementation - would be more complex in production
         match query {
-            Query::Select { table, .. } => {
-                let _storage = self.tables.get(table)
+            Query::Select { table, conditions, as_of, .. } => {
+                let storage = self.tables.get(table)
                     .ok_or_else(|| DriftError::TableNotFound(table.clone()))?;
 
-                let results = Vec::new(); // Would implement actual query logic
+                // Determine the target sequence number based on as_of clause
+                let target_sequence = match as_of {
+                    Some(crate::query::AsOf::Sequence(seq)) => Some(*seq),
+                    Some(crate::query::AsOf::Timestamp(_)) => {
+                        // Would need to map timestamp to sequence in production
+                        None
+                    }
+                    Some(crate::query::AsOf::Now) | None => None,
+                };
+
+                // Reconstruct state at the target point in time
+                let state = storage.reconstruct_state_at(target_sequence)?;
+
+                // Apply WHERE conditions if any
+                let mut results = Vec::new();
+                for (_key, value) in state {
+                    // Check if row matches conditions
+                    let matches = if !conditions.is_empty() {
+                        conditions.iter().all(|cond| {
+                            // Simple equality check for now
+                            if let Some(field_value) = value.get(&cond.column) {
+                                field_value == &cond.value
+                            } else {
+                                false
+                            }
+                        })
+                    } else {
+                        true // No conditions means select all
+                    };
+
+                    if matches {
+                        results.push(value);
+                    }
+                }
 
                 Ok(QueryResult::Rows { data: results })
             }
-            _ => Ok(QueryResult::Error { message: "Query type not supported".to_string() })
+            _ => Ok(QueryResult::Error { message: "Query type not supported in this method".to_string() })
         }
+    }
+
+    /// List all tables in the database
+    pub fn list_tables(&self) -> Vec<String> {
+        self.tables.keys().cloned().collect()
     }
 }

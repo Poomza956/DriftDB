@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Semaphore, OwnedSemaphorePermit};
-use tracing::{debug, error, info, instrument, warn};
+use tracing::{debug, info, instrument};
 
 use crate::errors::{DriftError, Result};
 use crate::observability::Metrics;
@@ -510,7 +510,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let wal = Arc::new(Wal::new(temp_dir.path()).unwrap());
         let metrics = Arc::new(Metrics::new());
-        let tx_mgr = Arc::new(TransactionManager::new(wal, metrics.clone()));
+        let tx_mgr = Arc::new(TransactionManager::new_with_deps(wal, metrics.clone()));
 
         let config = PoolConfig {
             min_connections: 2,

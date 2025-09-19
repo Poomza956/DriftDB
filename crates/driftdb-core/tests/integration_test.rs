@@ -85,7 +85,7 @@ async fn test_concurrent_transactions() {
     let temp_dir = TempDir::new().unwrap();
     let wal = Arc::new(Wal::new(temp_dir.path()).unwrap());
     let metrics = Arc::new(Metrics::new());
-    let tx_mgr = Arc::new(TransactionManager::new(wal.clone(), metrics.clone()));
+    let tx_mgr = Arc::new(TransactionManager::new_with_deps(wal.clone(), metrics.clone()));
 
     let barrier = Arc::new(Barrier::new(3));
     let tx_mgr_clone1 = tx_mgr.clone();
@@ -140,7 +140,7 @@ async fn test_connection_pool_stress() {
     let temp_dir = TempDir::new().unwrap();
     let wal = Arc::new(Wal::new(temp_dir.path()).unwrap());
     let metrics = Arc::new(Metrics::new());
-    let tx_mgr = Arc::new(TransactionManager::new(wal, metrics.clone()));
+    let tx_mgr = Arc::new(TransactionManager::new_with_deps(wal, metrics.clone()));
 
     let config = PoolConfig {
         min_connections: 5,
@@ -224,7 +224,7 @@ async fn test_crash_recovery_via_wal() {
     {
         let wal = Arc::new(Wal::new(temp_dir.path()).unwrap());
         let metrics = Arc::new(Metrics::new());
-        let tx_mgr = Arc::new(TransactionManager::new(wal.clone(), metrics));
+        let tx_mgr = Arc::new(TransactionManager::new_with_deps(wal.clone(), metrics));
 
         // Start transaction
         let txn = tx_mgr.begin(IsolationLevel::default()).unwrap();
@@ -264,7 +264,7 @@ async fn test_rate_limiting() {
     let temp_dir = TempDir::new().unwrap();
     let wal = Arc::new(Wal::new(temp_dir.path()).unwrap());
     let metrics = Arc::new(Metrics::new());
-    let tx_mgr = Arc::new(TransactionManager::new(wal, metrics.clone()));
+    let tx_mgr = Arc::new(TransactionManager::new_with_deps(wal, metrics.clone()));
 
     let config = PoolConfig {
         rate_limit_per_client: Some(10), // 10 req/s
@@ -295,7 +295,7 @@ async fn test_isolation_levels() {
     let temp_dir = TempDir::new().unwrap();
     let wal = Arc::new(Wal::new(temp_dir.path()).unwrap());
     let metrics = Arc::new(Metrics::new());
-    let tx_mgr = Arc::new(TransactionManager::new(wal.clone(), metrics));
+    let tx_mgr = Arc::new(TransactionManager::new_with_deps(wal.clone(), metrics));
 
     // Test READ COMMITTED
     let txn1 = tx_mgr.begin(IsolationLevel::ReadCommitted).unwrap();
