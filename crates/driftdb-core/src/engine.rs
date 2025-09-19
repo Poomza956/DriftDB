@@ -592,6 +592,23 @@ impl Engine {
         Ok(())
     }
 
+    /// Get table data at a specific sequence number (time travel)
+    pub fn get_table_data_at(&self, table_name: &str, sequence: u64) -> Result<Vec<serde_json::Value>> {
+        let storage = self.tables.get(table_name)
+            .ok_or_else(|| DriftError::TableNotFound(table_name.to_string()))?;
+
+        // Get the state at the specified sequence
+        let state = storage.reconstruct_state_at(Some(sequence))?;
+
+        // Convert to Vec of JSON values
+        let mut results = Vec::new();
+        for (_key, value) in state {
+            results.push(value);
+        }
+
+        Ok(results)
+    }
+
     /// Begin a migration transaction
     pub fn begin_migration_transaction(&mut self) -> Result<u64> {
         self.begin_transaction(IsolationLevel::Serializable)

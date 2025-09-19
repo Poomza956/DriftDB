@@ -239,7 +239,8 @@ impl QueryExecutor {
         // Parse WHERE conditions if present
         let mut filtered_data = all_data;
 
-        if let Some(where_pos) = remaining.to_lowercase().find(" where ") {
+        // Parse WHERE conditions first
+        let where_conditions = if let Some(where_pos) = remaining.to_lowercase().find(" where ") {
             let where_start = where_pos + 7;
             let where_clause = &remaining[where_start..];
 
@@ -272,14 +273,68 @@ impl QueryExecutor {
                 matches
             }).collect();
             debug!("Filtered from {} to {} rows", initial_count, filtered_data.len());
-        }
 
-        // Handle AS OF for time travel (TODO: implement properly)
-        if remaining.to_lowercase().contains(" as of ") {
-            // For now, just use current data
-            // TODO: Implement time travel query
-            debug!("Time travel queries not yet fully implemented");
-        }
+            conditions
+        } else {
+            Vec::new()
+        };
+
+        // Handle AS OF for time travel
+        let sequence_to_query = if remaining.to_lowercase().contains(" as of ") {
+            // Parse AS OF clause: AS OF @seq:N
+            if let Some(as_of_idx) = remaining.to_lowercase().find(" as of ") {
+                let as_of_part = &remaining[as_of_idx + 7..].trim();
+                if as_of_part.starts_with("@seq:") {
+                    let seq_str = as_of_part[5..].split_whitespace().next().unwrap_or("");
+                    match seq_str.parse::<u64>() {
+                        Ok(seq) => {
+                            debug!("Time travel query: reconstructing state at sequence {}", seq);
+                            Some(seq)
+                        }
+                        Err(_) => {
+                            warn!("Invalid sequence number in AS OF clause: {}", seq_str);
+                            None
+                        }
+                    }
+                } else {
+                    // Could be timestamp format - not implemented yet
+                    warn!("Timestamp-based time travel not yet implemented: {}", as_of_part);
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // Reconstruct state at the specified sequence if time travel is requested
+        let filtered_data = if let Some(seq) = sequence_to_query {
+            // Time travel: reconstruct state at specific sequence
+            let engine = self.engine.read().await;
+            let mut time_travel_data = engine.get_table_data_at(&table_name, seq)
+                .map_err(|e| anyhow!("Failed to reconstruct state at sequence {}: {}", seq, e))?;
+
+            // Apply WHERE clause filtering to historical data
+            if !where_conditions.is_empty() {
+                let initial_count = time_travel_data.len();
+                time_travel_data = time_travel_data.into_iter().filter(|record| {
+                    where_conditions.iter().all(|(col, op, val)| {
+                        if let Some(field_value) = record.get(col) {
+                            self.matches_condition(field_value, op, val)
+                        } else {
+                            false
+                        }
+                    })
+                }).collect();
+                debug!("Time travel: Filtered from {} to {} rows", initial_count, time_travel_data.len());
+            }
+
+            time_travel_data
+        } else {
+            // Current data with WHERE filtering (existing logic)
+            filtered_data
+        };
 
         // Format results - ensure consistent column ordering
         if !filtered_data.is_empty() {

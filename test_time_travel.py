@@ -1,95 +1,121 @@
 #!/usr/bin/env python3
-"""Test time-travel queries via PostgreSQL protocol"""
-
-import socket
-import struct
-
-def send_query(sock, query):
-    """Send a query and get results"""
-    send_message(sock, 'Q', (query + '\x00').encode('utf-8'))
-    results = []
-
-    while True:
-        msg_type, data = recv_message(sock)
-        if msg_type == 'T':  # Row description
-            pass
-        elif msg_type == 'D':  # Data row
-            results.append(data)
-        elif msg_type == 'C':  # Command complete
-            tag = data.decode('utf-8', errors='ignore').rstrip('\x00')
-            print(f"  Command: {tag}")
-        elif msg_type == 'E':  # Error
-            print(f"  Error: {data.decode('utf-8', errors='ignore')}")
-        elif msg_type == 'Z':  # Ready for query
-            break
-
-    return results
-
-def send_message(sock, msg_type, data):
-    if msg_type:
-        length = len(data) + 4
-        msg = msg_type.encode('ascii') + struct.pack('!I', length) + data
-    else:
-        msg = data
-    sock.send(msg)
-
-def recv_message(sock):
-    header = sock.recv(5)
-    if len(header) < 5:
-        return None, None
-    msg_type = chr(header[0])
-    length = struct.unpack('!I', header[1:5])[0]
-    data = sock.recv(length - 4) if length > 4 else b''
-    return msg_type, data
+import psycopg2
+import time
+import sys
 
 def main():
-    # Connect
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.connect(('127.0.0.1', 5433))
-
-    # SSL negotiation
-    sock.send(struct.pack('!II', 8, 80877103))
-    sock.recv(1)  # Should be 'N'
-
-    # Startup
-    params = b'user\x00test\x00database\x00driftdb\x00\x00'
-    sock.send(struct.pack('!II', 8 + len(params), 196608) + params)
-
-    # Read until ready
-    while True:
-        msg_type, _ = recv_message(sock)
-        if msg_type == 'Z':
-            break
-
-    print("🚀 DriftDB Time-Travel Demo via PostgreSQL")
+    print("Testing DriftDB Time Travel Functionality")
     print("=" * 50)
 
-    # Show current data
-    print("\n📊 Current data in test_table:")
-    send_query(sock, "SELECT * FROM test_table")
+    # Connect to DriftDB
+    conn = psycopg2.connect(
+        host="localhost",
+        port=5433,
+        database="driftdb",
+        user="driftdb",
+        password=""
+    )
+    conn.autocommit = True
+    cur = conn.cursor()
 
-    # Insert more data
-    print("\n➕ Adding more records...")
-    send_query(sock, "INSERT INTO test_table (id, name) VALUES (2, 'Bob')")
-    send_query(sock, "INSERT INTO test_table (id, name) VALUES (3, 'Charlie')")
+    # Create a test table
+    print("\n1. Creating test table...")
+    cur.execute("CREATE TABLE history_test (id INT PRIMARY KEY, name VARCHAR, status VARCHAR)")
+    print("   ✓ Table created")
 
-    # Show updated data
-    print("\n📊 After inserts:")
-    send_query(sock, "SELECT * FROM test_table")
+    # Insert initial data (sequence 1)
+    print("\n2. Inserting initial data...")
+    cur.execute("INSERT INTO history_test (id, name, status) VALUES (1, 'Alice', 'active')")
+    cur.execute("INSERT INTO history_test (id, name, status) VALUES (2, 'Bob', 'active')")
+    cur.execute("INSERT INTO history_test (id, name, status) VALUES (3, 'Charlie', 'active')")
+    print("   ✓ 3 records inserted")
 
-    # Query all tables in users (from our demo)
-    print("\n📊 Users table (from demo data):")
-    send_query(sock, "SELECT * FROM users")
+    # Check current state
+    print("\n3. Current state:")
+    cur.execute("SELECT * FROM history_test")
+    for row in cur.fetchall():
+        print(f"   {row}")
 
-    # Time travel query (if supported)
-    print("\n⏰ Attempting time-travel query (AS OF @seq:1):")
-    send_query(sock, "SELECT * FROM users AS OF @seq:1")
+    # Update some data (sequence 4-5)
+    print("\n4. Updating data...")
+    cur.execute("UPDATE history_test SET status = 'inactive' WHERE id = 2")
+    cur.execute("UPDATE history_test SET name = 'Charles' WHERE id = 3")
+    print("   ✓ Updates applied")
 
-    print("\n✅ Demo complete!")
+    # Check current state again
+    print("\n5. Current state after updates:")
+    cur.execute("SELECT * FROM history_test")
+    for row in cur.fetchall():
+        print(f"   {row}")
 
-    # Terminate
-    send_message(sock, 'X', b'')
-    sock.close()
+    # Delete a record (sequence 6)
+    print("\n6. Deleting a record...")
+    cur.execute("DELETE FROM history_test WHERE id = 1")
+    print("   ✓ Record deleted")
+
+    # Check current state after delete
+    print("\n7. Current state after delete:")
+    cur.execute("SELECT * FROM history_test")
+    for row in cur.fetchall():
+        print(f"   {row}")
+
+    # Time travel queries
+    print("\n" + "=" * 50)
+    print("TIME TRAVEL QUERIES")
+    print("=" * 50)
+
+    # Query state at sequence 1 (after first insert)
+    print("\n8. State at sequence 1 (after first insert):")
+    try:
+        cur.execute("SELECT * FROM history_test AS OF @seq:1")
+        for row in cur.fetchall():
+            print(f"   {row}")
+    except Exception as e:
+        print(f"   Error: {e}")
+
+    # Query state at sequence 3 (after all inserts)
+    print("\n9. State at sequence 3 (after all inserts):")
+    try:
+        cur.execute("SELECT * FROM history_test AS OF @seq:3")
+        for row in cur.fetchall():
+            print(f"   {row}")
+    except Exception as e:
+        print(f"   Error: {e}")
+
+    # Query state at sequence 5 (after updates)
+    print("\n10. State at sequence 5 (after updates):")
+    try:
+        cur.execute("SELECT * FROM history_test AS OF @seq:5")
+        for row in cur.fetchall():
+            print(f"   {row}")
+    except Exception as e:
+        print(f"   Error: {e}")
+
+    # Time travel with WHERE clause
+    print("\n11. Time travel with WHERE clause (active records at seq 3):")
+    try:
+        cur.execute("SELECT * FROM history_test WHERE status = 'active' AS OF @seq:3")
+        for row in cur.fetchall():
+            print(f"   {row}")
+    except Exception as e:
+        print(f"   Error: {e}")
+
+    # Time travel with WHERE clause (inactive records at seq 5)
+    print("\n12. Time travel with WHERE clause (inactive records at seq 5):")
+    try:
+        cur.execute("SELECT * FROM history_test WHERE status = 'inactive' AS OF @seq:5")
+        for row in cur.fetchall():
+            print(f"   {row}")
+    except Exception as e:
+        print(f"   Error: {e}")
+
+    print("\n" + "=" * 50)
+    print("TIME TRAVEL TEST COMPLETE")
+    print("=" * 50)
+
+    # Close connection
+    cur.close()
+    conn.close()
 
 if __name__ == "__main__":
     main()

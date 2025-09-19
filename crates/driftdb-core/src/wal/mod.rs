@@ -70,11 +70,11 @@ pub struct Wal {
 
 impl Wal {
     /// Create a new WAL in the specified directory
-    pub fn new<P: AsRef<Path>>(base_path: P) -> Result<Self> {
-        let wal_dir = base_path.as_ref().join("wal");
+    pub fn new<P: AsRef<Path>>(wal_dir: P) -> Result<Self> {
+        // Ensure the WAL directory exists
         std::fs::create_dir_all(&wal_dir)?;
 
-        let wal_path = wal_dir.join("wal.log");
+        let wal_path = wal_dir.as_ref().join("wal.log");
         let writer = WalWriter::new(&wal_path)?;
 
         // Recover sequence number from existing WAL if present
