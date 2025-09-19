@@ -30,6 +30,7 @@ impl Version {
         Self { major, minor, patch }
     }
 
+    #[allow(clippy::should_implement_trait)]  // Not implementing FromStr trait intentionally
     pub fn from_str(s: &str) -> Result<Self> {
         let parts: Vec<&str> = s.split('.').collect();
         if parts.len() != 3 {
@@ -116,6 +117,7 @@ impl Migration {
         description: String,
         migration_type: MigrationType,
     ) -> Self {
+        #[allow(clippy::match_like_matches_macro)]  // More readable this way
         let requires_downtime = match &migration_type {
             MigrationType::DropColumn { .. } => true,
             MigrationType::DropTable { .. } => true,

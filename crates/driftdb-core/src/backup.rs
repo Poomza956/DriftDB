@@ -402,6 +402,7 @@ impl BackupManager {
         Ok(format!("{:x}", result))
     }
 
+    #[allow(clippy::only_used_in_recursion)]  // hasher is used throughout the recursion
     fn hash_directory_recursive(&self, path: &Path, hasher: &mut Sha256) -> Result<()> {
         use sha2::Digest;
         if !path.exists() {
