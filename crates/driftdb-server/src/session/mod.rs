@@ -163,9 +163,25 @@ impl<'a> Session<'a> {
 
         info!("Startup: user={:?}, database={}", self.username, self.database);
 
-        // Send authentication request
-        let auth_msg = Message::AuthenticationCleartextPassword;
-        self.send_message(stream, &auth_msg).await?;
+        // For now, skip authentication for development
+        // Send authentication OK immediately
+        self.send_message(stream, &Message::AuthenticationOk).await?;
+
+        // Send backend key data
+        let key_data = Message::BackendKeyData {
+            process_id: self.process_id,
+            secret_key: self.secret_key,
+        };
+        self.send_message(stream, &key_data).await?;
+
+        // Send parameter status messages
+        self.send_parameter_status(stream, "server_version", "14.0 (DriftDB 0.2.0)").await?;
+        self.send_parameter_status(stream, "server_encoding", "UTF8").await?;
+        self.send_parameter_status(stream, "client_encoding", "UTF8").await?;
+        self.send_parameter_status(stream, "DateStyle", "ISO, MDY").await?;
+
+        // Send ready for query
+        self.send_ready_for_query(stream).await?;
 
         Ok(())
     }

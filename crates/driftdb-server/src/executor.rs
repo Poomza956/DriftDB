@@ -39,26 +39,58 @@ impl QueryExecutor {
 
     /// Convert SQL SELECT to DriftQL
     fn sql_to_driftql_select(&self, sql: &str) -> Result<String> {
-        // Very simplified conversion - production would need full SQL parser
+        let sql = sql.trim().trim_end_matches(';');
         let lower = sql.to_lowercase();
 
         // Handle SELECT * FROM table
         if lower.starts_with("select * from") || lower.starts_with("select \\* from") {
             let parts: Vec<&str> = sql.split_whitespace().collect();
             if parts.len() >= 4 {
-                let table = parts[3].trim_end_matches(';');
+                let mut table = parts[3];
+
+                // Handle WHERE clause
+                if parts.len() > 4 && parts[4].eq_ignore_ascii_case("where") {
+                    // For now, we don't support WHERE in DriftQL SELECT
+                    // Just get the table name
+                    table = parts[3];
+                }
+
+                // Handle AS OF for time travel
+                if let Some(as_of_pos) = parts.iter().position(|&p| p.eq_ignore_ascii_case("as")) {
+                    if as_of_pos + 2 < parts.len() && parts[as_of_pos + 1].eq_ignore_ascii_case("of") {
+                        let timestamp = parts[as_of_pos + 2];
+                        // Convert SQL timestamp to DriftQL sequence
+                        if timestamp.starts_with("@seq:") {
+                            return Ok(format!("SELECT * FROM {} AS OF {}", table, timestamp));
+                        }
+                    }
+                }
+
                 return Ok(format!("SELECT * FROM {}", table));
             }
         }
 
         // Handle SELECT 1 and other simple queries
         if lower == "select 1" || lower == "select 1;" {
-            // Create a dummy query that will return something
-            return Ok("SELECT * FROM __dummy__".to_string());
+            // Return a simple success result
+            return Ok("__SELECT_ONE__".to_string());
         }
 
-        // For now, just strip semicolon and hope it works
-        Ok(sql.trim_end_matches(';').to_string())
+        // Handle SELECT with specific columns
+        if lower.starts_with("select ") {
+            // Try to extract table name after FROM
+            if let Some(from_pos) = lower.find(" from ") {
+                let table_part = sql[from_pos + 6..].trim();
+                let table = table_part.split_whitespace().next().unwrap_or("");
+
+                if !table.is_empty() {
+                    return Ok(format!("SELECT * FROM {}", table));
+                }
+            }
+        }
+
+        // For unsupported queries, return error
+        Err(anyhow!("SQL query not supported yet: {}", sql))
     }
 
     /// Convert SQL CREATE TABLE to DriftQL
@@ -85,14 +117,14 @@ impl QueryExecutor {
         let sql = sql.trim();
 
         // Handle common PostgreSQL client queries
-        if sql.eq_ignore_ascii_case("SELECT 1") {
+        if sql.eq_ignore_ascii_case("SELECT 1") || sql.eq_ignore_ascii_case("SELECT 1;") {
             return Ok(QueryResult::Select {
                 columns: vec!["?column?".to_string()],
                 rows: vec![vec![Value::Number(1.into())]],
             });
         }
 
-        if sql.eq_ignore_ascii_case("SELECT VERSION()") {
+        if sql.to_lowercase().contains("select version()") || sql.to_lowercase().contains("select version();") {
             return Ok(QueryResult::Select {
                 columns: vec!["version".to_string()],
                 rows: vec![vec![Value::String(
@@ -101,10 +133,23 @@ impl QueryExecutor {
             });
         }
 
-        if sql.eq_ignore_ascii_case("SELECT CURRENT_DATABASE()") {
+        if sql.to_lowercase().contains("select current_database()") {
             return Ok(QueryResult::Select {
                 columns: vec!["current_database".to_string()],
                 rows: vec![vec![Value::String("driftdb".to_string())]],
+            });
+        }
+
+        // Handle SHOW commands
+        if sql.to_lowercase().starts_with("show ") {
+            return self.execute_show(sql).await;
+        }
+
+        // Handle SET commands (ignore for now)
+        if sql.to_lowercase().starts_with("set ") {
+            return Ok(QueryResult::Select {
+                columns: vec!["result".to_string()],
+                rows: vec![vec![Value::String("SET".to_string())]],
             });
         }
 
@@ -148,6 +193,14 @@ impl QueryExecutor {
 
         // Convert simple SQL SELECT to DriftQL
         let driftql = self.sql_to_driftql_select(sql)?;
+
+        // Special handling for SELECT 1
+        if driftql == "__SELECT_ONE__" {
+            return Ok(QueryResult::Select {
+                columns: vec!["?column?".to_string()],
+                rows: vec![vec![Value::Number(1.into())]],
+            });
+        }
 
         // Parse and execute using DriftQL parser
         let query = driftdb_core::query::parse_driftql(&driftql)
@@ -198,42 +251,86 @@ impl QueryExecutor {
     async fn execute_insert(&self, sql: &str) -> Result<QueryResult> {
         let mut engine = self.engine.write().await;
 
-        // Parse INSERT statement (simplified)
+        // Parse INSERT statement
         // Format: INSERT INTO table_name (columns) VALUES (values)
-        let parts: Vec<&str> = sql.split_whitespace().collect();
-        if parts.len() < 4 || !parts[0].eq_ignore_ascii_case("insert") || !parts[1].eq_ignore_ascii_case("into") {
+        // or: INSERT INTO table_name VALUES (values)
+
+        let sql_clean = sql.trim().trim_end_matches(';');
+        let lower = sql_clean.to_lowercase();
+
+        if !lower.starts_with("insert into ") {
             return Err(anyhow!("Invalid INSERT syntax"));
         }
 
-        let table_name = parts[2];
+        // Extract table name
+        let after_into = &sql_clean[12..]; // Skip "INSERT INTO "
+        let table_end = after_into.find(' ')
+            .or_else(|| after_into.find('('))
+            .ok_or_else(|| anyhow!("Cannot find table name"))?;
+        let table_name = after_into[..table_end].trim();
 
-        // Extract values from VALUES clause (simplified parsing)
-        if let Some(values_idx) = parts.iter().position(|&p| p.eq_ignore_ascii_case("values")) {
-            if values_idx + 1 < parts.len() {
-                // Parse the values (very simplified - production would need proper SQL parser)
-                let values_str = parts[values_idx + 1..].join(" ");
-                let values_str = values_str.trim_start_matches('(').trim_end_matches(')').trim_end_matches(';');
+        // Find VALUES clause
+        let values_pos = lower.find(" values")
+            .ok_or_else(|| anyhow!("Missing VALUES clause"))?;
 
-                // Create a simple JSON document from the values
-                let doc = serde_json::json!({
-                    "data": values_str
-                });
+        // Extract column names if present
+        let columns_str = sql_clean[12 + table_end..values_pos].trim();
+        let columns = if columns_str.starts_with('(') && columns_str.ends_with(')') {
+            // Parse column names
+            columns_str[1..columns_str.len()-1]
+                .split(',')
+                .map(|c| c.trim())
+                .collect::<Vec<_>>()
+        } else {
+            vec![]
+        };
 
-                // Convert SQL INSERT to DriftQL INSERT
-                let driftql = format!("INSERT INTO {} {}", table_name, doc);
-                let query = driftdb_core::query::parse_driftql(&driftql)
-                    .map_err(|e| anyhow!("Failed to parse DriftQL: {}", e))?;
-
-                match engine.execute_query(query) {
-                    Ok(_) => {},
-                    Err(e) => return Err(anyhow!("Insert failed: {}", e))
-                }
-
-                return Ok(QueryResult::Insert { count: 1 });
-            }
+        // Extract values
+        let values_str = sql_clean[values_pos + 7..].trim(); // Skip " VALUES"
+        if !values_str.starts_with('(') || !values_str.ends_with(')') {
+            return Err(anyhow!("Invalid VALUES syntax"));
         }
 
-        Err(anyhow!("Could not parse INSERT statement"))
+        let values = values_str[1..values_str.len()-1].trim();
+
+        // Create JSON document
+        // For simplicity, assume id is first value if columns are specified
+        let doc = if !columns.is_empty() && !values.is_empty() {
+            // Parse values (very simplified - assumes comma-separated)
+            let value_parts: Vec<&str> = values.split(',').map(|v| v.trim()).collect();
+            let mut json_obj = serde_json::Map::new();
+
+            for (i, col) in columns.iter().enumerate() {
+                if i < value_parts.len() {
+                    let val = value_parts[i].trim_matches('\'').trim_matches('"');
+                    // Try to parse as number, otherwise string
+                    let json_val = if let Ok(n) = val.parse::<i64>() {
+                        serde_json::Value::Number(n.into())
+                    } else {
+                        serde_json::Value::String(val.to_string())
+                    };
+                    json_obj.insert(col.to_string(), json_val);
+                }
+            }
+
+            serde_json::Value::Object(json_obj)
+        } else {
+            // No columns specified, create simple object
+            serde_json::json!({
+                "id": values.split(',').next().unwrap_or("1").trim_matches('\'').trim_matches('"'),
+                "data": values
+            })
+        };
+
+        // Convert to DriftQL INSERT
+        let driftql = format!("INSERT INTO {} {}", table_name, doc);
+        let query = driftdb_core::query::parse_driftql(&driftql)
+            .map_err(|e| anyhow!("Failed to parse DriftQL: {}", e))?;
+
+        match engine.execute_query(query) {
+            Ok(_) => Ok(QueryResult::Insert { count: 1 }),
+            Err(e) => Err(anyhow!("Insert failed: {}", e))
+        }
     }
 
     async fn execute_update(&self, sql: &str) -> Result<QueryResult> {
