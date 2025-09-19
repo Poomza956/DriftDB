@@ -318,6 +318,7 @@ pub struct QueryExecutor<'a> {
     engine_guard: Option<&'a EngineGuard>,
     engine: Option<Arc<tokio::sync::RwLock<Engine>>>,
     subquery_cache: Arc<Mutex<HashMap<String, QueryResult>>>, // Cache for non-correlated subqueries
+    use_indexes: bool, // Enable/disable index optimization
 }
 
 impl<'a> QueryExecutor<'a> {
@@ -326,6 +327,7 @@ impl<'a> QueryExecutor<'a> {
             engine_guard: None,
             engine: Some(engine),
             subquery_cache: Arc::new(Mutex::new(HashMap::new())),
+            use_indexes: true, // Enable index optimization by default
         }
     }
 
@@ -334,6 +336,7 @@ impl<'a> QueryExecutor<'a> {
             engine_guard: Some(engine_guard),
             engine: None,
             subquery_cache: Arc::new(Mutex::new(HashMap::new())),
+            use_indexes: true,
         }
     }
 
@@ -1975,6 +1978,18 @@ impl<'a> QueryExecutor<'a> {
     async fn generate_from_plan(&self, from_clause: &FromClause) -> Result<PlanNode> {
         match from_clause {
             FromClause::Single(table_ref) => {
+                // Check if we can use an index
+                if self.use_indexes {
+                    if let Ok(engine) = self.engine_read().await {
+                        let indexed_columns = engine.get_indexed_columns(&table_ref.name);
+                        // For now, just note if indexes exist
+                        // In a real optimizer, we'd check if WHERE conditions use these columns
+                        if !indexed_columns.is_empty() {
+                            debug!("Table {} has indexes on: {:?}", table_ref.name, indexed_columns);
+                        }
+                    }
+                }
+
                 Ok(PlanNode::SeqScan {
                     table: table_ref.name.clone(),
                     filter: None,
@@ -3578,6 +3593,89 @@ impl<'a> QueryExecutor<'a> {
             "created_at".to_string(),
             "updated_at".to_string()
         ])
+    }
+
+    /// Use indexes to optimize WHERE clause filtering
+    async fn get_filtered_table_data(
+        &self,
+        table_name: &str,
+        conditions: &[(String, String, Value)]
+    ) -> Result<Vec<Value>> {
+        let engine = self.engine_read().await?;
+
+        // Check if we should use indexes
+        if !self.use_indexes || conditions.is_empty() {
+            // No index optimization, fetch all data
+            return engine.get_table_data(table_name)
+                .map_err(|e| anyhow!("Failed to get table data: {}", e));
+        }
+
+        // Try to find an indexed column in the conditions
+        let indexed_columns = engine.get_indexed_columns(table_name);
+
+        for (column, operator, value) in conditions {
+            // Check if this column is indexed
+            if indexed_columns.contains(column) && operator == "=" {
+                // Use index for equality lookup
+                debug!("Using index on column {} for table {}", column, table_name);
+
+                if let Ok(matching_keys) = engine.lookup_by_index(table_name, column, value) {
+                    let num_candidates = matching_keys.len();
+
+                    // Fetch only the matching rows
+                    let mut rows = Vec::new();
+                    for key in matching_keys {
+                        if let Ok(Some(row)) = engine.get_row(table_name, &key) {
+                            rows.push(row);
+                        }
+                    }
+
+                    // Apply remaining conditions to the index results
+                    let mut filtered = Vec::new();
+                    for row in rows {
+                        let mut matches = true;
+                        for (col, op, val) in conditions {
+                            if col != column || op != "=" {
+                                // Apply non-index conditions
+                                if let Value::Object(map) = &row {
+                                    if let Some(field_value) = map.get(col) {
+                                        if !self.matches_condition(field_value, op, val) {
+                                            matches = false;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if matches {
+                            filtered.push(row);
+                        }
+                    }
+
+                    info!("Index scan on {} returned {} rows (filtered from {} candidates)",
+                          column, filtered.len(), num_candidates);
+                    return Ok(filtered);
+                }
+            }
+        }
+
+        // No suitable index found, fall back to full table scan
+        debug!("No suitable index found for WHERE clause, performing full table scan");
+        engine.get_table_data(table_name)
+            .map_err(|e| anyhow!("Failed to get table data: {}", e))
+    }
+
+    /// Check if we can use an index for the given conditions
+    fn can_use_index(&self, conditions: &[WhereCondition]) -> Option<String> {
+        // Look for simple equality conditions that can use an index
+        for condition in conditions {
+            if let WhereCondition::Simple { column, operator, .. } = condition {
+                if operator == "=" {
+                    return Some(column.clone());
+                }
+            }
+        }
+        None
     }
 
     /// Apply DISTINCT to remove duplicate rows

@@ -1,5 +1,5 @@
 use parking_lot::RwLock;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -414,6 +414,49 @@ impl Engine {
         }
 
         Ok(results)
+    }
+
+    /// Get indexed columns for a table
+    pub fn get_indexed_columns(&self, table_name: &str) -> HashSet<String> {
+        if let Some(storage) = self.tables.get(table_name) {
+            storage.schema().indexed_columns()
+        } else {
+            HashSet::new()
+        }
+    }
+
+    /// Look up rows using an index
+    pub fn lookup_by_index(&self, table_name: &str, column: &str, value: &serde_json::Value) -> Result<Vec<String>> {
+        let index_mgr = self.indexes.get(table_name)
+            .ok_or_else(|| DriftError::Other(format!("No indexes for table: {}", table_name)))?;
+
+        let mgr_guard = index_mgr.read();
+
+        // Convert value to string for index lookup
+        let value_str = if let Some(s) = value.as_str() {
+            s.to_string()
+        } else {
+            value.to_string()
+        };
+
+        if let Some(index) = mgr_guard.get_index(column) {
+            if let Some(keys) = index.find(&value_str) {
+                Ok(keys.iter().cloned().collect())
+            } else {
+                Ok(Vec::new())
+            }
+        } else {
+            Err(DriftError::Other(format!("No index on column: {}", column)))
+        }
+    }
+
+    /// Get a single row by primary key
+    pub fn get_row(&self, table_name: &str, primary_key: &str) -> Result<Option<serde_json::Value>> {
+        let storage = self.tables.get(table_name)
+            .ok_or_else(|| DriftError::TableNotFound(table_name.to_string()))?;
+
+        let state = storage.reconstruct_state_at(None)?;
+        Ok(state.get(primary_key).cloned())
     }
 
     /// Insert a record into a table (for SQL INSERT support)
