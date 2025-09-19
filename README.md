@@ -1,25 +1,31 @@
 # DriftDB
 
-**The only database with native SQL:2011 temporal queries** - Query your data at any point in time using standard SQL.
+**A time-travel database that never forgets** - Query your data at any point in history with event sourcing and immutable storage.
 
-## 🚀 Why DriftDB?
+## 🚀 Working Demo
 
-```sql
--- Debug production issues by querying the past
-SELECT * FROM users
-FOR SYSTEM_TIME AS OF '2024-01-15T10:30:00Z'
-WHERE user_id = 12345;
+```bash
+# Run the complete demo
+./demo.sh
 
--- Compliance made simple
-SELECT * FROM transactions
-FOR SYSTEM_TIME BETWEEN '2024-01-01' AND '2024-01-31'
-WHERE amount > 10000;
+# Or try it yourself:
+driftdb init mydata
+driftdb sql --data mydata -e 'CREATE TABLE users (pk=id)'
+driftdb sql --data mydata -e 'INSERT INTO users {"id": "u1", "name": "Alice"}'
+driftdb sql --data mydata -e 'PATCH users KEY "u1" SET {"age": 31}'
 
--- Track changes over time
-SELECT * FROM products
-FOR SYSTEM_TIME ALL
-WHERE product_id = 'ABC-123';
+# Time travel!
+driftdb sql --data mydata -e 'SELECT * FROM users AS OF @seq:1'
 ```
+
+## ✅ What Actually Works
+
+- **Time-travel queries**: Query data at any sequence number with `AS OF @seq:N`
+- **Event sourcing**: All changes stored as immutable events
+- **JSON documents**: Flexible schema with JSON storage
+- **PATCH updates**: Partial updates that preserve history
+- **CRC32 verification**: Data integrity on every frame
+- **Persistence**: Survives restarts with full history
 
 ## ✨ Core Features
 
