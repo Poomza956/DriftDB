@@ -25,7 +25,7 @@ impl Default for StreamConfig {
 
 /// Iterator that streams events from segments without loading all into memory
 pub struct EventStreamIterator {
-    segments_dir: std::path::PathBuf,
+    _segments_dir: std::path::PathBuf,
     segment_files: Vec<std::path::PathBuf>,
     current_segment_idx: usize,
     current_reader: Option<crate::storage::segment::SegmentReader>,
@@ -60,7 +60,7 @@ impl EventStreamIterator {
         segment_files.sort();
 
         Ok(Self {
-            segments_dir,
+            _segments_dir: segments_dir,
             segment_files,
             current_segment_idx: 0,
             current_reader: None,

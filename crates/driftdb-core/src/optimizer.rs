@@ -147,6 +147,12 @@ pub struct SnapshotInfo {
     pub size_bytes: u64,
 }
 
+impl Default for QueryOptimizer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl QueryOptimizer {
     pub fn new() -> Self {
         Self {
@@ -280,7 +286,7 @@ impl QueryOptimizer {
 
         if let Some(table_stats) = stats.get(table) {
             // Check each index
-            for (index_name, _index_stats) in &table_stats.index_stats {
+            for index_name in table_stats.index_stats.keys() {
                 // Check if any condition can use this index
                 for condition in conditions {
                     if condition.column == *index_name {
@@ -469,7 +475,7 @@ impl QueryOptimizer {
     pub fn register_snapshot(&self, table: &str, info: SnapshotInfo) {
         let mut registry = self.snapshot_registry.write();
         registry.entry(table.to_string())
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(info);
     }
 
@@ -489,6 +495,7 @@ impl QueryOptimizer {
     }
 
     /// Optimize multiple conditions by reordering for efficiency
+    #[allow(dead_code)]
     fn optimize_condition_order(&self, table: &str, conditions: &[WhereCondition]) -> Vec<WhereCondition> {
         let mut conditions = conditions.to_vec();
 

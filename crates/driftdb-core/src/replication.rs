@@ -125,11 +125,11 @@ pub enum ReplicationMessage {
 /// Replica connection state
 #[derive(Debug)]
 struct ReplicaConnection {
-    node_id: String,
-    addr: SocketAddr,
-    role: NodeRole,
-    last_ack_seq: u64,
-    last_ack_time: SystemTime,
+    _node_id: String,
+    _addr: SocketAddr,
+    _role: NodeRole,
+    _last_ack_seq: u64,
+    _last_ack_time: SystemTime,
     lag_ms: u64,
     is_sync: bool,
     stream: Arc<Mutex<TcpStream>>,
@@ -258,11 +258,11 @@ impl ReplicationCoordinator {
                         info!("Replica {} connected with last_seq {}", node_id, last_seq);
 
                         let conn = ReplicaConnection {
-                            node_id: node_id.clone(),
-                            addr,
-                            role,
-                            last_ack_seq: last_seq,
-                            last_ack_time: SystemTime::now(),
+                            _node_id: node_id.clone(),
+                            _addr: addr,
+                            _role: role,
+                            _last_ack_seq: last_seq,
+                            _last_ack_time: SystemTime::now(),
                             lag_ms: 0,
                             is_sync: false,
                             stream: Arc::new(Mutex::new(stream)),
@@ -459,10 +459,8 @@ impl ReplicationCoordinator {
 
         for (_, replica) in replicas.iter() {
             if let Ok(mut stream) = replica.stream.try_lock() {
-                if stream.write_all(&data).await.is_ok() {
-                    if replica.is_sync {
-                        sync_count += 1;
-                    }
+                if stream.write_all(&data).await.is_ok() && replica.is_sync {
+                    sync_count += 1;
                 }
             }
         }

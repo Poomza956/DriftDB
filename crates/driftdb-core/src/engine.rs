@@ -326,7 +326,7 @@ impl Engine {
                 return Ok(Some(event.payload.clone()));
             }
 
-            let snapshot_version = txn_guard.snapshot_version;
+            let _snapshot_version = txn_guard.snapshot_version;
             drop(txn_guard);
         } else {
             return Err(DriftError::Other(format!("Transaction {} not found", txn_id)));

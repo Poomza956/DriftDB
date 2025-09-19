@@ -133,7 +133,7 @@ impl Engine {
 
         let history: Vec<serde_json::Value> = events
             .into_iter()
-            .filter(|e| e.primary_key.to_string() == pk_str)
+            .filter(|e| e.primary_key == pk_str)
             .map(|e| {
                 json!({
                     "sequence": e.sequence,

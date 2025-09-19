@@ -9,15 +9,15 @@
 //! - Health checks
 
 use std::path::PathBuf;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::{Parser, Subcommand};
 use colored::*;
 use indicatif::{ProgressBar, ProgressStyle};
 use prettytable::{Cell, Row, Table};
 
-use driftdb_core::{Engine, DriftError};
+use driftdb_core::Engine;
 
 #[derive(Parser)]
 #[command(name = "driftdb-admin")]

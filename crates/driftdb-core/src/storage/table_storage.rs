@@ -28,6 +28,7 @@ impl TableStorage {
         let lock_file = fs::OpenOptions::new()
             .create(true)
             .write(true)
+            .truncate(false)
             .open(&lock_path)?;
         lock_file.try_lock_exclusive()
             .map_err(|e| DriftError::Other(format!("Failed to acquire table lock: {}", e)))?;
@@ -67,6 +68,7 @@ impl TableStorage {
         let lock_file = fs::OpenOptions::new()
             .create(true)
             .write(true)
+            .truncate(false)
             .open(&lock_path)?;
         lock_file.try_lock_exclusive()
             .map_err(|e| DriftError::Other(format!("Failed to acquire table lock: {}", e)))?;

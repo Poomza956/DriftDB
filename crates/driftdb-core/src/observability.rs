@@ -50,6 +50,12 @@ pub struct Metrics {
 
 impl Metrics {
     pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl Default for Metrics {
+    fn default() -> Self {
         Self {
             writes_total: AtomicU64::new(0),
             writes_failed: AtomicU64::new(0),
@@ -83,7 +89,9 @@ impl Metrics {
             panic_recovered: AtomicU64::new(0),
         }
     }
+}
 
+impl Metrics {
     /// Get a snapshot of all metrics
     pub fn snapshot(&self) -> MetricsSnapshot {
         MetricsSnapshot {
@@ -217,7 +225,7 @@ impl Drop for LatencyTimer {
 /// Instrumented wrapper for critical operations
 pub struct InstrumentedOperation<'a> {
     name: &'a str,
-    metrics: Arc<Metrics>,
+    _metrics: Arc<Metrics>,
     timer: LatencyTimer,
 }
 
@@ -226,7 +234,7 @@ impl<'a> InstrumentedOperation<'a> {
         debug!("Starting operation: {}", name);
         Self {
             name,
-            metrics,
+            _metrics: metrics,
             timer: LatencyTimer::start(name),
         }
     }

@@ -74,7 +74,7 @@ pub enum KeyStatus {
 
 /// Encryption key manager
 pub struct KeyManager {
-    config: EncryptionConfig,
+    _config: EncryptionConfig,
     master_key: Arc<RwLock<Vec<u8>>>,
     data_keys: Arc<RwLock<HashMap<String, DataKey>>>,
     key_derivation_salt: Vec<u8>,
@@ -84,7 +84,7 @@ use std::collections::HashMap;
 
 #[derive(Clone)]
 struct DataKey {
-    key_id: String,
+    _key_id: String,
     key_material: Vec<u8>,
     metadata: KeyMetadata,
 }
@@ -97,7 +97,7 @@ impl KeyManager {
         let salt = Self::generate_salt()?;
 
         Ok(Self {
-            config,
+            _config: config,
             master_key: Arc::new(RwLock::new(master_key)),
             data_keys: Arc::new(RwLock::new(HashMap::new())),
             key_derivation_salt: salt,
@@ -159,7 +159,7 @@ impl KeyManager {
         };
 
         let data_key = DataKey {
-            key_id: key_id.to_string(),
+            _key_id: key_id.to_string(),
             key_material: key_material.clone(),
             metadata,
         };
@@ -208,7 +208,7 @@ impl KeyManager {
         };
 
         let data_key = DataKey {
-            key_id: key_id.to_string(),
+            _key_id: key_id.to_string(),
             key_material: new_key,
             metadata,
         };

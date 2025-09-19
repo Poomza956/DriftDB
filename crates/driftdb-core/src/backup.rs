@@ -33,14 +33,14 @@ pub enum CompressionType {
 /// Backup manager for creating and restoring backups
 pub struct BackupManager {
     data_dir: PathBuf,
-    metrics: Arc<Metrics>,
+    _metrics: Arc<Metrics>,
 }
 
 impl BackupManager {
     pub fn new<P: AsRef<Path>>(data_dir: P, metrics: Arc<Metrics>) -> Self {
         Self {
             data_dir: data_dir.as_ref().to_path_buf(),
-            metrics,
+            _metrics: metrics,
         }
     }
 
@@ -307,7 +307,7 @@ impl BackupManager {
 
             // For decompression, adjust destination filename
             let dst_file_name = if matches!(compression, CompressionType::None)
-                && file_name.to_str().map_or(false, |s| s.ends_with(".zst")) {
+                && file_name.to_str().is_some_and(|s| s.ends_with(".zst")) {
                 // For now, special case for schema.zst -> schema.yaml
                 // In production, we'd store original extension in metadata
                 let name_str = file_name.to_str().unwrap();

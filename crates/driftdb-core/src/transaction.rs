@@ -22,22 +22,19 @@ use crate::wal::Wal;
 
 /// Transaction isolation levels
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum IsolationLevel {
     /// Dirty reads allowed (not recommended)
     ReadUncommitted,
     /// No dirty reads, but non-repeatable reads possible
     ReadCommitted,
     /// Snapshot of data at transaction start
+    #[default]
     RepeatableRead,
     /// Full serializability
     Serializable,
 }
 
-impl Default for IsolationLevel {
-    fn default() -> Self {
-        IsolationLevel::RepeatableRead
-    }
-}
 
 /// Transaction state
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -116,6 +113,12 @@ pub enum LockType {
 
 impl LockManager {
     pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl Default for LockManager {
+    fn default() -> Self {
         Self {
             read_locks: RwLock::new(HashMap::new()),
             write_locks: RwLock::new(HashMap::new()),
@@ -123,7 +126,9 @@ impl LockManager {
             waits_for: Mutex::new(HashMap::new()),
         }
     }
+}
 
+impl LockManager {
     /// Acquire a read lock
     pub fn acquire_read_lock(&self, txn_id: u64, key: &str) -> Result<()> {
         // Check for write lock
@@ -139,7 +144,7 @@ impl LockManager {
         // Grant read lock
         let mut read_locks = self.read_locks.write();
         read_locks.entry(key.to_string())
-            .or_insert_with(HashSet::new)
+            .or_default()
             .insert(txn_id);
 
         debug!("Transaction {} acquired read lock on {}", txn_id, key);
@@ -189,13 +194,13 @@ impl LockManager {
         // Add to wait queue
         let mut wait_queue = self.wait_queue.lock();
         wait_queue.entry(key.to_string())
-            .or_insert_with(Vec::new)
+            .or_default()
             .push((txn_id, lock_type));
 
         // Update waits-for graph
         let mut waits_for = self.waits_for.lock();
         waits_for.entry(txn_id)
-            .or_insert_with(HashSet::new)
+            .or_default()
             .insert(blocking_txn);
 
         Err(DriftError::Lock(format!(
@@ -293,9 +298,8 @@ pub struct TransactionManager {
     current_version: Arc<AtomicU64>,
 }
 
-impl TransactionManager {
-    pub fn new() -> Self {
-        // Simplified constructor for compilation
+impl Default for TransactionManager {
+    fn default() -> Self {
         Self {
             next_txn_id: Arc::new(AtomicU64::new(1)),
             active_transactions: Arc::new(RwLock::new(HashMap::new())),
@@ -304,6 +308,12 @@ impl TransactionManager {
             metrics: Arc::new(Metrics::new()),
             current_version: Arc::new(AtomicU64::new(1)),
         }
+    }
+}
+
+impl TransactionManager {
+    pub fn new() -> Self {
+        Self::default()
     }
 
     pub fn new_with_deps(wal: Arc<Wal>, metrics: Arc<Metrics>) -> Self {
@@ -406,17 +416,15 @@ impl TransactionManager {
         txn_guard.state = TransactionState::Preparing;
 
         // Validation phase (for Serializable isolation)
-        if txn_guard.isolation == IsolationLevel::Serializable {
-            if !self.validate_transaction(&txn_guard)? {
-                self.abort_internal(&mut txn_guard)?;
-                return Err(DriftError::Other("Transaction validation failed".to_string()));
-            }
+        if txn_guard.isolation == IsolationLevel::Serializable && !self.validate_transaction(&txn_guard)? {
+            self.abort_internal(&mut txn_guard)?;
+            return Err(DriftError::Other("Transaction validation failed".to_string()));
         }
 
         txn_guard.state = TransactionState::Prepared;
 
         // Write to WAL
-        for (_, event) in &txn_guard.write_set {
+        for event in txn_guard.write_set.values() {
             self.wal.write_event(txn_guard.id, event.clone())?;
         }
 
