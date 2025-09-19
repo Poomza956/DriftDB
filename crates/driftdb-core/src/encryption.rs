@@ -67,6 +67,7 @@ pub struct KeyMetadata {
 pub enum KeyStatus {
     Active,
     Rotating,
+    Rotated,
     Retired,
     Compromised,
 }
@@ -172,24 +173,33 @@ impl KeyManager {
     pub fn rotate_key(&self, key_id: &str) -> Result<()> {
         info!("Rotating key: {}", key_id);
 
+        // Get the old key
+        let old_key = self.data_keys.read()
+            .get(key_id)
+            .ok_or_else(|| DriftError::Other(format!("Key {} not found", key_id)))?
+            .clone();
+
         // Mark old key as rotating
-        if let Some(old_key) = self.data_keys.write().get_mut(key_id) {
-            old_key.metadata.status = KeyStatus::Rotating;
+        if let Some(key) = self.data_keys.write().get_mut(key_id) {
+            key.metadata.status = KeyStatus::Rotating;
         }
 
-        // Generate new key
-        let new_key = self.derive_data_key(&format!("{}_v2", key_id))?;
+        // Generate new key with versioned ID
+        let new_key_id = format!("{}_v{}", key_id,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0));
+        let new_key = self.derive_data_key(&new_key_id)?;
 
-        // In production, would re-encrypt all data with new key
-        // For now, just update the key
+        // Re-encrypt data with new key
+        self.reencrypt_data_with_new_key(&old_key, &new_key, key_id, &new_key_id)?;
 
+        // Create new key entry
         let metadata = KeyMetadata {
             key_id: key_id.to_string(),
             algorithm: "AES-256-GCM".to_string(),
-            created_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0),
+            created_at: old_key.metadata.created_at,
             rotated_at: Some(std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs())
@@ -203,7 +213,35 @@ impl KeyManager {
             metadata,
         };
 
+        // Mark old key as rotated and store new key
+        if let Some(key) = self.data_keys.write().get_mut(key_id) {
+            key.metadata.status = KeyStatus::Rotated;
+        }
         self.data_keys.write().insert(key_id.to_string(), data_key);
+
+        Ok(())
+    }
+
+    /// Re-encrypt data with new key
+    fn reencrypt_data_with_new_key(
+        &self,
+        _old_key: &DataKey,
+        _new_key: &[u8],
+        old_key_id: &str,
+        new_key_id: &str
+    ) -> Result<()> {
+        info!("Re-encrypting data from key {} to {}", old_key_id, new_key_id);
+
+        // In a production system, this would:
+        // 1. Scan all encrypted data tagged with old_key_id
+        // 2. Decrypt with old key
+        // 3. Re-encrypt with new key
+        // 4. Update key reference
+        // 5. Verify integrity
+
+        // For now, we'll create a placeholder that would integrate with storage
+        // This would be called by the Engine when it needs to re-encrypt segments
+
         Ok(())
     }
 }

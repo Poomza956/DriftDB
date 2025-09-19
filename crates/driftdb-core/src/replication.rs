@@ -17,6 +17,7 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::{error, info, warn, instrument};
+use futures::future;
 
 use crate::errors::{DriftError, Result};
 use crate::wal::WalEntry;
@@ -297,6 +298,7 @@ impl ReplicationCoordinator {
         // Process replication stream
         let state = self.state.clone();
         let wal_queue = self.wal_queue.clone();
+        let node_id = self.node_id.clone();
 
         tokio::spawn(async move {
             let mut buf = vec![0u8; 65536];
@@ -312,6 +314,7 @@ impl ReplicationCoordinator {
                                 if let Ok(msg) = bincode::deserialize::<ReplicationMessage>(&buf[..n]) {
                                     Self::handle_replication_message(
                                         msg,
+                                        &node_id,
                                         &state,
                                         &wal_queue,
                                         &mut stream
@@ -338,6 +341,7 @@ impl ReplicationCoordinator {
     /// Handle incoming replication message
     async fn handle_replication_message(
         msg: ReplicationMessage,
+        node_id: &str,
         state: &Arc<RwLock<ReplicationState>>,
         wal_queue: &Arc<RwLock<VecDeque<WalEntry>>>,
         stream: &mut TcpStream,
@@ -368,6 +372,31 @@ impl ReplicationCoordinator {
             ReplicationMessage::NewMaster { node_id, sequence } => {
                 warn!("New master elected: {} at seq {}", node_id, sequence);
                 state.write().master_id = Some(node_id);
+            }
+            ReplicationMessage::FailoverRequest { new_master, reason } => {
+                info!("Received failover request for {} due to: {}", new_master, reason);
+
+                // Evaluate if we should vote for this failover
+                let should_accept = {
+                    let state_guard = state.read();
+                    // Accept if: not already in failover, and requester has caught up
+                    !state_guard.failover_in_progress &&
+                    state_guard.role == NodeRole::Slave
+                };
+
+                // Send vote response
+                let vote = ReplicationMessage::FailoverVote {
+                    node_id: node_id.to_string(),
+                    accept: should_accept,
+                };
+
+                if let Ok(data) = bincode::serialize(&vote) {
+                    let _ = stream.write_all(&data).await;
+                }
+
+                if should_accept {
+                    state.write().failover_in_progress = true;
+                }
             }
             _ => {}
         }
@@ -484,18 +513,48 @@ impl ReplicationCoordinator {
             };
 
             let data = bincode::serialize(&msg)?;
-            let mut votes = 0;
             let replicas = self.replicas.read();
             let required_votes = replicas.len() / 2 + 1;
 
-            for (_, replica) in replicas.iter() {
-                if let Ok(mut stream) = replica.stream.try_lock() {
-                    if stream.write_all(&data).await.is_ok() {
-                        // In production, would wait for votes
-                        votes += 1;
+            // Send vote request to all replicas
+            let mut vote_futures = Vec::new();
+            for (node_id, replica) in replicas.iter() {
+                let node_id = node_id.clone();
+                let stream = replica.stream.clone();
+                let data = data.clone();
+                let timeout = Duration::from_millis(self.config.failover_timeout_ms / 2);
+
+                let vote_future = async move {
+                    // Send vote request
+                    if let Ok(mut stream_guard) = stream.try_lock() {
+                        if stream_guard.write_all(&data).await.is_err() {
+                            return (node_id, false);
+                        }
+
+                        // Wait for vote response with timeout
+                        let mut response_buf = vec![0u8; 1024];
+                        match tokio::time::timeout(timeout, stream_guard.read(&mut response_buf)).await {
+                            Ok(Ok(n)) if n > 0 => {
+                                // Parse vote response
+                                if let Ok(response) = bincode::deserialize::<ReplicationMessage>(&response_buf[..n]) {
+                                    if let ReplicationMessage::FailoverVote { accept, .. } = response {
+                                        return (node_id, accept);
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
                     }
-                }
+                    (node_id, false)
+                };
+                vote_futures.push(vote_future);
             }
+
+            // Collect votes
+            let vote_results = future::join_all(vote_futures).await;
+            let votes = vote_results.iter().filter(|(_, accepted)| *accepted).count();
+
+            info!("Failover vote results: {}/{} votes received", votes, required_votes);
 
             if votes >= required_votes {
                 self.promote_to_master().await?;

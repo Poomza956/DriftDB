@@ -24,6 +24,7 @@ fs2 = { workspace = true }
 sha2 = "0.10"
 async-trait = "0.1"
 tokio = { version = "1", features = ["full"] }
+futures = "0.3"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 aes-gcm = "0.10"
 chacha20poly1305 = "0.10"
