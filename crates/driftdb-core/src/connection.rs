@@ -21,6 +21,7 @@ use tracing::{debug, info, instrument};
 use crate::errors::{DriftError, Result};
 use crate::observability::Metrics;
 use crate::transaction::{TransactionManager, IsolationLevel};
+use crate::Engine;
 
 /// Connection pool configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -497,6 +498,112 @@ pub struct PoolStats {
     pub available_connections: usize,
     pub active_clients: usize,
     pub total_created: u64,
+}
+
+/// Engine pool that manages connections to a DriftDB Engine
+pub struct EnginePool {
+    engine: Arc<tokio::sync::RwLock<Engine>>,
+    connection_pool: ConnectionPool,
+}
+
+impl EnginePool {
+    pub fn new(
+        engine: Arc<tokio::sync::RwLock<Engine>>,
+        config: PoolConfig,
+        metrics: Arc<Metrics>,
+    ) -> Result<Self> {
+        // Create a WAL instance for the transaction manager
+        // This is a temporary solution - ideally the Engine should expose its WAL
+        let temp_dir = std::env::temp_dir().join(format!("driftdb_pool_{}", std::process::id()));
+        std::fs::create_dir_all(&temp_dir)?;
+        let wal = Arc::new(crate::wal::Wal::new(&temp_dir)?);
+        let transaction_manager = Arc::new(TransactionManager::new_with_deps(wal, metrics.clone()));
+
+        let connection_pool = ConnectionPool::new(config, metrics, transaction_manager)?;
+
+        Ok(Self {
+            engine,
+            connection_pool,
+        })
+    }
+
+    /// Acquire a connection and engine access
+    #[instrument(skip(self))]
+    pub async fn acquire(&self, client_addr: SocketAddr) -> Result<EngineGuard> {
+        let connection_guard = self.connection_pool.acquire(client_addr).await?;
+
+        Ok(EngineGuard {
+            engine: self.engine.clone(),
+            _connection_guard: connection_guard,
+        })
+    }
+
+    /// Run periodic health checks
+    pub async fn run_health_checks(&self) {
+        self.connection_pool.run_health_checks().await;
+    }
+
+    /// Graceful shutdown
+    pub async fn shutdown(&self) {
+        self.connection_pool.shutdown().await;
+    }
+
+    /// Get pool statistics
+    pub fn stats(&self) -> EnginePoolStats {
+        let conn_stats = self.connection_pool.stats();
+        EnginePoolStats {
+            connection_stats: conn_stats,
+            engine_available: true, // Could be enhanced to check engine health
+        }
+    }
+}
+
+impl Clone for EnginePool {
+    fn clone(&self) -> Self {
+        Self {
+            engine: self.engine.clone(),
+            connection_pool: self.connection_pool.clone(),
+        }
+    }
+}
+
+/// RAII guard for engine access through the pool
+pub struct EngineGuard {
+    engine: Arc<tokio::sync::RwLock<Engine>>,
+    _connection_guard: ConnectionGuard,
+}
+
+impl EngineGuard {
+    /// Get read access to the engine
+    pub async fn read(&self) -> tokio::sync::RwLockReadGuard<Engine> {
+        self.engine.read().await
+    }
+
+    /// Get write access to the engine
+    pub async fn write(&self) -> tokio::sync::RwLockWriteGuard<Engine> {
+        self.engine.write().await
+    }
+
+    /// Get the connection ID
+    pub fn connection_id(&self) -> u64 {
+        self._connection_guard.id()
+    }
+
+    /// Begin a transaction on this connection
+    pub fn begin_transaction(&mut self, isolation: IsolationLevel) -> Result<()> {
+        self._connection_guard.begin_transaction(isolation)
+    }
+
+    /// Get current transaction
+    pub fn transaction(&self) -> Option<Arc<Mutex<crate::transaction::Transaction>>> {
+        self._connection_guard.transaction()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnginePoolStats {
+    pub connection_stats: PoolStats,
+    pub engine_available: bool,
 }
 
 #[cfg(test)]

@@ -325,8 +325,172 @@ fn compact(input: &str) -> IResult<&str, Query> {
     ))
 }
 
+fn quoted_path(input: &str) -> IResult<&str, String> {
+    let (input, _) = char('\'')(input)?;
+    let (input, path) = take_until("'")(input)?;
+    let (input, _) = char('\'')(input)?;
+    Ok((input, path.to_string()))
+}
+
+fn backup_database(input: &str) -> IResult<&str, Query> {
+    let (input, _) = ws(tag_no_case("BACKUP"))(input)?;
+    let (input, _) = ws(tag_no_case("DATABASE"))(input)?;
+    let (input, _) = ws(tag_no_case("TO"))(input)?;
+    let (input, destination) = ws(quoted_path)(input)?;
+
+    // Optional WITH COMPRESSION
+    let (input, compression) = opt(preceded(
+        tuple((ws(tag_no_case("WITH")), ws(tag_no_case("COMPRESSION")))),
+        opt(preceded(
+            ws(char('=')),
+            ws(alt((
+                map(tag_no_case("ZSTD"), |_| "zstd".to_string()),
+                map(tag_no_case("GZIP"), |_| "gzip".to_string()),
+                map(tag_no_case("NONE"), |_| "none".to_string()),
+            )))
+        ))
+    ))(input)?;
+
+    // Optional INCREMENTAL
+    let (input, incremental) = opt(ws(tag_no_case("INCREMENTAL")))(input)?;
+
+    Ok((
+        input,
+        Query::BackupDatabase {
+            destination,
+            compression: compression.flatten(),
+            incremental: incremental.is_some(),
+        },
+    ))
+}
+
+fn backup_table(input: &str) -> IResult<&str, Query> {
+    let (input, _) = ws(tag_no_case("BACKUP"))(input)?;
+    let (input, _) = ws(tag_no_case("TABLE"))(input)?;
+    let (input, table) = ws(identifier)(input)?;
+    let (input, _) = ws(tag_no_case("TO"))(input)?;
+    let (input, destination) = ws(quoted_path)(input)?;
+
+    // Optional WITH COMPRESSION
+    let (input, compression) = opt(preceded(
+        tuple((ws(tag_no_case("WITH")), ws(tag_no_case("COMPRESSION")))),
+        opt(preceded(
+            ws(char('=')),
+            ws(alt((
+                map(tag_no_case("ZSTD"), |_| "zstd".to_string()),
+                map(tag_no_case("GZIP"), |_| "gzip".to_string()),
+                map(tag_no_case("NONE"), |_| "none".to_string()),
+            )))
+        ))
+    ))(input)?;
+
+    Ok((
+        input,
+        Query::BackupTable {
+            table: table.to_string(),
+            destination,
+            compression: compression.flatten(),
+        },
+    ))
+}
+
+fn restore_database(input: &str) -> IResult<&str, Query> {
+    let (input, _) = ws(tag_no_case("RESTORE"))(input)?;
+    let (input, _) = ws(tag_no_case("DATABASE"))(input)?;
+    let (input, _) = ws(tag_no_case("FROM"))(input)?;
+    let (input, source) = ws(quoted_path)(input)?;
+
+    // Optional TO target
+    let (input, target) = opt(preceded(
+        ws(tag_no_case("TO")),
+        ws(quoted_path)
+    ))(input)?;
+
+    // Optional WITH VERIFY
+    let (input, verify) = opt(tuple((
+        ws(tag_no_case("WITH")),
+        ws(tag_no_case("VERIFY"))
+    )))(input)?;
+
+    Ok((
+        input,
+        Query::RestoreDatabase {
+            source,
+            target,
+            verify: verify.is_some(),
+        },
+    ))
+}
+
+fn restore_table(input: &str) -> IResult<&str, Query> {
+    let (input, _) = ws(tag_no_case("RESTORE"))(input)?;
+    let (input, _) = ws(tag_no_case("TABLE"))(input)?;
+    let (input, table) = ws(identifier)(input)?;
+    let (input, _) = ws(tag_no_case("FROM"))(input)?;
+    let (input, source) = ws(quoted_path)(input)?;
+
+    // Optional TO target
+    let (input, target) = opt(preceded(
+        ws(tag_no_case("TO")),
+        ws(quoted_path)
+    ))(input)?;
+
+    // Optional WITH VERIFY
+    let (input, verify) = opt(tuple((
+        ws(tag_no_case("WITH")),
+        ws(tag_no_case("VERIFY"))
+    )))(input)?;
+
+    Ok((
+        input,
+        Query::RestoreTable {
+            table: table.to_string(),
+            source,
+            target,
+            verify: verify.is_some(),
+        },
+    ))
+}
+
+fn show_backups(input: &str) -> IResult<&str, Query> {
+    let (input, _) = ws(tag_no_case("SHOW"))(input)?;
+    let (input, _) = ws(tag_no_case("BACKUPS"))(input)?;
+
+    // Optional FROM directory
+    let (input, directory) = opt(preceded(
+        ws(tag_no_case("FROM")),
+        ws(quoted_path)
+    ))(input)?;
+
+    Ok((
+        input,
+        Query::ShowBackups {
+            directory,
+        },
+    ))
+}
+
+fn verify_backup(input: &str) -> IResult<&str, Query> {
+    let (input, _) = ws(tag_no_case("VERIFY"))(input)?;
+    let (input, _) = ws(tag_no_case("BACKUP"))(input)?;
+    let (input, backup_path) = ws(quoted_path)(input)?;
+
+    Ok((
+        input,
+        Query::VerifyBackup {
+            backup_path,
+        },
+    ))
+}
+
 fn driftql_query(input: &str) -> IResult<&str, Query> {
     alt((
+        backup_database,
+        backup_table,
+        restore_database,
+        restore_table,
+        show_backups,
+        verify_backup,
         create_table,
         insert,
         patch,

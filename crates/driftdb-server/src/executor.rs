@@ -3,15 +3,18 @@
 //! Executes SQL queries directly against the DriftDB engine
 
 use anyhow::{Result, anyhow};
-use driftdb_core::Engine;
+use driftdb_core::{Engine, EngineGuard};
 use serde_json::Value;
 use std::sync::Arc;
 use std::collections::HashMap;
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, Mutex};
 use tracing::{debug, info, warn};
 
+#[cfg(test)]
+mod executor_subquery_tests;
+
 /// Result types for different SQL operations
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum QueryResult {
     Select {
         columns: Vec<String>,
@@ -77,18 +80,176 @@ struct Having {
 #[derive(Debug, Clone)]
 enum SelectClause {
     All, // SELECT *
+    AllDistinct, // SELECT DISTINCT *
     Columns(Vec<String>), // SELECT column1, column2, etc.
+    ColumnsDistinct(Vec<String>), // SELECT DISTINCT column1, column2, etc.
     Aggregations(Vec<Aggregation>), // SELECT COUNT(*), SUM(column), etc.
     Mixed(Vec<String>, Vec<Aggregation>), // SELECT column1, column2, COUNT(*), SUM(column3)
 }
 
-pub struct QueryExecutor {
-    engine: Arc<RwLock<Engine>>,
+/// JOIN types
+#[derive(Debug, Clone, PartialEq)]
+enum JoinType {
+    Inner,
+    LeftOuter,
+    RightOuter,
+    FullOuter,
+    Cross,
 }
 
-impl QueryExecutor {
-    pub fn new(engine: Arc<RwLock<Engine>>) -> Self {
-        Self { engine }
+/// JOIN condition
+#[derive(Debug, Clone)]
+struct JoinCondition {
+    left_table: String,
+    left_column: String,
+    right_table: String,
+    right_column: String,
+    operator: String, // "=", "!=", "<", ">", etc.
+}
+
+/// JOIN specification
+#[derive(Debug, Clone)]
+struct Join {
+    join_type: JoinType,
+    table: String,
+    table_alias: Option<String>,
+    condition: Option<JoinCondition>, // None for CROSS JOIN
+}
+
+/// Table reference with optional alias
+#[derive(Debug, Clone)]
+struct TableRef {
+    name: String,
+    alias: Option<String>,
+}
+
+/// FROM clause specification
+#[derive(Debug, Clone)]
+enum FromClause {
+    Single(TableRef),
+    MultipleImplicit(Vec<TableRef>), // Comma-separated tables for implicit JOIN
+    WithJoins {
+        base_table: TableRef,
+        joins: Vec<Join>,
+    },
+    DerivedTable(DerivedTable), // Subquery used as table
+    DerivedTableWithJoins {
+        base_table: DerivedTable,
+        joins: Vec<Join>,
+    },
+}
+
+/// Subquery expression types
+#[derive(Debug, Clone)]
+pub struct Subquery {
+    pub sql: String,
+    pub is_correlated: bool,
+    pub referenced_columns: Vec<String>, // Columns from outer query referenced in subquery
+}
+
+/// Subquery expression in WHERE clauses
+#[derive(Debug, Clone)]
+pub enum SubqueryExpression {
+    In {
+        column: String,
+        subquery: Subquery,
+        negated: bool, // true for NOT IN
+    },
+    Exists {
+        subquery: Subquery,
+        negated: bool, // true for NOT EXISTS
+    },
+    Comparison {
+        column: String,
+        operator: String, // "=", ">", "<", etc.
+        quantifier: Option<SubqueryQuantifier>, // ANY, ALL, or None for scalar
+        subquery: Subquery,
+    },
+}
+
+/// Quantifiers for subquery comparisons
+#[derive(Debug, Clone, PartialEq)]
+pub enum SubqueryQuantifier {
+    Any,
+    All,
+}
+
+/// Scalar subquery in SELECT clause
+#[derive(Debug, Clone)]
+pub struct ScalarSubquery {
+    pub subquery: Subquery,
+    pub alias: Option<String>,
+}
+
+/// Extended SELECT clause to support scalar subqueries
+#[derive(Debug, Clone)]
+pub enum ExtendedSelectItem {
+    Column(String),
+    Aggregation(Aggregation),
+    ScalarSubquery(ScalarSubquery),
+}
+
+/// Derived table in FROM clause (subquery used as table)
+#[derive(Debug, Clone)]
+pub struct DerivedTable {
+    pub subquery: Subquery,
+    pub alias: String, // Required for derived tables
+}
+
+/// Enhanced WHERE condition to support subqueries
+#[derive(Debug, Clone)]
+pub enum WhereCondition {
+    Simple {
+        column: String,
+        operator: String,
+        value: Value,
+    },
+    Subquery(SubqueryExpression),
+}
+
+pub struct QueryExecutor<'a> {
+    engine_guard: Option<&'a EngineGuard>,
+    engine: Option<Arc<tokio::sync::RwLock<Engine>>>,
+    subquery_cache: Arc<Mutex<HashMap<String, QueryResult>>>, // Cache for non-correlated subqueries
+}
+
+impl<'a> QueryExecutor<'a> {
+    pub fn new(engine: Arc<tokio::sync::RwLock<Engine>>) -> QueryExecutor<'static> {
+        QueryExecutor {
+            engine_guard: None,
+            engine: Some(engine),
+            subquery_cache: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    pub fn new_with_guard(engine_guard: &'a EngineGuard) -> Self {
+        Self {
+            engine_guard: Some(engine_guard),
+            engine: None,
+            subquery_cache: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    /// Get read access to the engine
+    async fn engine_read(&self) -> Result<tokio::sync::RwLockReadGuard<Engine>> {
+        if let Some(guard) = &self.engine_guard {
+            Ok(guard.read().await)
+        } else if let Some(engine) = &self.engine {
+            Ok(engine.read().await)
+        } else {
+            Err(anyhow!("No engine available"))
+        }
+    }
+
+    /// Get write access to the engine
+    async fn engine_write(&self) -> Result<tokio::sync::RwLockWriteGuard<Engine>> {
+        if let Some(guard) = &self.engine_guard {
+            Ok(guard.write().await)
+        } else if let Some(engine) = &self.engine {
+            Ok(engine.write().await)
+        } else {
+            Err(anyhow!("No engine available"))
+        }
     }
 
     /// Parse WHERE clause into conditions
@@ -257,9 +418,20 @@ impl QueryExecutor {
     fn parse_select_clause(&self, select_part: &str) -> Result<SelectClause> {
         let trimmed = select_part.trim();
 
-        // Check for SELECT *
-        if trimmed == "*" {
-            return Ok(SelectClause::All);
+        // Check for DISTINCT
+        let (is_distinct, columns_part) = if trimmed.to_uppercase().starts_with("DISTINCT ") {
+            (true, trimmed[9..].trim())
+        } else {
+            (false, trimmed)
+        };
+
+        // Check for SELECT * or SELECT DISTINCT *
+        if columns_part == "*" {
+            return Ok(if is_distinct {
+                SelectClause::AllDistinct
+            } else {
+                SelectClause::All
+            });
         }
 
         // Parse columns and aggregation functions
@@ -267,7 +439,7 @@ impl QueryExecutor {
         let mut aggregations = Vec::new();
 
         // Split by comma (simple parser for now)
-        let parts: Vec<&str> = trimmed.split(',').collect();
+        let parts: Vec<&str> = columns_part.split(',').collect();
 
         for part in parts {
             let part = part.trim();
@@ -281,15 +453,24 @@ impl QueryExecutor {
             }
         }
 
+        // DISTINCT cannot be used with aggregations
+        if is_distinct && !aggregations.is_empty() {
+            return Err(anyhow!("DISTINCT cannot be used with aggregation functions"));
+        }
+
         // Determine the type of SELECT clause
-        match (columns.is_empty(), aggregations.is_empty()) {
-            (true, true) => Err(anyhow!("No valid columns or aggregation functions found")),
-            (true, false) => Ok(SelectClause::Aggregations(aggregations)),
-            (false, true) => {
+        match (columns.is_empty(), aggregations.is_empty(), is_distinct) {
+            (true, true, _) => Err(anyhow!("No valid columns or aggregation functions found")),
+            (true, false, _) => Ok(SelectClause::Aggregations(aggregations)),
+            (false, true, false) => {
                 // Just regular columns - return Columns variant for column selection
                 Ok(SelectClause::Columns(columns))
             },
-            (false, false) => Ok(SelectClause::Mixed(columns, aggregations)),
+            (false, true, true) => {
+                // DISTINCT columns
+                Ok(SelectClause::ColumnsDistinct(columns))
+            },
+            (false, false, _) => Ok(SelectClause::Mixed(columns, aggregations)),
         }
     }
 
@@ -783,7 +964,6 @@ impl QueryExecutor {
     }
 
     async fn execute_select(&self, sql: &str) -> Result<QueryResult> {
-        let engine = self.engine.read().await;
         let lower = sql.to_lowercase();
 
         // Parse SELECT clause to determine what kind of query this is
@@ -793,11 +973,12 @@ impl QueryExecutor {
 
         let select_clause = self.parse_select_clause(select_part)?;
 
-        // Extract table name
+        // Parse FROM clause (handles JOINs)
         let from_pos = lower.find(" from ").unwrap() + 6;
         let remaining = &sql[from_pos..];
 
-        let table_end = remaining.find(" WHERE ")
+        // Find the end of the FROM clause
+        let from_end = remaining.find(" WHERE ")
             .or_else(|| remaining.find(" where "))
             .or_else(|| remaining.find(" GROUP BY "))
             .or_else(|| remaining.find(" group by "))
@@ -809,19 +990,21 @@ impl QueryExecutor {
             .or_else(|| remaining.find(" as of "))
             .unwrap_or(remaining.len());
 
-        let table_name = remaining[..table_end].trim();
+        let from_part = remaining[..from_end].trim();
+        let after_from = &remaining[from_end..];
 
-        // Get table data
-        let all_data = engine.get_table_data(table_name)
-            .map_err(|e| anyhow!("Failed to get table data: {}", e))?;
+        // Parse FROM clause to get table references and JOINs
+        let from_clause = self.parse_from_clause(from_part)?;
+        debug!("Parsed FROM clause: {:?}", from_clause);
 
-        // Parse WHERE conditions if present
-        let mut filtered_data = all_data;
+        // Execute JOIN operations to get initial dataset
+        let (mut joined_data, mut all_columns) = self.execute_join(&from_clause).await?;
+        debug!("JOIN execution produced {} rows with {} columns", joined_data.len(), all_columns.len());
 
-        // Parse WHERE conditions first
-        let where_conditions = if let Some(where_pos) = remaining.to_lowercase().find(" where ") {
+        // Parse WHERE conditions if present (with subquery support)
+        let where_conditions = if let Some(where_pos) = after_from.to_lowercase().find(" where ") {
             let where_start = where_pos + 7;
-            let where_clause = &remaining[where_start..];
+            let where_clause = &after_from[where_start..];
 
             let where_end = where_clause.to_lowercase().find(" group by ")
                 .or_else(|| where_clause.to_lowercase().find(" order by "))
@@ -831,40 +1014,31 @@ impl QueryExecutor {
 
             let conditions_str = where_clause[..where_end].trim();
             debug!("Parsing WHERE clause: {}", conditions_str);
-            let conditions = self.parse_where_clause(conditions_str)?;
-            debug!("Parsed conditions: {:?}", conditions);
+            let enhanced_conditions = self.parse_enhanced_where_clause(conditions_str)?;
+            debug!("Parsed enhanced WHERE conditions: {:?}", enhanced_conditions);
 
-            // Filter data based on WHERE conditions
-            let initial_count = filtered_data.len();
-            filtered_data = filtered_data.into_iter().filter(|row| {
-                // Check all conditions (AND logic)
-                let matches = conditions.iter().all(|(column, operator, value)| {
-                    if let Value::Object(map) = row {
-                        if let Some(field_value) = map.get(column) {
-                            let result = self.matches_condition(field_value, operator, value);
-                            debug!("Checking {} {} {:?} against {:?}: {}", column, operator, value, field_value, result);
-                            result
-                        } else {
-                            debug!("Column {} not found in row", column);
-                            false
-                        }
-                    } else {
-                        false
-                    }
-                });
-                matches
-            }).collect();
-            debug!("Filtered from {} to {} rows", initial_count, filtered_data.len());
+            // Filter joined data based on enhanced WHERE conditions
+            let initial_count = joined_data.len();
+            let mut filtered_data = Vec::new();
 
-            conditions
+            for row in joined_data {
+                if self.evaluate_where_conditions(&enhanced_conditions, &row).await? {
+                    filtered_data.push(row);
+                }
+            }
+
+            joined_data = filtered_data;
+            debug!("WHERE clause filtered from {} to {} rows", initial_count, joined_data.len());
+
+            enhanced_conditions
         } else {
             Vec::new()
         };
 
         // Parse GROUP BY clause if present
-        let group_by = if let Some(group_pos) = remaining.to_lowercase().find(" group by ") {
+        let group_by = if let Some(group_pos) = after_from.to_lowercase().find(" group by ") {
             let group_start = group_pos + 10; // " group by " is 10 characters
-            let group_clause = &remaining[group_start..];
+            let group_clause = &after_from[group_start..];
 
             let group_end = group_clause.to_lowercase().find(" having ")
                 .or_else(|| group_clause.to_lowercase().find(" order by "))
@@ -880,9 +1054,9 @@ impl QueryExecutor {
         };
 
         // Parse HAVING clause if present
-        let having = if let Some(having_pos) = remaining.to_lowercase().find(" having ") {
+        let having = if let Some(having_pos) = after_from.to_lowercase().find(" having ") {
             let having_start = having_pos + 8; // " having " is 8 characters
-            let having_clause = &remaining[having_start..];
+            let having_clause = &after_from[having_start..];
 
             let having_end = having_clause.to_lowercase().find(" order by ")
                 .or_else(|| having_clause.to_lowercase().find(" limit "))
@@ -897,9 +1071,9 @@ impl QueryExecutor {
         };
 
         // Parse ORDER BY clause if present
-        let order_by = if let Some(order_pos) = remaining.to_lowercase().find(" order by ") {
+        let order_by = if let Some(order_pos) = after_from.to_lowercase().find(" order by ") {
             let order_start = order_pos + 10; // " order by " is 10 characters
-            let order_clause = &remaining[order_start..];
+            let order_clause = &after_from[order_start..];
 
             let order_end = order_clause.to_lowercase().find(" limit ")
                 .or_else(|| order_clause.to_lowercase().find(" as of "))
@@ -913,9 +1087,9 @@ impl QueryExecutor {
         };
 
         // Parse LIMIT clause if present
-        let limit = if let Some(limit_pos) = remaining.to_lowercase().find(" limit ") {
+        let limit = if let Some(limit_pos) = after_from.to_lowercase().find(" limit ") {
             let limit_start = limit_pos + 7; // " limit " is 7 characters
-            let limit_clause = &remaining[limit_start..];
+            let limit_clause = &after_from[limit_start..];
 
             let limit_end = limit_clause.to_lowercase().find(" as of ")
                 .unwrap_or(limit_clause.len());
@@ -927,70 +1101,18 @@ impl QueryExecutor {
             None
         };
 
-        // Handle AS OF for time travel
-        let sequence_to_query = if remaining.to_lowercase().contains(" as of ") {
-            // Parse AS OF clause: AS OF @seq:N
-            if let Some(as_of_idx) = remaining.to_lowercase().find(" as of ") {
-                let as_of_part = &remaining[as_of_idx + 7..].trim();
-                if as_of_part.starts_with("@seq:") {
-                    let seq_str = as_of_part[5..].split_whitespace().next().unwrap_or("");
-                    match seq_str.parse::<u64>() {
-                        Ok(seq) => {
-                            debug!("Time travel query: reconstructing state at sequence {}", seq);
-                            Some(seq)
-                        }
-                        Err(_) => {
-                            warn!("Invalid sequence number in AS OF clause: {}", seq_str);
-                            None
-                        }
-                    }
-                } else {
-                    // Could be timestamp format - not implemented yet
-                    warn!("Timestamp-based time travel not yet implemented: {}", as_of_part);
-                    None
-                }
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        // Reconstruct state at the specified sequence if time travel is requested
-        let filtered_data = if let Some(seq) = sequence_to_query {
-            // Time travel: reconstruct state at specific sequence
-            let engine = self.engine.read().await;
-            let mut time_travel_data = engine.get_table_data_at(&table_name, seq)
-                .map_err(|e| anyhow!("Failed to reconstruct state at sequence {}: {}", seq, e))?;
-
-            // Apply WHERE clause filtering to historical data
-            if !where_conditions.is_empty() {
-                let initial_count = time_travel_data.len();
-                time_travel_data = time_travel_data.into_iter().filter(|record| {
-                    where_conditions.iter().all(|(col, op, val)| {
-                        if let Some(field_value) = record.get(col) {
-                            self.matches_condition(field_value, op, val)
-                        } else {
-                            false
-                        }
-                    })
-                }).collect();
-                debug!("Time travel: Filtered from {} to {} rows", initial_count, time_travel_data.len());
-            }
-
-            // Note: ORDER BY and LIMIT will be applied later in the common code path
-            time_travel_data
-        } else {
-            // Current data with WHERE filtering (existing logic)
-            filtered_data
-        };
+        // Handle AS OF for time travel (simplified for JOINs - only works with single table for now)
+        if after_from.to_lowercase().contains(" as of ") {
+            warn!("AS OF (time travel) is not yet supported with JOIN queries");
+            return Err(anyhow!("AS OF clause is not supported with JOIN queries"));
+        }
 
         // Handle different types of queries based on SELECT clause and GROUP BY
         match (select_clause, group_by) {
-            // Pure aggregation without GROUP BY - original behavior
+            // Pure aggregation without GROUP BY
             (SelectClause::Aggregations(aggregations), None) => {
-                // Compute aggregation results
-                let (agg_columns, agg_values) = self.compute_aggregations(&filtered_data, &aggregations)?;
+                // Compute aggregation results on joined data
+                let (agg_columns, agg_values) = self.compute_aggregations(&joined_data, &aggregations)?;
 
                 debug!("Returning aggregation result with columns: {:?}", agg_columns);
                 Ok(QueryResult::Select {
@@ -1007,9 +1129,9 @@ impl QueryExecutor {
                     }
                 }
 
-                // Group the data
-                let mut groups = self.group_data(filtered_data, &group_by_clause)?;
-                debug!("Grouped data into {} groups", groups.len());
+                // Group the joined data
+                let mut groups = self.group_data(joined_data, &group_by_clause)?;
+                debug!("Grouped joined data into {} groups", groups.len());
 
                 // Apply HAVING clause if present
                 if let Some(having_clause) = having {
@@ -1040,9 +1162,9 @@ impl QueryExecutor {
             },
             // Aggregations with GROUP BY
             (SelectClause::Aggregations(aggregations), Some(group_by_clause)) => {
-                // Group the data
-                let mut groups = self.group_data(filtered_data, &group_by_clause)?;
-                debug!("Grouped data into {} groups", groups.len());
+                // Group the joined data
+                let mut groups = self.group_data(joined_data, &group_by_clause)?;
+                debug!("Grouped joined data into {} groups", groups.len());
 
                 // Apply HAVING clause if present
                 if let Some(having_clause) = having {
@@ -1071,21 +1193,33 @@ impl QueryExecutor {
                     rows: group_rows,
                 })
             },
-            // Column selection without GROUP BY - new functionality
+            // Column selection without GROUP BY
             (SelectClause::Columns(columns), None) => {
-                // Filter and format results for specific column selection
-                self.format_column_selection_results(filtered_data, &columns, order_by, limit)
+                // Filter and format results for specific column selection from joined data
+                self.format_join_column_selection_results(joined_data, &all_columns, &columns, order_by, limit)
             },
-            // Regular SELECT * or error cases
+            // DISTINCT column selection without GROUP BY
+            (SelectClause::ColumnsDistinct(columns), None) => {
+                // Apply DISTINCT to column selection from joined data
+                let distinct_data = self.apply_distinct(&joined_data, Some(&columns))?;
+                self.format_join_column_selection_results(distinct_data, &all_columns, &columns, order_by, limit)
+            },
+            // Regular SELECT *
             (SelectClause::All, None) => {
-                // Continue with regular SELECT * logic
-                self.format_select_all_results(filtered_data, order_by, limit)
+                // Format results for SELECT * from joined data
+                self.format_join_select_all_results(joined_data, all_columns, order_by, limit)
+            },
+            // SELECT DISTINCT *
+            (SelectClause::AllDistinct, None) => {
+                // Apply DISTINCT to all columns from joined data
+                let distinct_data = self.apply_distinct(&joined_data, None)?;
+                self.format_join_select_all_results(distinct_data, all_columns, order_by, limit)
             },
             // Error cases
-            (SelectClause::All, Some(_)) => {
+            (SelectClause::All | SelectClause::AllDistinct, Some(_)) => {
                 Err(anyhow!("SELECT * with GROUP BY is not supported"))
             },
-            (SelectClause::Columns(_, ), Some(_)) => {
+            (SelectClause::Columns(_) | SelectClause::ColumnsDistinct(_), Some(_)) => {
                 Err(anyhow!("Column selection with GROUP BY is not yet supported - use Mixed clause instead"))
             },
             (SelectClause::Mixed(_, _), None) => {
@@ -1204,7 +1338,7 @@ impl QueryExecutor {
     }
 
     async fn execute_insert(&self, sql: &str) -> Result<QueryResult> {
-        let mut engine = self.engine.write().await;
+        let mut engine = self.engine_write().await?;
 
         // Parse INSERT INTO table_name (columns) VALUES (values)
         let sql_clean = sql.trim().trim_end_matches(';');
@@ -1317,7 +1451,7 @@ impl QueryExecutor {
     }
 
     async fn execute_update(&self, sql: &str) -> Result<QueryResult> {
-        let mut engine = self.engine.write().await;
+        let mut engine = self.engine_write().await?;
 
         // Parse UPDATE table_name SET column = value [WHERE condition]
         let sql_clean = sql.trim().trim_end_matches(';');
@@ -1407,7 +1541,7 @@ impl QueryExecutor {
     }
 
     async fn execute_delete(&self, sql: &str) -> Result<QueryResult> {
-        let mut engine = self.engine.write().await;
+        let mut engine = self.engine_write().await?;
 
         // Parse DELETE FROM table_name [WHERE condition]
         let sql_clean = sql.trim().trim_end_matches(';');
@@ -1474,7 +1608,7 @@ impl QueryExecutor {
     }
 
     async fn execute_create_table(&self, sql: &str) -> Result<QueryResult> {
-        let mut engine = self.engine.write().await;
+        let mut engine = self.engine_write().await?;
 
         // Parse CREATE TABLE name (columns...)
         let lower = sql.to_lowercase();
@@ -1499,7 +1633,7 @@ impl QueryExecutor {
     }
 
     async fn execute_show(&self, sql: &str) -> Result<QueryResult> {
-        let engine = self.engine.read().await;
+        let engine = self.engine_read().await?;
         let lower = sql.to_lowercase();
 
         if lower.starts_with("show tables") {
@@ -1521,6 +1655,1597 @@ impl QueryExecutor {
             warn!("Unsupported SHOW command: {}", sql);
             Err(anyhow!("Unsupported SHOW command"))
         }
+    }
+
+    /// Parse FROM clause to extract table references and JOIN operations
+    fn parse_from_clause(&self, from_part: &str) -> Result<FromClause> {
+        let from_trimmed = from_part.trim();
+        let lower = from_trimmed.to_lowercase();
+
+        // Check for derived table (starts with parenthesized SELECT)
+        if let Some(derived_table) = self.parse_derived_table(from_trimmed)? {
+            // Check if derived table has JOINs
+            if lower.contains(" join ") || lower.contains(" inner join ") ||
+               lower.contains(" left join ") || lower.contains(" left outer join ") ||
+               lower.contains(" right join ") || lower.contains(" right outer join ") ||
+               lower.contains(" full join ") || lower.contains(" full outer join ") ||
+               lower.contains(" cross join ") {
+                self.parse_derived_table_with_joins(from_trimmed)
+            } else {
+                Ok(FromClause::DerivedTable(derived_table))
+            }
+        }
+        // Check for JOIN keywords
+        else if lower.contains(" join ") || lower.contains(" inner join ") ||
+           lower.contains(" left join ") || lower.contains(" left outer join ") ||
+           lower.contains(" right join ") || lower.contains(" right outer join ") ||
+           lower.contains(" full join ") || lower.contains(" full outer join ") ||
+           lower.contains(" cross join ") {
+            self.parse_explicit_joins(from_trimmed)
+        } else if from_trimmed.contains(',') {
+            // Comma-separated tables (implicit JOIN)
+            self.parse_implicit_joins(from_trimmed)
+        } else {
+            // Single table
+            self.parse_single_table(from_trimmed)
+        }
+    }
+
+    /// Parse single table reference
+    fn parse_single_table(&self, table_part: &str) -> Result<FromClause> {
+        let parts: Vec<&str> = table_part.split_whitespace().collect();
+
+        if parts.is_empty() {
+            return Err(anyhow!("Empty table specification"));
+        }
+
+        let table_name = parts[0].to_string();
+
+        // Check for alias
+        let table_alias = if parts.len() >= 2 {
+            // Handle both "table alias" and "table AS alias" forms
+            if parts.len() >= 3 && parts[1].to_lowercase() == "as" {
+                Some(parts[2].to_string())
+            } else {
+                Some(parts[1].to_string())
+            }
+        } else {
+            None
+        };
+
+        Ok(FromClause::Single(TableRef {
+            name: table_name,
+            alias: table_alias,
+        }))
+    }
+
+    /// Parse comma-separated tables for implicit JOIN
+    fn parse_implicit_joins(&self, from_part: &str) -> Result<FromClause> {
+        let table_parts: Vec<&str> = from_part.split(',').collect();
+        let mut tables = Vec::new();
+
+        for part in table_parts {
+            let part = part.trim();
+            if part.is_empty() {
+                continue;
+            }
+
+            let table_parts: Vec<&str> = part.split_whitespace().collect();
+            let table_name = table_parts[0].to_string();
+
+            let table_alias = if table_parts.len() >= 2 {
+                if table_parts.len() >= 3 && table_parts[1].to_lowercase() == "as" {
+                    Some(table_parts[2].to_string())
+                } else {
+                    Some(table_parts[1].to_string())
+                }
+            } else {
+                None
+            };
+
+            tables.push(TableRef {
+                name: table_name,
+                alias: table_alias,
+            });
+        }
+
+        if tables.is_empty() {
+            return Err(anyhow!("No tables specified"));
+        }
+
+        Ok(FromClause::MultipleImplicit(tables))
+    }
+
+    /// Parse explicit JOIN syntax
+    fn parse_explicit_joins(&self, from_part: &str) -> Result<FromClause> {
+        let lower = from_part.to_lowercase();
+
+        // Find the base table (before first JOIN)
+        let first_join_pos = lower.find(" join ")
+            .or_else(|| lower.find(" inner join "))
+            .or_else(|| lower.find(" left join "))
+            .or_else(|| lower.find(" left outer join "))
+            .or_else(|| lower.find(" right join "))
+            .or_else(|| lower.find(" right outer join "))
+            .or_else(|| lower.find(" full join "))
+            .or_else(|| lower.find(" full outer join "))
+            .or_else(|| lower.find(" cross join "))
+            .unwrap_or(from_part.len());
+
+        let base_table_part = from_part[..first_join_pos].trim();
+        let joins_part = if first_join_pos < from_part.len() {
+            from_part[first_join_pos..].trim()
+        } else {
+            ""
+        };
+
+        // Parse base table
+        let base_table = match self.parse_single_table(base_table_part)? {
+            FromClause::Single(table_ref) => table_ref,
+            _ => return Err(anyhow!("Invalid base table")),
+        };
+
+        // Parse JOINs
+        let joins = if joins_part.is_empty() {
+            Vec::new()
+        } else {
+            self.parse_joins(joins_part)?
+        };
+
+        Ok(FromClause::WithJoins {
+            base_table,
+            joins,
+        })
+    }
+
+    /// Parse individual JOIN clauses
+    fn parse_joins(&self, joins_part: &str) -> Result<Vec<Join>> {
+        let mut joins = Vec::new();
+        let mut remaining = joins_part;
+
+        while !remaining.is_empty() {
+            remaining = remaining.trim();
+
+            // Determine JOIN type
+            let (join_type, after_join_type) = if remaining.to_lowercase().starts_with("inner join ") {
+                (JoinType::Inner, &remaining[11..])
+            } else if remaining.to_lowercase().starts_with("left outer join ") {
+                (JoinType::LeftOuter, &remaining[16..])
+            } else if remaining.to_lowercase().starts_with("left join ") {
+                (JoinType::LeftOuter, &remaining[10..])
+            } else if remaining.to_lowercase().starts_with("right outer join ") {
+                (JoinType::RightOuter, &remaining[17..])
+            } else if remaining.to_lowercase().starts_with("right join ") {
+                (JoinType::RightOuter, &remaining[11..])
+            } else if remaining.to_lowercase().starts_with("full outer join ") {
+                (JoinType::FullOuter, &remaining[16..])
+            } else if remaining.to_lowercase().starts_with("full join ") {
+                (JoinType::FullOuter, &remaining[10..])
+            } else if remaining.to_lowercase().starts_with("cross join ") {
+                (JoinType::Cross, &remaining[11..])
+            } else if remaining.to_lowercase().starts_with("join ") {
+                (JoinType::Inner, &remaining[5..])
+            } else {
+                break; // No more JOINs
+            };
+
+            // Find the end of this JOIN clause (next JOIN or end of string)
+            let next_join_pos = after_join_type.to_lowercase().find(" join ")
+                .or_else(|| after_join_type.to_lowercase().find(" inner join "))
+                .or_else(|| after_join_type.to_lowercase().find(" left join "))
+                .or_else(|| after_join_type.to_lowercase().find(" left outer join "))
+                .or_else(|| after_join_type.to_lowercase().find(" right join "))
+                .or_else(|| after_join_type.to_lowercase().find(" right outer join "))
+                .or_else(|| after_join_type.to_lowercase().find(" full join "))
+                .or_else(|| after_join_type.to_lowercase().find(" full outer join "))
+                .or_else(|| after_join_type.to_lowercase().find(" cross join "));
+
+            let (join_clause, next_remaining) = if let Some(pos) = next_join_pos {
+                (&after_join_type[..pos], &after_join_type[pos..])
+            } else {
+                (after_join_type, "")
+            };
+
+            // Parse this JOIN
+            let join = self.parse_single_join(join_type, join_clause)?;
+            joins.push(join);
+
+            remaining = next_remaining;
+        }
+
+        Ok(joins)
+    }
+
+    /// Parse a single JOIN clause
+    fn parse_single_join(&self, join_type: JoinType, join_clause: &str) -> Result<Join> {
+        let join_clause = join_clause.trim();
+
+        // For CROSS JOIN, there's no ON clause
+        if join_type == JoinType::Cross {
+            // Parse table name and alias
+            let parts: Vec<&str> = join_clause.split_whitespace().collect();
+            if parts.is_empty() {
+                return Err(anyhow!("Missing table name in CROSS JOIN"));
+            }
+
+            let table_name = parts[0].to_string();
+            let table_alias = if parts.len() >= 2 {
+                if parts.len() >= 3 && parts[1].to_lowercase() == "as" {
+                    Some(parts[2].to_string())
+                } else {
+                    Some(parts[1].to_string())
+                }
+            } else {
+                None
+            };
+
+            return Ok(Join {
+                join_type,
+                table: table_name,
+                table_alias,
+                condition: None,
+            });
+        }
+
+        // Find ON clause
+        let on_pos = join_clause.to_lowercase().find(" on ");
+        if on_pos.is_none() {
+            return Err(anyhow!("Missing ON clause in JOIN"));
+        }
+
+        let on_pos = on_pos.unwrap();
+        let table_part = join_clause[..on_pos].trim();
+        let on_part = join_clause[on_pos + 4..].trim(); // Skip " on "
+
+        // Parse table name and alias
+        let parts: Vec<&str> = table_part.split_whitespace().collect();
+        if parts.is_empty() {
+            return Err(anyhow!("Missing table name in JOIN"));
+        }
+
+        let table_name = parts[0].to_string();
+        let table_alias = if parts.len() >= 2 {
+            if parts.len() >= 3 && parts[1].to_lowercase() == "as" {
+                Some(parts[2].to_string())
+            } else {
+                Some(parts[1].to_string())
+            }
+        } else {
+            None
+        };
+
+        // Parse ON condition
+        let condition = self.parse_join_condition(on_part)?;
+
+        Ok(Join {
+            join_type,
+            table: table_name,
+            table_alias,
+            condition: Some(condition),
+        })
+    }
+
+    /// Parse JOIN condition (e.g., "t1.id = t2.user_id")
+    fn parse_join_condition(&self, on_clause: &str) -> Result<JoinCondition> {
+        let on_clause = on_clause.trim();
+
+        // Simple condition parsing - supports =, !=, <, >, <=, >=
+        let operators = ["!=", "<=", ">=", "=", "<", ">"];
+
+        for op in &operators {
+            if let Some(op_pos) = on_clause.find(op) {
+                let left_part = on_clause[..op_pos].trim();
+                let right_part = on_clause[op_pos + op.len()..].trim();
+
+                // Parse left side (table.column)
+                let (left_table, left_column) = self.parse_column_reference(left_part)?;
+
+                // Parse right side (table.column)
+                let (right_table, right_column) = self.parse_column_reference(right_part)?;
+
+                return Ok(JoinCondition {
+                    left_table,
+                    left_column,
+                    right_table,
+                    right_column,
+                    operator: op.to_string(),
+                });
+            }
+        }
+
+        Err(anyhow!("Invalid JOIN condition: {}", on_clause))
+    }
+
+    /// Parse column reference (table.column or just column)
+    fn parse_column_reference(&self, column_ref: &str) -> Result<(String, String)> {
+        let column_ref = column_ref.trim();
+
+        if let Some(dot_pos) = column_ref.find('.') {
+            let table_part = column_ref[..dot_pos].trim();
+            let column_part = column_ref[dot_pos + 1..].trim();
+
+            if table_part.is_empty() || column_part.is_empty() {
+                return Err(anyhow!("Invalid column reference: {}", column_ref));
+            }
+
+            Ok((table_part.to_string(), column_part.to_string()))
+        } else {
+            // No table specified - we'll need to infer it during execution
+            Ok(("".to_string(), column_ref.to_string()))
+        }
+    }
+
+    /// Parse enhanced WHERE clause with subquery support
+    fn parse_enhanced_where_clause(&self, where_clause: &str) -> Result<Vec<WhereCondition>> {
+        let mut conditions = Vec::new();
+
+        // Split by AND (simple parser for now - could be enhanced for OR support)
+        let parts: Vec<&str> = where_clause.split(" AND ").collect();
+
+        for part in parts {
+            let trimmed = part.trim();
+
+            // Check for subquery patterns
+            if let Some(condition) = self.try_parse_subquery_condition(trimmed)? {
+                conditions.push(WhereCondition::Subquery(condition));
+            } else {
+                // Fall back to simple condition parsing
+                let simple_condition = self.parse_simple_condition(trimmed)?;
+                conditions.push(WhereCondition::Simple {
+                    column: simple_condition.0,
+                    operator: simple_condition.1,
+                    value: simple_condition.2,
+                });
+            }
+        }
+
+        Ok(conditions)
+    }
+
+    /// Try to parse a subquery condition (IN, EXISTS, ANY/ALL comparisons)
+    fn try_parse_subquery_condition(&self, condition: &str) -> Result<Option<SubqueryExpression>> {
+        let condition_lower = condition.to_lowercase();
+
+        // Check for EXISTS pattern
+        if condition_lower.starts_with("exists (") || condition_lower.starts_with("not exists (") {
+            return self.parse_exists_condition(condition);
+        }
+
+        // Check for IN pattern
+        if condition_lower.contains(" in (") || condition_lower.contains(" not in (") {
+            return self.parse_in_condition(condition);
+        }
+
+        // Check for ANY/ALL patterns
+        if condition_lower.contains(" any (") || condition_lower.contains(" all (") {
+            return self.parse_any_all_condition(condition);
+        }
+
+        // Check for scalar subquery comparisons (contains parenthesized SELECT)
+        if condition_lower.contains("(select ") {
+            return self.parse_scalar_subquery_condition(condition);
+        }
+
+        Ok(None)
+    }
+
+    /// Parse simple WHERE condition (non-subquery)
+    fn parse_simple_condition(&self, condition: &str) -> Result<(String, String, Value)> {
+        // Parse column = value (support =, >, <, >=, <=, !=)
+        let operators = ["!=", ">=", "<=", "=", ">", "<"];
+
+        for op in &operators {
+            if let Some(op_pos) = condition.find(op) {
+                let column = condition[..op_pos].trim();
+                let value_str = condition[op_pos + op.len()..].trim();
+
+                // Parse value
+                let value = self.parse_sql_value(value_str)?;
+
+                return Ok((column.to_string(), op.to_string(), value));
+            }
+        }
+
+        Err(anyhow!("Invalid WHERE condition: {}", condition))
+    }
+
+    /// Parse EXISTS/NOT EXISTS condition
+    fn parse_exists_condition(&self, condition: &str) -> Result<Option<SubqueryExpression>> {
+        let condition_lower = condition.to_lowercase();
+        let negated = condition_lower.starts_with("not exists");
+
+        let start_pattern = if negated { "not exists (" } else { "exists (" };
+        let start_pos = condition_lower.find(start_pattern)
+            .ok_or_else(|| anyhow!("Invalid EXISTS condition"))?;
+
+        // Extract subquery from parentheses
+        let subquery_start = start_pos + start_pattern.len();
+        let subquery_sql = self.extract_parenthesized_subquery(&condition[subquery_start..])?;
+
+        let subquery = self.parse_subquery(&subquery_sql)?;
+
+        Ok(Some(SubqueryExpression::Exists { subquery, negated }))
+    }
+
+    /// Parse IN/NOT IN condition
+    fn parse_in_condition(&self, condition: &str) -> Result<Option<SubqueryExpression>> {
+        let condition_lower = condition.to_lowercase();
+        let negated = condition_lower.contains(" not in (");
+
+        let in_pattern = if negated { " not in (" } else { " in (" };
+        let in_pos = condition_lower.find(in_pattern)
+            .ok_or_else(|| anyhow!("Invalid IN condition"))?;
+
+        let column = condition[..in_pos].trim().to_string();
+        let subquery_start = in_pos + in_pattern.len();
+        let subquery_sql = self.extract_parenthesized_subquery(&condition[subquery_start..])?;
+
+        let subquery = self.parse_subquery(&subquery_sql)?;
+
+        Ok(Some(SubqueryExpression::In { column, subquery, negated }))
+    }
+
+    /// Parse ANY/ALL comparison condition
+    fn parse_any_all_condition(&self, condition: &str) -> Result<Option<SubqueryExpression>> {
+        let condition_lower = condition.to_lowercase();
+
+        let (quantifier, pattern) = if condition_lower.contains(" any (") {
+            (SubqueryQuantifier::Any, " any (")
+        } else if condition_lower.contains(" all (") {
+            (SubqueryQuantifier::All, " all (")
+        } else {
+            return Ok(None);
+        };
+
+        let quantifier_pos = condition_lower.find(pattern)
+            .ok_or_else(|| anyhow!("Invalid ANY/ALL condition"))?;
+
+        // Parse the left side: column operator
+        let left_part = condition[..quantifier_pos].trim();
+        let operators = ["!=", ">=", "<=", "=", ">", "<"];
+
+        let mut column = String::new();
+        let mut operator = String::new();
+
+        for op in &operators {
+            if let Some(op_pos) = left_part.rfind(op) {
+                column = left_part[..op_pos].trim().to_string();
+                operator = op.to_string();
+                break;
+            }
+        }
+
+        if column.is_empty() || operator.is_empty() {
+            return Err(anyhow!("Invalid ANY/ALL condition format"));
+        }
+
+        let subquery_start = quantifier_pos + pattern.len();
+        let subquery_sql = self.extract_parenthesized_subquery(&condition[subquery_start..])?;
+
+        let subquery = self.parse_subquery(&subquery_sql)?;
+
+        Ok(Some(SubqueryExpression::Comparison {
+            column,
+            operator,
+            quantifier: Some(quantifier),
+            subquery,
+        }))
+    }
+
+    /// Parse scalar subquery comparison condition
+    fn parse_scalar_subquery_condition(&self, condition: &str) -> Result<Option<SubqueryExpression>> {
+        let operators = ["!=", ">=", "<=", "=", ">", "<"];
+
+        for op in &operators {
+            if let Some(op_pos) = condition.find(op) {
+                let left_part = condition[..op_pos].trim();
+                let right_part = condition[op_pos + op.len()..].trim();
+
+                // Check if right side is a subquery
+                if right_part.starts_with('(') && right_part.to_lowercase().contains("select ") {
+                    let subquery_sql = self.extract_parenthesized_subquery(right_part)?;
+                    let subquery = self.parse_subquery(&subquery_sql)?;
+
+                    return Ok(Some(SubqueryExpression::Comparison {
+                        column: left_part.to_string(),
+                        operator: op.to_string(),
+                        quantifier: None, // Scalar subquery
+                        subquery,
+                    }));
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
+    /// Extract SQL from parentheses, handling nested parentheses
+    fn extract_parenthesized_subquery(&self, text: &str) -> Result<String> {
+        let text = text.trim();
+        if !text.starts_with('(') {
+            return Err(anyhow!("Expected parenthesized subquery"));
+        }
+
+        let mut paren_count = 0;
+        let mut end_pos = 0;
+
+        for (i, ch) in text.char_indices() {
+            match ch {
+                '(' => paren_count += 1,
+                ')' => {
+                    paren_count -= 1;
+                    if paren_count == 0 {
+                        end_pos = i;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if paren_count != 0 {
+            return Err(anyhow!("Unmatched parentheses in subquery"));
+        }
+
+        Ok(text[1..end_pos].to_string())
+    }
+
+    /// Parse a subquery and determine if it's correlated
+    fn parse_subquery(&self, sql: &str) -> Result<Subquery> {
+        let sql = sql.trim();
+
+        // Simple correlation detection - look for unqualified column references
+        // that might reference outer query tables
+        let referenced_columns = self.extract_potential_correlation_columns(sql);
+        let is_correlated = !referenced_columns.is_empty();
+
+        Ok(Subquery {
+            sql: sql.to_string(),
+            is_correlated,
+            referenced_columns,
+        })
+    }
+
+    /// Extract potential correlation columns from subquery
+    fn extract_potential_correlation_columns(&self, sql: &str) -> Vec<String> {
+        // This is a simplified implementation
+        // In practice, you'd want more sophisticated parsing to distinguish
+        // between columns from subquery tables vs outer query references
+        Vec::new() // For now, assume non-correlated
+    }
+
+    /// Parse scalar subqueries in SELECT clause
+    fn parse_select_clause_with_subqueries(&self, select_part: &str) -> Result<Vec<ExtendedSelectItem>> {
+        let mut items = Vec::new();
+
+        // Split by commas, but be careful of commas inside subqueries
+        let parts = self.split_select_items(select_part)?;
+
+        for part in parts {
+            let part = part.trim();
+
+            // Check if this is a scalar subquery
+            if part.starts_with('(') && part.to_lowercase().contains("select ") {
+                let subquery_sql = self.extract_parenthesized_subquery(part)?;
+                let subquery = self.parse_subquery(&subquery_sql)?;
+
+                items.push(ExtendedSelectItem::ScalarSubquery(ScalarSubquery {
+                    subquery,
+                    alias: None, // Could be enhanced to parse AS alias
+                }));
+            } else if let Ok(Some(agg)) = self.parse_aggregation_function(part) {
+                items.push(ExtendedSelectItem::Aggregation(agg));
+            } else {
+                items.push(ExtendedSelectItem::Column(part.to_string()));
+            }
+        }
+
+        Ok(items)
+    }
+
+    /// Split SELECT items by commas, respecting parentheses
+    fn split_select_items(&self, select_part: &str) -> Result<Vec<String>> {
+        let mut items = Vec::new();
+        let mut current_item = String::new();
+        let mut paren_count = 0;
+        let mut in_quotes = false;
+        let mut quote_char = '\0';
+
+        for ch in select_part.chars() {
+            match ch {
+                '"' | '\'' if !in_quotes => {
+                    in_quotes = true;
+                    quote_char = ch;
+                    current_item.push(ch);
+                }
+                c if in_quotes && c == quote_char => {
+                    in_quotes = false;
+                    current_item.push(ch);
+                }
+                '(' if !in_quotes => {
+                    paren_count += 1;
+                    current_item.push(ch);
+                }
+                ')' if !in_quotes => {
+                    paren_count -= 1;
+                    current_item.push(ch);
+                }
+                ',' if !in_quotes && paren_count == 0 => {
+                    items.push(current_item.trim().to_string());
+                    current_item.clear();
+                }
+                _ => {
+                    current_item.push(ch);
+                }
+            }
+        }
+
+        if !current_item.trim().is_empty() {
+            items.push(current_item.trim().to_string());
+        }
+
+        Ok(items)
+    }
+
+    /// Parse derived table in FROM clause
+    fn parse_derived_table(&self, from_part: &str) -> Result<Option<DerivedTable>> {
+        let from_part = from_part.trim();
+
+        // Check if it starts with a parenthesized SELECT
+        if from_part.starts_with('(') && from_part.to_lowercase().contains("select ") {
+            // Find the end of the subquery and extract alias
+            let subquery_sql = self.extract_parenthesized_subquery(from_part)?;
+
+            // Look for alias after the closing parenthesis
+            let remaining = &from_part[subquery_sql.len() + 2..].trim(); // +2 for parentheses
+            let alias = if remaining.to_lowercase().starts_with("as ") {
+                remaining[3..].trim().split_whitespace().next()
+                    .ok_or_else(|| anyhow!("Missing alias for derived table"))?
+                    .to_string()
+            } else {
+                remaining.split_whitespace().next()
+                    .ok_or_else(|| anyhow!("Missing alias for derived table"))?
+                    .to_string()
+            };
+
+            let subquery = self.parse_subquery(&subquery_sql)?;
+
+            Ok(Some(DerivedTable { subquery, alias }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Execute a subquery and return its results (with caching for non-correlated subqueries)
+    async fn execute_subquery(&self, subquery: &Subquery, outer_row: Option<&Value>) -> Result<QueryResult> {
+        // If this is a correlated subquery, we need to pass the outer row context
+        if subquery.is_correlated && outer_row.is_some() {
+            self.execute_correlated_subquery(subquery, outer_row.unwrap()).await
+        } else {
+            // Non-correlated subquery - check cache first
+            let cache_key = subquery.sql.clone();
+
+            // Check if we have a cached result
+            {
+                let cache = self.subquery_cache.lock().await;
+                if let Some(cached_result) = cache.get(&cache_key) {
+                    debug!("Using cached result for subquery: {}", cache_key);
+                    return Ok(cached_result.clone());
+                }
+            }
+
+            // Execute the subquery - box the future to avoid recursion issues
+            let result = Box::pin(self.execute(subquery.sql.as_str())).await?;
+
+            // Cache the result for future use
+            {
+                let mut cache = self.subquery_cache.lock().await;
+                cache.insert(cache_key, result.clone());
+                debug!("Cached result for subquery: {}", subquery.sql);
+            }
+
+            Ok(result)
+        }
+    }
+
+    /// Execute a correlated subquery with outer row context
+    async fn execute_correlated_subquery(&self, subquery: &Subquery, outer_row: &Value) -> Result<QueryResult> {
+        // For now, treat as regular subquery
+        // In a full implementation, you'd substitute correlation variables
+        // with values from the outer row before execution
+        Box::pin(self.execute(subquery.sql.as_str())).await
+    }
+
+    /// Evaluate WHERE conditions with subquery support
+    async fn evaluate_where_conditions(&self, conditions: &[WhereCondition], row: &Value) -> Result<bool> {
+        for condition in conditions {
+            match condition {
+                WhereCondition::Simple { column, operator, value } => {
+                    if let Value::Object(map) = row {
+                        let field_value = map.get(column)
+                            .or_else(|| {
+                                // Try to find column with any table prefix
+                                map.iter().find(|(key, _)| {
+                                    key.ends_with(&format!(".{}", column)) || key == &column
+                                }).map(|(_, v)| v)
+                            })
+                            .cloned()
+                            .unwrap_or(Value::Null);
+
+                        if field_value.is_null() {
+                            return Ok(false);
+                        }
+
+                        if !self.matches_condition(&field_value, operator, value) {
+                            return Ok(false);
+                        }
+                    } else {
+                        return Ok(false);
+                    }
+                }
+                WhereCondition::Subquery(subquery_expr) => {
+                    if !self.evaluate_subquery_condition(subquery_expr, row).await? {
+                        return Ok(false);
+                    }
+                }
+            }
+        }
+        Ok(true)
+    }
+
+    /// Evaluate a subquery condition
+    async fn evaluate_subquery_condition(&self, expr: &SubqueryExpression, row: &Value) -> Result<bool> {
+        match expr {
+            SubqueryExpression::In { column, subquery, negated } => {
+                let result = self.evaluate_in_subquery(column, subquery, row).await?;
+                Ok(if *negated { !result } else { result })
+            }
+            SubqueryExpression::Exists { subquery, negated } => {
+                let result = self.evaluate_exists_subquery(subquery, row).await?;
+                Ok(if *negated { !result } else { result })
+            }
+            SubqueryExpression::Comparison { column, operator, quantifier, subquery } => {
+                self.evaluate_comparison_subquery(column, operator, quantifier.as_ref(), subquery, row).await
+            }
+        }
+    }
+
+    /// Evaluate IN subquery condition
+    async fn evaluate_in_subquery(&self, column: &str, subquery: &Subquery, row: &Value) -> Result<bool> {
+        // Get the column value from the row
+        let column_value = if let Value::Object(map) = row {
+            map.get(column)
+                .or_else(|| {
+                    map.iter().find(|(key, _)| {
+                        key.ends_with(&format!(".{}", column)) || key == &column
+                    }).map(|(_, v)| v)
+                })
+                .cloned()
+                .unwrap_or(Value::Null)
+        } else {
+            Value::Null
+        };
+
+        if column_value.is_null() {
+            return Ok(false);
+        }
+
+        // Execute the subquery
+        let subquery_result = self.execute_subquery(subquery, Some(row)).await?;
+
+        // Check if the column value is in the subquery results
+        match subquery_result {
+            QueryResult::Select { rows, .. } => {
+                for result_row in rows {
+                    if !result_row.is_empty() && result_row[0] == column_value {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            }
+            _ => Err(anyhow!("Subquery in IN clause must return a result set"))
+        }
+    }
+
+    /// Evaluate EXISTS subquery condition
+    async fn evaluate_exists_subquery(&self, subquery: &Subquery, row: &Value) -> Result<bool> {
+        let subquery_result = self.execute_subquery(subquery, Some(row)).await?;
+
+        match subquery_result {
+            QueryResult::Select { rows, .. } => Ok(!rows.is_empty()),
+            _ => Err(anyhow!("Subquery in EXISTS clause must return a result set"))
+        }
+    }
+
+    /// Evaluate comparison subquery with ANY/ALL or scalar
+    async fn evaluate_comparison_subquery(
+        &self,
+        column: &str,
+        operator: &str,
+        quantifier: Option<&SubqueryQuantifier>,
+        subquery: &Subquery,
+        row: &Value,
+    ) -> Result<bool> {
+        // Get the column value from the row
+        let column_value = if let Value::Object(map) = row {
+            map.get(column)
+                .or_else(|| {
+                    map.iter().find(|(key, _)| {
+                        key.ends_with(&format!(".{}", column)) || key == &column
+                    }).map(|(_, v)| v)
+                })
+                .cloned()
+                .unwrap_or(Value::Null)
+        } else {
+            Value::Null
+        };
+
+        if column_value.is_null() {
+            return Ok(false);
+        }
+
+        // Execute the subquery
+        let subquery_result = self.execute_subquery(subquery, Some(row)).await?;
+
+        match subquery_result {
+            QueryResult::Select { rows, .. } => {
+                match quantifier {
+                    Some(SubqueryQuantifier::Any) => {
+                        // ANY: true if comparison is true for at least one value
+                        for result_row in rows {
+                            if !result_row.is_empty() && self.matches_condition(&column_value, operator, &result_row[0]) {
+                                return Ok(true);
+                            }
+                        }
+                        Ok(false)
+                    }
+                    Some(SubqueryQuantifier::All) => {
+                        // ALL: true if comparison is true for all values
+                        for result_row in rows {
+                            if !result_row.is_empty() && !self.matches_condition(&column_value, operator, &result_row[0]) {
+                                return Ok(false);
+                            }
+                        }
+                        Ok(true)
+                    }
+                    None => {
+                        // Scalar subquery: must return exactly one value
+                        if rows.len() != 1 || rows[0].is_empty() {
+                            return Err(anyhow!("Scalar subquery must return exactly one value"));
+                        }
+                        Ok(self.matches_condition(&column_value, operator, &rows[0][0]))
+                    }
+                }
+            }
+            _ => Err(anyhow!("Subquery in comparison must return a result set"))
+        }
+    }
+
+    /// Execute scalar subquery in SELECT clause
+    async fn execute_scalar_subquery(&self, scalar_subquery: &ScalarSubquery, outer_row: Option<&Value>) -> Result<Value> {
+        let subquery_result = self.execute_subquery(&scalar_subquery.subquery, outer_row).await?;
+
+        match subquery_result {
+            QueryResult::Select { mut rows, .. } => {
+                if rows.len() != 1 || rows[0].is_empty() {
+                    return Err(anyhow!("Scalar subquery must return exactly one value"));
+                }
+                Ok(rows.pop().unwrap().pop().unwrap())
+            }
+            _ => Err(anyhow!("Scalar subquery must return a result set"))
+        }
+    }
+
+    /// Execute derived table (subquery in FROM clause)
+    async fn execute_derived_table(&self, derived_table: &DerivedTable) -> Result<(Vec<Value>, Vec<String>)> {
+        let subquery_result = self.execute_subquery(&derived_table.subquery, None).await?;
+
+        match subquery_result {
+            QueryResult::Select { rows, columns } => {
+                // Prefix column names with the alias
+                let prefixed_columns: Vec<String> = columns.iter()
+                    .map(|col| format!("{}.{}", derived_table.alias, col))
+                    .collect();
+
+                Ok((rows.into_iter().map(|row| {
+                    // Convert each row to an object with prefixed column names
+                    let mut map = serde_json::Map::new();
+                    for (i, value) in row.into_iter().enumerate() {
+                        if i < prefixed_columns.len() {
+                            map.insert(prefixed_columns[i].clone(), value);
+                        }
+                    }
+                    Value::Object(map)
+                }).collect(), prefixed_columns))
+            }
+            _ => Err(anyhow!("Derived table subquery must return a result set"))
+        }
+    }
+
+    /// Parse derived table with JOINs
+    fn parse_derived_table_with_joins(&self, from_part: &str) -> Result<FromClause> {
+        // Extract the derived table part and the JOIN parts
+        let subquery_end_pos = self.find_subquery_end_position(from_part)?;
+
+        // Find the alias
+        let after_subquery = &from_part[subquery_end_pos..].trim();
+        let alias_end = after_subquery.find(" JOIN ")
+            .or_else(|| after_subquery.find(" INNER JOIN "))
+            .or_else(|| after_subquery.find(" LEFT JOIN "))
+            .or_else(|| after_subquery.find(" RIGHT JOIN "))
+            .or_else(|| after_subquery.find(" FULL JOIN "))
+            .or_else(|| after_subquery.find(" CROSS JOIN "))
+            .unwrap_or(after_subquery.len());
+
+        let alias_part = after_subquery[..alias_end].trim();
+        let joins_part = &after_subquery[alias_end..];
+
+        // Parse the derived table
+        let derived_table_with_alias = format!("{}{}", &from_part[..subquery_end_pos], alias_part);
+        let derived_table = self.parse_derived_table(&derived_table_with_alias)?
+            .ok_or_else(|| anyhow!("Failed to parse derived table"))?;
+
+        // Parse the JOINs
+        let joins = self.parse_joins(joins_part)?;
+
+        Ok(FromClause::DerivedTableWithJoins {
+            base_table: derived_table,
+            joins,
+        })
+    }
+
+    /// Find the end position of a subquery in FROM clause
+    fn find_subquery_end_position(&self, from_part: &str) -> Result<usize> {
+        let mut paren_count = 0;
+        let mut in_quotes = false;
+        let mut quote_char = '\0';
+
+        for (i, ch) in from_part.char_indices() {
+            match ch {
+                '"' | '\'' if !in_quotes => {
+                    in_quotes = true;
+                    quote_char = ch;
+                }
+                c if in_quotes && c == quote_char => {
+                    in_quotes = false;
+                }
+                '(' if !in_quotes => {
+                    paren_count += 1;
+                }
+                ')' if !in_quotes => {
+                    paren_count -= 1;
+                    if paren_count == 0 {
+                        return Ok(i + 1);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        Err(anyhow!("Unmatched parentheses in derived table"))
+    }
+
+    /// Execute JOIN operation
+    async fn execute_join(&self, from_clause: &FromClause) -> Result<(Vec<Value>, Vec<String>)> {
+        let engine = self.engine_read().await?;
+
+        match from_clause {
+            FromClause::Single(table_ref) => {
+                // Single table - no JOIN needed
+                let table_data = engine.get_table_data(&table_ref.name)
+                    .map_err(|e| anyhow!("Failed to get table data: {}", e))?;
+
+                // Create column names with table prefix if alias exists
+                let columns = self.get_table_columns(&engine, &table_ref.name).await?;
+                let prefixed_columns = if let Some(alias) = &table_ref.alias {
+                    columns.iter().map(|col| format!("{}.{}", alias, col)).collect()
+                } else {
+                    columns.iter().map(|col| format!("{}.{}", table_ref.name, col)).collect()
+                };
+
+                Ok((table_data, prefixed_columns))
+            }
+            FromClause::MultipleImplicit(tables) => {
+                // Implicit JOIN (CROSS JOIN with WHERE clause filtering)
+                self.execute_implicit_join(tables).await
+            }
+            FromClause::WithJoins { base_table, joins } => {
+                // Explicit JOINs
+                self.execute_explicit_joins(base_table, joins).await
+            }
+            FromClause::DerivedTable(derived_table) => {
+                // Derived table (subquery in FROM clause)
+                self.execute_derived_table(derived_table).await
+            }
+            FromClause::DerivedTableWithJoins { base_table, joins } => {
+                // Derived table with JOINs
+                let (mut base_data, mut all_columns) = self.execute_derived_table(base_table).await?;
+
+                // Execute each JOIN
+                for join in joins {
+                    let (joined_data, joined_columns) = self.execute_single_join(&base_data, &all_columns, join).await?;
+                    base_data = joined_data;
+                    all_columns.extend(joined_columns);
+                }
+
+                Ok((base_data, all_columns))
+            }
+        }
+    }
+
+    /// Execute implicit JOIN (cross product of multiple tables)
+    async fn execute_implicit_join(&self, tables: &[TableRef]) -> Result<(Vec<Value>, Vec<String>)> {
+        let engine = self.engine_read().await?;
+
+        if tables.is_empty() {
+            return Err(anyhow!("No tables specified for implicit JOIN"));
+        }
+
+        // Get data for all tables
+        let mut table_data = Vec::new();
+        let mut all_columns = Vec::new();
+
+        for table_ref in tables {
+            let data = engine.get_table_data(&table_ref.name)
+                .map_err(|e| anyhow!("Failed to get table data for {}: {}", table_ref.name, e))?;
+
+            let columns = self.get_table_columns(&engine, &table_ref.name).await?;
+            let table_prefix = table_ref.alias.as_ref().unwrap_or(&table_ref.name);
+            let prefixed_columns: Vec<String> = columns.iter()
+                .map(|col| format!("{}.{}", table_prefix, col))
+                .collect();
+
+            table_data.push(data);
+            all_columns.extend(prefixed_columns);
+        }
+
+        // Create Cartesian product
+        let joined_rows = self.create_cartesian_product(&table_data);
+
+        Ok((joined_rows, all_columns))
+    }
+
+    /// Execute explicit JOINs
+    async fn execute_explicit_joins(
+        &self,
+        base_table: &TableRef,
+        joins: &[Join]
+    ) -> Result<(Vec<Value>, Vec<String>)> {
+        let engine = self.engine_read().await?;
+
+        // Start with base table
+        let mut current_data = engine.get_table_data(&base_table.name)
+            .map_err(|e| anyhow!("Failed to get base table data: {}", e))?;
+
+        let mut current_columns = self.get_table_columns(&engine, &base_table.name).await?;
+        let base_prefix = base_table.alias.as_ref().unwrap_or(&base_table.name);
+        current_columns = current_columns.iter()
+            .map(|col| format!("{}.{}", base_prefix, col))
+            .collect();
+
+        // Apply each JOIN in sequence
+        for join in joins {
+            let (new_data, new_columns) = self.execute_single_join(
+                &current_data,
+                &current_columns,
+                join
+            ).await?;
+
+            current_data = new_data;
+            current_columns = new_columns;
+        }
+
+        Ok((current_data, current_columns))
+    }
+
+    /// Execute a single JOIN operation
+    async fn execute_single_join(
+        &self,
+        left_data: &[Value],
+        left_columns: &[String],
+        join: &Join
+    ) -> Result<(Vec<Value>, Vec<String>)> {
+        let engine = self.engine_read().await?;
+
+        // Get right table data
+        let right_data = engine.get_table_data(&join.table)
+            .map_err(|e| anyhow!("Failed to get table data for {}: {}", join.table, e))?;
+
+        let right_table_columns = self.get_table_columns(&engine, &join.table).await?;
+        let right_prefix = join.table_alias.as_ref().unwrap_or(&join.table);
+        let right_columns: Vec<String> = right_table_columns.iter()
+            .map(|col| format!("{}.{}", right_prefix, col))
+            .collect();
+
+        // Combine column lists
+        let mut combined_columns = left_columns.to_vec();
+        combined_columns.extend(right_columns.clone());
+
+        match join.join_type {
+            JoinType::Inner => {
+                self.execute_inner_join(left_data, &right_data, join, &combined_columns)
+            }
+            JoinType::LeftOuter => {
+                self.execute_left_join(left_data, &right_data, join, &combined_columns)
+            }
+            JoinType::RightOuter => {
+                self.execute_right_join(left_data, &right_data, join, &combined_columns)
+            }
+            JoinType::FullOuter => {
+                self.execute_full_outer_join(left_data, &right_data, join, &combined_columns)
+            }
+            JoinType::Cross => {
+                self.execute_cross_join(left_data, &right_data, &combined_columns)
+            }
+        }
+    }
+
+    /// Execute INNER JOIN
+    fn execute_inner_join(
+        &self,
+        left_data: &[Value],
+        right_data: &[Value],
+        join: &Join,
+        combined_columns: &[String]
+    ) -> Result<(Vec<Value>, Vec<String>)> {
+        let mut result_rows = Vec::new();
+
+        for left_row in left_data {
+            for right_row in right_data {
+                if self.join_condition_matches(left_row, right_row, join)? {
+                    let combined_row = self.combine_rows(left_row, right_row)?;
+                    result_rows.push(combined_row);
+                }
+            }
+        }
+
+        Ok((result_rows, combined_columns.to_vec()))
+    }
+
+    /// Execute LEFT JOIN
+    fn execute_left_join(
+        &self,
+        left_data: &[Value],
+        right_data: &[Value],
+        join: &Join,
+        combined_columns: &[String]
+    ) -> Result<(Vec<Value>, Vec<String>)> {
+        let mut result_rows = Vec::new();
+
+        for left_row in left_data {
+            let mut found_match = false;
+
+            for right_row in right_data {
+                if self.join_condition_matches(left_row, right_row, join)? {
+                    let combined_row = self.combine_rows(left_row, right_row)?;
+                    result_rows.push(combined_row);
+                    found_match = true;
+                }
+            }
+
+            // If no match found, add left row with NULLs for right side
+            if !found_match {
+                let null_right = self.create_null_row_for_table(&join.table, join.table_alias.as_ref())?;
+                let combined_row = self.combine_rows(left_row, &null_right)?;
+                result_rows.push(combined_row);
+            }
+        }
+
+        Ok((result_rows, combined_columns.to_vec()))
+    }
+
+    /// Execute RIGHT JOIN
+    fn execute_right_join(
+        &self,
+        left_data: &[Value],
+        right_data: &[Value],
+        join: &Join,
+        combined_columns: &[String]
+    ) -> Result<(Vec<Value>, Vec<String>)> {
+        let mut result_rows = Vec::new();
+
+        for right_row in right_data {
+            let mut found_match = false;
+
+            for left_row in left_data {
+                if self.join_condition_matches(left_row, right_row, join)? {
+                    let combined_row = self.combine_rows(left_row, right_row)?;
+                    result_rows.push(combined_row);
+                    found_match = true;
+                }
+            }
+
+            // If no match found, add right row with NULLs for left side
+            if !found_match {
+                // Create a null row for the left side - we need to determine left table info
+                let null_left = self.create_null_row_from_columns(&combined_columns[..combined_columns.len() - self.count_right_columns(join)?])?;
+                let combined_row = self.combine_rows(&null_left, right_row)?;
+                result_rows.push(combined_row);
+            }
+        }
+
+        Ok((result_rows, combined_columns.to_vec()))
+    }
+
+    /// Execute FULL OUTER JOIN
+    fn execute_full_outer_join(
+        &self,
+        left_data: &[Value],
+        right_data: &[Value],
+        join: &Join,
+        combined_columns: &[String]
+    ) -> Result<(Vec<Value>, Vec<String>)> {
+        let mut result_rows = Vec::new();
+        let mut matched_right_indices = std::collections::HashSet::new();
+
+        // Process left side (like LEFT JOIN)
+        for left_row in left_data {
+            let mut found_match = false;
+
+            for (right_idx, right_row) in right_data.iter().enumerate() {
+                if self.join_condition_matches(left_row, right_row, join)? {
+                    let combined_row = self.combine_rows(left_row, right_row)?;
+                    result_rows.push(combined_row);
+                    matched_right_indices.insert(right_idx);
+                    found_match = true;
+                }
+            }
+
+            if !found_match {
+                let null_right = self.create_null_row_for_table(&join.table, join.table_alias.as_ref())?;
+                let combined_row = self.combine_rows(left_row, &null_right)?;
+                result_rows.push(combined_row);
+            }
+        }
+
+        // Process unmatched right side
+        for (right_idx, right_row) in right_data.iter().enumerate() {
+            if !matched_right_indices.contains(&right_idx) {
+                let null_left = self.create_null_row_from_columns(&combined_columns[..combined_columns.len() - self.count_right_columns(join)?])?;
+                let combined_row = self.combine_rows(&null_left, right_row)?;
+                result_rows.push(combined_row);
+            }
+        }
+
+        Ok((result_rows, combined_columns.to_vec()))
+    }
+
+    /// Execute CROSS JOIN
+    fn execute_cross_join(
+        &self,
+        left_data: &[Value],
+        right_data: &[Value],
+        combined_columns: &[String]
+    ) -> Result<(Vec<Value>, Vec<String>)> {
+        let result_rows = self.create_cartesian_product(&[left_data.to_vec(), right_data.to_vec()]);
+        Ok((result_rows, combined_columns.to_vec()))
+    }
+
+    /// Create Cartesian product of multiple tables
+    fn create_cartesian_product(&self, table_data: &[Vec<Value>]) -> Vec<Value> {
+        if table_data.is_empty() {
+            return Vec::new();
+        }
+
+        if table_data.len() == 1 {
+            return table_data[0].clone();
+        }
+
+        let mut result: Vec<Value> = Vec::new();
+
+        // Start with first table
+        let mut current_product = table_data[0].clone();
+
+        // Combine with each subsequent table
+        for table in &table_data[1..] {
+            let mut new_product = Vec::new();
+
+            for current_row in &current_product {
+                for table_row in table {
+                    if let Ok(combined) = self.combine_rows(current_row, table_row) {
+                        new_product.push(combined);
+                    }
+                }
+            }
+
+            current_product = new_product;
+        }
+
+        current_product
+    }
+
+    /// Check if JOIN condition matches between two rows
+    fn join_condition_matches(&self, left_row: &Value, right_row: &Value, join: &Join) -> Result<bool> {
+        let condition = match &join.condition {
+            Some(cond) => cond,
+            None => return Ok(true), // CROSS JOIN always matches
+        };
+
+        // Get values from both rows
+        let left_value = self.get_column_value_from_row(left_row, &condition.left_table, &condition.left_column)?;
+        let right_value = self.get_column_value_from_row(right_row, &condition.right_table, &condition.right_column)?;
+
+        // Compare based on operator
+        match condition.operator.as_str() {
+            "=" => Ok(left_value == right_value),
+            "!=" => Ok(left_value != right_value),
+            "<" => {
+                let ordering = self.compare_values(&left_value, &right_value);
+                Ok(ordering == std::cmp::Ordering::Less)
+            },
+            ">" => {
+                let ordering = self.compare_values(&left_value, &right_value);
+                Ok(ordering == std::cmp::Ordering::Greater)
+            },
+            "<=" => {
+                let ordering = self.compare_values(&left_value, &right_value);
+                Ok(ordering != std::cmp::Ordering::Greater)
+            },
+            ">=" => {
+                let ordering = self.compare_values(&left_value, &right_value);
+                Ok(ordering != std::cmp::Ordering::Less)
+            },
+            _ => Err(anyhow!("Unsupported JOIN operator: {}", condition.operator)),
+        }
+    }
+
+    /// Get column value from row with table qualification
+    fn get_column_value_from_row(&self, row: &Value, table_name: &str, column_name: &str) -> Result<Value> {
+        if let Value::Object(map) = row {
+            // Try table.column format first
+            let qualified_column = if table_name.is_empty() {
+                column_name.to_string()
+            } else {
+                format!("{}.{}", table_name, column_name)
+            };
+
+            if let Some(value) = map.get(&qualified_column) {
+                return Ok(value.clone());
+            }
+
+            // Try just column name as fallback
+            if let Some(value) = map.get(column_name) {
+                return Ok(value.clone());
+            }
+
+            // Try to find any column ending with this name
+            for (key, value) in map {
+                if key.ends_with(&format!(".{}", column_name)) {
+                    return Ok(value.clone());
+                }
+            }
+        }
+
+        Ok(Value::Null)
+    }
+
+
+    /// Combine two rows into a single row
+    fn combine_rows(&self, left_row: &Value, right_row: &Value) -> Result<Value> {
+        if let (Value::Object(left_map), Value::Object(right_map)) = (left_row, right_row) {
+            let mut combined = left_map.clone();
+            combined.extend(right_map.clone());
+            Ok(Value::Object(combined))
+        } else {
+            Err(anyhow!("Cannot combine non-object rows"))
+        }
+    }
+
+    /// Create a row of NULL values for a table
+    fn create_null_row_for_table(&self, table_name: &str, table_alias: Option<&String>) -> Result<Value> {
+        // This is a simplified implementation
+        // In a real system, we'd get the actual schema for the table
+        let mut null_row = serde_json::Map::new();
+
+        // For now, we'll create common column names
+        // A more complete implementation would query the table schema
+        let common_columns = ["id", "name", "value", "created_at", "updated_at"];
+        let prefix = table_alias.as_ref().map_or(table_name, |alias| alias);
+
+        for col in &common_columns {
+            null_row.insert(format!("{}.{}", prefix, col), Value::Null);
+        }
+
+        Ok(Value::Object(null_row))
+    }
+
+    /// Create a row of NULL values from column list
+    fn create_null_row_from_columns(&self, columns: &[String]) -> Result<Value> {
+        let mut null_row = serde_json::Map::new();
+
+        for col in columns {
+            null_row.insert(col.clone(), Value::Null);
+        }
+
+        Ok(Value::Object(null_row))
+    }
+
+    /// Count columns for the right table in a join
+    fn count_right_columns(&self, join: &Join) -> Result<usize> {
+        // Simplified implementation - in reality we'd check the table schema
+        Ok(5) // Assuming 5 columns per table for now
+    }
+
+    /// Get table columns
+    async fn get_table_columns(&self, engine: &Engine, table_name: &str) -> Result<Vec<String>> {
+        // This is a placeholder - in reality we'd get the actual table schema
+        // For now, return common column names
+        Ok(vec![
+            "id".to_string(),
+            "name".to_string(),
+            "value".to_string(),
+            "created_at".to_string(),
+            "updated_at".to_string()
+        ])
+    }
+
+    /// Apply DISTINCT to remove duplicate rows
+    fn apply_distinct(&self, data: &[Value], columns: Option<&[String]>) -> Result<Vec<Value>> {
+        use std::collections::HashSet;
+
+        if data.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let mut seen = HashSet::new();
+        let mut result = Vec::new();
+
+        for row in data {
+            if let Value::Object(map) = row {
+                // Create a key based on specified columns or all columns
+                let key = if let Some(cols) = columns {
+                    // DISTINCT on specific columns
+                    cols.iter()
+                        .map(|col| {
+                            // Try direct column access or with table prefix
+                            map.get(col)
+                                .or_else(|| map.iter()
+                                    .find(|(k, _)| k.ends_with(&format!(".{}", col)))
+                                    .map(|(_, v)| v))
+                                .cloned()
+                                .unwrap_or(Value::Null)
+                        })
+                        .collect::<Vec<_>>()
+                } else {
+                    // DISTINCT on all columns
+                    let mut values: Vec<(String, Value)> = map.iter()
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect();
+                    values.sort_by_key(|(k, _)| k.clone());
+                    values.into_iter().map(|(_, v)| v).collect()
+                };
+
+                // Convert to string for HashSet comparison (simple approach)
+                let key_str = format!("{:?}", key);
+
+                if seen.insert(key_str) {
+                    result.push(row.clone());
+                }
+            } else {
+                // For non-object rows, just add them (shouldn't happen in normal case)
+                result.push(row.clone());
+            }
+        }
+
+        Ok(result)
+    }
+
+    /// Format results for specific column selection from joined data
+    fn format_join_column_selection_results(
+        &self,
+        joined_data: Vec<Value>,
+        all_columns: &[String],
+        selected_columns: &[String],
+        order_by: Option<OrderBy>,
+        limit: Option<usize>
+    ) -> Result<QueryResult> {
+        if joined_data.is_empty() {
+            return Ok(QueryResult::Select {
+                columns: selected_columns.to_vec(),
+                rows: vec![],
+            });
+        }
+
+        // Validate that all requested columns exist
+        let first = &joined_data[0];
+        if let Value::Object(map) = first {
+            for col in selected_columns {
+                // Check if column exists directly or with any table prefix
+                let column_exists = map.contains_key(col) ||
+                    map.keys().any(|key| key.ends_with(&format!(".{}", col))) ||
+                    all_columns.contains(col) ||
+                    all_columns.iter().any(|c| c.ends_with(&format!(".{}", col)));
+
+                if !column_exists {
+                    return Err(anyhow!("Column '{}' does not exist in the joined result", col));
+                }
+            }
+        }
+
+        // Extract only the requested columns from each row
+        let mut rows: Vec<Vec<Value>> = joined_data.into_iter().map(|record| {
+            if let Value::Object(map) = record {
+                selected_columns.iter().map(|col| {
+                    // Try exact match first
+                    if let Some(value) = map.get(col) {
+                        return value.clone();
+                    }
+
+                    // Try to find column with any table prefix
+                    for (key, value) in &map {
+                        if key.ends_with(&format!(".{}", col)) {
+                            return value.clone();
+                        }
+                    }
+
+                    Value::Null
+                }).collect()
+            } else {
+                vec![Value::Null; selected_columns.len()]
+            }
+        }).collect();
+
+        // Apply ORDER BY if specified
+        if let Some(ref order_by) = order_by {
+            debug!("Applying ORDER BY: {} {:?}", order_by.column, order_by.direction);
+            self.sort_rows(&mut rows, selected_columns, order_by)?;
+        }
+
+        // Apply LIMIT if specified
+        if let Some(limit_count) = limit {
+            debug!("Applying LIMIT: {}", limit_count);
+            rows.truncate(limit_count);
+        }
+
+        debug!("Returning {} rows with {} selected columns: {:?}", rows.len(), selected_columns.len(), selected_columns);
+        Ok(QueryResult::Select {
+            columns: selected_columns.to_vec(),
+            rows,
+        })
+    }
+
+    /// Format results for SELECT * from joined data
+    fn format_join_select_all_results(
+        &self,
+        joined_data: Vec<Value>,
+        all_columns: Vec<String>,
+        order_by: Option<OrderBy>,
+        limit: Option<usize>
+    ) -> Result<QueryResult> {
+        if joined_data.is_empty() {
+            return Ok(QueryResult::Select {
+                columns: all_columns,
+                rows: vec![],
+            });
+        }
+
+        // Use the columns from the JOIN operation
+        let columns = all_columns;
+
+        let mut rows: Vec<Vec<Value>> = joined_data.into_iter().map(|record| {
+            if let Value::Object(map) = record {
+                columns.iter().map(|col| {
+                    map.get(col).cloned().unwrap_or(Value::Null)
+                }).collect()
+            } else {
+                vec![Value::Null; columns.len()]
+            }
+        }).collect();
+
+        // Apply ORDER BY if specified
+        if let Some(ref order_by) = order_by {
+            debug!("Applying ORDER BY: {} {:?}", order_by.column, order_by.direction);
+            self.sort_rows(&mut rows, &columns, order_by)?;
+        }
+
+        // Apply LIMIT if specified
+        if let Some(limit_count) = limit {
+            debug!("Applying LIMIT: {}", limit_count);
+            rows.truncate(limit_count);
+        }
+
+        debug!("Returning {} joined rows with {} columns: {:?}", rows.len(), columns.len(), columns);
+        Ok(QueryResult::Select { columns, rows })
     }
 }
 

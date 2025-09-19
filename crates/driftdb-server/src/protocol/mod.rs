@@ -117,6 +117,7 @@ pub mod error_codes {
     pub const UNDEFINED_TABLE: &str = "42P01";
     pub const SYNTAX_ERROR: &str = "42601";
     pub const INSUFFICIENT_PRIVILEGE: &str = "42501";
+    pub const TOO_MANY_CONNECTIONS: &str = "53300";
     pub const INTERNAL_ERROR: &str = "XX000";
 }
 

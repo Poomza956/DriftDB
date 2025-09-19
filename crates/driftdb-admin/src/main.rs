@@ -17,7 +17,8 @@ use colored::*;
 use indicatif::{ProgressBar, ProgressStyle};
 use prettytable::{Cell, Row, Table};
 
-use driftdb_core::Engine;
+use driftdb_core::{Engine, backup::BackupManager, observability::Metrics};
+use std::sync::Arc;
 
 #[derive(Parser)]
 #[command(name = "driftdb-admin")]
@@ -403,6 +404,8 @@ async fn monitor_metrics(data_dir: &PathBuf, interval: u64) -> Result<()> {
 
 async fn handle_backup(command: BackupCommands, data_dir: &PathBuf) -> Result<()> {
     let engine = Engine::open(data_dir)?;
+    let metrics = Arc::new(Metrics::new());
+    let backup_manager = BackupManager::new(data_dir, metrics);
 
     match command {
         BackupCommands::Create {
@@ -412,27 +415,33 @@ async fn handle_backup(command: BackupCommands, data_dir: &PathBuf) -> Result<()
         } => {
             println!("{}", "Creating backup...".yellow());
 
-            let pb = ProgressBar::new(100);
-            pb.set_style(
-                ProgressStyle::default_bar()
-                    .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}")
-                    .unwrap()
-                    .progress_chars("##-"),
-            );
+            let pb = ProgressBar::new_spinner();
+            pb.set_style(ProgressStyle::default_spinner());
+            pb.set_message("Backing up database...");
 
-            // Simulate backup progress
-            for i in 0..100 {
-                pb.set_position(i);
-                pb.set_message(format!("Backing up table {}/10", i / 10));
-                tokio::time::sleep(Duration::from_millis(10)).await;
+            let result = if incremental {
+                backup_manager.create_incremental_backup(&destination, 0)
+            } else {
+                backup_manager.create_full_backup(&destination)
+            };
+
+            match result {
+                Ok(metadata) => {
+                    pb.finish_with_message("Backup completed");
+                    println!(
+                        "{}",
+                        format!("✓ Backup created at {}", destination.display()).green()
+                    );
+                    println!("Tables backed up: {}", metadata.tables.len());
+                    println!("WAL sequence: {}", metadata.wal_sequence);
+                    println!("Compression: {:?}", metadata.compression);
+                    println!("Checksum: {}", &metadata.checksum[..16]);
+                }
+                Err(e) => {
+                    pb.finish_with_message("Backup failed");
+                    println!("{}", format!("✗ Backup failed: {}", e).red());
+                }
             }
-
-            pb.finish_with_message("Backup completed");
-
-            println!(
-                "{}",
-                format!("✓ Backup created at {}", destination.display()).green()
-            );
         }
         BackupCommands::Restore { source, verify } => {
             println!(
@@ -442,39 +451,107 @@ async fn handle_backup(command: BackupCommands, data_dir: &PathBuf) -> Result<()
 
             if verify {
                 println!("Verifying checksums...");
+                match backup_manager.verify_backup(&source) {
+                    Ok(true) => println!("{}", "✓ Backup verification passed".green()),
+                    Ok(false) => {
+                        println!("{}", "✗ Backup verification failed".red());
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        println!("{}", format!("✗ Verification error: {}", e).red());
+                        return Ok(());
+                    }
+                }
             }
 
-            // Would implement actual restore
-            println!("{}", "✓ Restore completed".green());
+            let pb = ProgressBar::new_spinner();
+            pb.set_style(ProgressStyle::default_spinner());
+            pb.set_message("Restoring database...");
+
+            match backup_manager.restore_from_backup(&source, None::<&std::path::Path>) {
+                Ok(()) => {
+                    pb.finish_with_message("Restore completed");
+                    println!("{}", "✓ Restore completed".green());
+                }
+                Err(e) => {
+                    pb.finish_with_message("Restore failed");
+                    println!("{}", format!("✗ Restore failed: {}", e).red());
+                }
+            }
         }
         BackupCommands::List { directory } => {
             println!("{}", "Available Backups".bold());
-            println!("{}", "-".repeat(50));
+            println!("{}", "-".repeat(70));
 
             let mut table = Table::new();
             table.add_row(Row::new(vec![
-                Cell::new("Timestamp"),
-                Cell::new("Size"),
-                Cell::new("Type"),
-                Cell::new("Status"),
+                Cell::new("Path").style_spec("Fb"),
+                Cell::new("Timestamp").style_spec("Fb"),
+                Cell::new("Tables").style_spec("Fb"),
+                Cell::new("Type").style_spec("Fb"),
+                Cell::new("Status").style_spec("Fb"),
             ]));
 
-            // Mock backup list
-            table.add_row(Row::new(vec![
-                Cell::new("2024-01-15 10:30:00"),
-                Cell::new("1.2 GB"),
-                Cell::new("Full"),
-                Cell::new("✓ Valid"),
-            ]));
+            // Scan directory for actual backups
+            if let Ok(entries) = std::fs::read_dir(&directory) {
+                let mut found_backups = false;
 
-            table.add_row(Row::new(vec![
-                Cell::new("2024-01-14 10:30:00"),
-                Cell::new("256 MB"),
-                Cell::new("Incremental"),
-                Cell::new("✓ Valid"),
-            ]));
+                for entry in entries.flatten() {
+                    if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                        let backup_path = entry.path();
+                        let metadata_file = backup_path.join("metadata.json");
 
-            table.printstd();
+                        if metadata_file.exists() {
+                            found_backups = true;
+
+                            if let Ok(content) = std::fs::read_to_string(&metadata_file) {
+                                if let Ok(metadata) = serde_json::from_str::<serde_json::Value>(&content) {
+                                    let timestamp = metadata.get("timestamp_ms")
+                                        .and_then(|t| t.as_u64())
+                                        .map(|t| {
+                                            chrono::DateTime::from_timestamp_millis(t as i64)
+                                                .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
+                                                .unwrap_or_else(|| "Unknown".to_string())
+                                        })
+                                        .unwrap_or_else(|| "Unknown".to_string());
+
+                                    let table_count = metadata.get("tables")
+                                        .and_then(|t| t.as_array())
+                                        .map(|arr| arr.len())
+                                        .unwrap_or(0);
+
+                                    let backup_type = if table_count > 0 { "Full" } else { "Incremental" };
+
+                                    // Verify backup to check status
+                                    let status = match backup_manager.verify_backup(&backup_path) {
+                                        Ok(true) => "✓ Valid".green().to_string(),
+                                        Ok(false) => "✗ Invalid".red().to_string(),
+                                        Err(_) => "? Error".yellow().to_string(),
+                                    };
+
+                                    table.add_row(Row::new(vec![
+                                        Cell::new(&backup_path.file_name()
+                                            .map(|n| n.to_string_lossy())
+                                            .unwrap_or_else(|| "Unknown".into())),
+                                        Cell::new(&timestamp),
+                                        Cell::new(&table_count.to_string()),
+                                        Cell::new(backup_type),
+                                        Cell::new(&status),
+                                    ]));
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if !found_backups {
+                    println!("No backups found in {}", directory.display());
+                } else {
+                    table.printstd();
+                }
+            } else {
+                println!("Cannot access backup directory: {}", directory.display());
+            }
         }
         BackupCommands::Verify { backup } => {
             println!(
@@ -486,12 +563,20 @@ async fn handle_backup(command: BackupCommands, data_dir: &PathBuf) -> Result<()
             pb.set_style(ProgressStyle::default_spinner());
             pb.set_message("Checking integrity...");
 
-            for _ in 0..50 {
-                pb.tick();
-                tokio::time::sleep(Duration::from_millis(50)).await;
+            match backup_manager.verify_backup(&backup) {
+                Ok(true) => {
+                    pb.finish_with_message("✓ Backup is valid");
+                    println!("{}", "✓ Backup verification passed".green());
+                }
+                Ok(false) => {
+                    pb.finish_with_message("✗ Backup is invalid");
+                    println!("{}", "✗ Backup verification failed".red());
+                }
+                Err(e) => {
+                    pb.finish_with_message("✗ Verification error");
+                    println!("{}", format!("✗ Verification error: {}", e).red());
+                }
             }
-
-            pb.finish_with_message("✓ Backup is valid");
         }
     }
 

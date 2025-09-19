@@ -16,6 +16,7 @@ pub mod optimizer;
 pub mod encryption;
 pub mod replication;
 pub mod sql;
+pub mod rate_limit;
 
 #[cfg(test)]
 mod tests;
@@ -25,3 +26,5 @@ pub use errors::{DriftError, Result};
 pub use events::{Event, EventType};
 pub use query::{Query, QueryResult};
 pub use schema::Schema;
+pub use connection::{EnginePool, EngineGuard, PoolConfig, PoolStats, EnginePoolStats};
+pub use rate_limit::{RateLimitConfig, RateLimitManager, RateLimitStats, QueryCost};

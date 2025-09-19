@@ -46,6 +46,12 @@ pub struct Metrics {
     // Error metrics
     pub corruption_detected: AtomicU64,
     pub panic_recovered: AtomicU64,
+
+    // Rate limiting metrics
+    pub rate_limit_violations: AtomicU64,
+    pub connection_rate_limit_hits: AtomicU64,
+    pub query_rate_limit_hits: AtomicU64,
+    pub global_rate_limit_hits: AtomicU64,
 }
 
 impl Metrics {
@@ -87,6 +93,11 @@ impl Default for Metrics {
 
             corruption_detected: AtomicU64::new(0),
             panic_recovered: AtomicU64::new(0),
+
+            rate_limit_violations: AtomicU64::new(0),
+            connection_rate_limit_hits: AtomicU64::new(0),
+            query_rate_limit_hits: AtomicU64::new(0),
+            global_rate_limit_hits: AtomicU64::new(0),
         }
     }
 }
@@ -125,6 +136,11 @@ impl Metrics {
 
             corruption_detected: self.corruption_detected.load(Ordering::Relaxed),
             panic_recovered: self.panic_recovered.load(Ordering::Relaxed),
+
+            rate_limit_violations: self.rate_limit_violations.load(Ordering::Relaxed),
+            connection_rate_limit_hits: self.connection_rate_limit_hits.load(Ordering::Relaxed),
+            query_rate_limit_hits: self.query_rate_limit_hits.load(Ordering::Relaxed),
+            global_rate_limit_hits: self.global_rate_limit_hits.load(Ordering::Relaxed),
         }
     }
 
@@ -182,6 +198,11 @@ pub struct MetricsSnapshot {
 
     pub corruption_detected: u64,
     pub panic_recovered: u64,
+
+    pub rate_limit_violations: u64,
+    pub connection_rate_limit_hits: u64,
+    pub query_rate_limit_hits: u64,
+    pub global_rate_limit_hits: u64,
 }
 
 /// Timer for measuring operation latency

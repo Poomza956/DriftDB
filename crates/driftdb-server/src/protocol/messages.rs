@@ -17,7 +17,12 @@ pub enum Message {
     AuthenticationOk,
     AuthenticationCleartextPassword,
     AuthenticationMD5Password { salt: [u8; 4] },
+    AuthenticationSASL { mechanisms: Vec<String> },
+    AuthenticationSASLContinue { data: Vec<u8> },
+    AuthenticationSASLFinal { data: Vec<u8> },
     PasswordMessage { password: String },
+    SASLInitialResponse { mechanism: String, data: Vec<u8> },
+    SASLResponse { data: Vec<u8> },
 
     // Simple Query
     Query { sql: String },
@@ -84,8 +89,13 @@ impl Message {
         match self {
             Message::AuthenticationOk |
             Message::AuthenticationCleartextPassword |
-            Message::AuthenticationMD5Password { .. } => Some(b'R'),
+            Message::AuthenticationMD5Password { .. } |
+            Message::AuthenticationSASL { .. } |
+            Message::AuthenticationSASLContinue { .. } |
+            Message::AuthenticationSASLFinal { .. } => Some(b'R'),
             Message::PasswordMessage { .. } => Some(b'p'),
+            Message::SASLInitialResponse { .. } => Some(b'p'),
+            Message::SASLResponse { .. } => Some(b'p'),
             Message::Query { .. } => Some(b'Q'),
             Message::Parse { .. } => Some(b'P'),
             Message::Bind { .. } => Some(b'B'),

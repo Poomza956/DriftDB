@@ -22,6 +22,11 @@ pub struct Engine {
 }
 
 impl Engine {
+    /// Get the base path of the database
+    pub fn base_path(&self) -> &Path {
+        &self.base_path
+    }
+
     pub fn open<P: AsRef<Path>>(base_path: P) -> Result<Self> {
         let base_path = base_path.as_ref().to_path_buf();
 
