@@ -136,6 +136,15 @@ pub struct QueryOptimizer {
     statistics: Arc<RwLock<HashMap<String, TableStatistics>>>,
     plan_cache: Arc<RwLock<HashMap<String, QueryPlan>>>,
     cost_model: CostModel,
+    snapshot_registry: Arc<RwLock<HashMap<String, Vec<SnapshotInfo>>>>,
+}
+
+/// Information about available snapshots
+#[derive(Debug, Clone)]
+pub struct SnapshotInfo {
+    pub sequence: u64,
+    pub timestamp: u64,
+    pub size_bytes: u64,
 }
 
 impl QueryOptimizer {
@@ -144,6 +153,7 @@ impl QueryOptimizer {
             statistics: Arc::new(RwLock::new(HashMap::new())),
             plan_cache: Arc::new(RwLock::new(HashMap::new())),
             cost_model: CostModel::default(),
+            snapshot_registry: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -441,9 +451,26 @@ impl QueryOptimizer {
     }
 
     /// Find closest snapshot for time travel
-    fn find_closest_snapshot(&self, _table: &str, _sequence: u64) -> Option<u64> {
-        // In production, would query snapshot manager
-        Some(1000) // Dummy value
+    fn find_closest_snapshot(&self, table: &str, sequence: u64) -> Option<u64> {
+        let registry = self.snapshot_registry.read();
+
+        if let Some(snapshots) = registry.get(table) {
+            // Find the snapshot with the largest sequence that's still <= target sequence
+            snapshots.iter()
+                .filter(|s| s.sequence <= sequence)
+                .max_by_key(|s| s.sequence)
+                .map(|s| s.sequence)
+        } else {
+            None
+        }
+    }
+
+    /// Register a snapshot with the optimizer
+    pub fn register_snapshot(&self, table: &str, info: SnapshotInfo) {
+        let mut registry = self.snapshot_registry.write();
+        registry.entry(table.to_string())
+            .or_insert_with(Vec::new)
+            .push(info);
     }
 
     /// Generate cache key for query
@@ -459,6 +486,65 @@ impl QueryOptimizer {
     /// Clear plan cache
     pub fn clear_cache(&self) {
         self.plan_cache.write().clear();
+    }
+
+    /// Optimize multiple conditions by reordering for efficiency
+    fn optimize_condition_order(&self, table: &str, conditions: &[WhereCondition]) -> Vec<WhereCondition> {
+        let mut conditions = conditions.to_vec();
+
+        // Sort conditions by selectivity (most selective first)
+        conditions.sort_by_cached_key(|cond| {
+            let selectivity = self.estimate_selectivity(table, cond);
+            (selectivity * 1000.0) as i64 // Convert to integer for stable sorting
+        });
+
+        conditions
+    }
+
+    /// Analyze query patterns and suggest new indexes
+    pub fn suggest_indexes(&self, table: &str) -> Vec<String> {
+        let mut suggestions = Vec::new();
+        let stats = self.statistics.read();
+
+        if let Some(table_stats) = stats.get(table) {
+            // Analyze column access patterns
+            for column_name in table_stats.column_stats.keys() {
+                // Suggest index if column is frequently used in WHERE but not indexed
+                if !table_stats.index_stats.contains_key(column_name) {
+                    // In production, would check query history for this column
+                    suggestions.push(format!("CREATE INDEX idx_{}_{} ON {} ({})",
+                        table, column_name, table, column_name));
+                }
+            }
+        }
+
+        suggestions
+    }
+
+    /// Estimate memory usage for query execution
+    pub fn estimate_memory_usage(&self, plan: &QueryPlan) -> usize {
+        let mut memory = 0;
+
+        for step in &plan.steps {
+            match step {
+                PlanStep::TableScan { estimated_rows, .. } |
+                PlanStep::IndexScan { estimated_rows, .. } => {
+                    // Assume average row size of 1KB
+                    memory = memory.max(estimated_rows * 1024);
+                }
+                PlanStep::Sort { estimated_rows, .. } => {
+                    // Sorting requires full dataset in memory
+                    memory = memory.max(estimated_rows * 1024);
+                }
+                PlanStep::Limit { count, .. } => {
+                    // Limit only needs to buffer the limit amount
+                    memory = memory.max(count * 1024);
+                }
+                _ => {}
+            }
+        }
+
+        memory
     }
 }
 

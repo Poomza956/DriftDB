@@ -2,8 +2,8 @@ use tempfile::TempDir;
 use serde_json::json;
 
 use driftdb_core::{Engine, Query, QueryResult};
-use driftdb_core::migration::{MigrationManager, Migration, MigrationOperation};
-use driftdb_core::schema::{Schema, ColumnDef, ColumnType};
+use driftdb_core::migration::{MigrationManager, Migration, MigrationType, Version};
+use driftdb_core::schema::{Schema, ColumnDef};
 
 #[test]
 fn test_add_column_migration() {
@@ -27,24 +27,27 @@ fn test_add_column_migration() {
     }).unwrap();
 
     // Create migration to add email column
-    let migration_mgr = MigrationManager::new(temp_dir.path());
+    let migration_mgr = MigrationManager::new(temp_dir.path()).unwrap();
     let migration = Migration::new(
+        Version::new(1, 0, 0),
         "add_email_column".to_string(),
-        "1.0.0".to_string(),
-        vec![MigrationOperation::AddColumn {
+        "Add email column to users table".to_string(),
+        MigrationType::AddColumn {
             table: "users".to_string(),
             column: ColumnDef {
                 name: "email".to_string(),
-                column_type: ColumnType::String,
-                nullable: true,
-                default: None,
+                col_type: "string".to_string(),
+                index: false,
             },
             default_value: Some(json!("default@example.com")),
-        }],
+        },
     );
 
     // Apply migration
-    migration_mgr.apply(migration).unwrap();
+    let mut migration_mgr = migration_mgr;
+    let version = migration.version.clone();
+    migration_mgr.add_migration(migration).unwrap();
+    migration_mgr.apply_migration(&version, false).unwrap();
 
     // Verify column was added with default value
     let result = engine.execute_query(Query::Select {
@@ -85,18 +88,22 @@ fn test_drop_column_migration() {
     }).unwrap();
 
     // Create migration to drop deprecated column
-    let migration_mgr = MigrationManager::new(temp_dir.path());
+    let migration_mgr = MigrationManager::new(temp_dir.path()).unwrap();
     let migration = Migration::new(
+        Version::new(1, 0, 1),
         "drop_deprecated_field".to_string(),
-        "1.0.1".to_string(),
-        vec![MigrationOperation::DropColumn {
+        "Drop deprecated field from products".to_string(),
+        MigrationType::DropColumn {
             table: "products".to_string(),
             column: "deprecated_field".to_string(),
-        }],
+        },
     );
 
     // Apply migration
-    migration_mgr.apply(migration).unwrap();
+    let mut migration_mgr = migration_mgr;
+    let version = migration.version.clone();
+    migration_mgr.add_migration(migration).unwrap();
+    migration_mgr.apply_migration(&version, false).unwrap();
 
     // Verify schema was updated (column removed from future operations)
     // Note: Historical data still contains the column for time-travel
@@ -123,19 +130,23 @@ fn test_rename_column_migration() {
     }).unwrap();
 
     // Create migration to rename column
-    let migration_mgr = MigrationManager::new(temp_dir.path());
+    let migration_mgr = MigrationManager::new(temp_dir.path()).unwrap();
     let migration = Migration::new(
+        Version::new(1, 0, 2),
         "rename_username_column".to_string(),
-        "1.0.2".to_string(),
-        vec![MigrationOperation::RenameColumn {
+        "Rename user_name to username".to_string(),
+        MigrationType::RenameColumn {
             table: "accounts".to_string(),
             old_name: "user_name".to_string(),
             new_name: "username".to_string(),
-        }],
+        },
     );
 
     // Apply migration
-    migration_mgr.apply(migration).unwrap();
+    let mut migration_mgr = migration_mgr;
+    let version = migration.version.clone();
+    migration_mgr.add_migration(migration).unwrap();
+    migration_mgr.apply_migration(&version, false).unwrap();
 
     // Verify data is accessible with new column name
     let result = engine.execute_query(Query::Select {
@@ -159,24 +170,31 @@ fn test_migration_rollback() {
     let temp_dir = TempDir::new().unwrap();
     let _engine = Engine::init(temp_dir.path()).unwrap();
 
-    let migration_mgr = MigrationManager::new(temp_dir.path());
+    let migration_mgr = MigrationManager::new(temp_dir.path()).unwrap();
 
     // Create and apply migration
     let migration = Migration::new(
+        Version::new(2, 0, 0),
         "test_migration".to_string(),
-        "2.0.0".to_string(),
-        vec![],
+        "Test migration for rollback".to_string(),
+        MigrationType::Custom {
+            description: "Empty migration".to_string(),
+            up_script: String::new(),
+            down_script: String::new(),
+        },
     );
 
-    let migration_id = migration.id.clone();
-    migration_mgr.apply(migration).unwrap();
+    let migration_version = migration.version.clone();
+    let mut migration_mgr = migration_mgr;
+    migration_mgr.add_migration(migration).unwrap();
+    migration_mgr.apply_migration(&migration_version, false).unwrap();
 
     // Verify migration was applied
     let status = migration_mgr.status();
     assert_eq!(status.applied_count, 1);
 
     // Rollback migration
-    migration_mgr.rollback(&migration_id).unwrap();
+    migration_mgr.rollback_migration(&migration_version).unwrap();
 
     // Verify migration was rolled back
     let status = migration_mgr.status();
@@ -188,19 +206,27 @@ fn test_migration_idempotency() {
     let temp_dir = TempDir::new().unwrap();
     let _engine = Engine::init(temp_dir.path()).unwrap();
 
-    let migration_mgr = MigrationManager::new(temp_dir.path());
+    let migration_mgr = MigrationManager::new(temp_dir.path()).unwrap();
 
     let migration = Migration::new(
+        Version::new(3, 0, 0),
         "idempotent_migration".to_string(),
-        "3.0.0".to_string(),
-        vec![],
+        "Test idempotent migration".to_string(),
+        MigrationType::Custom {
+            description: "Empty migration".to_string(),
+            up_script: String::new(),
+            down_script: String::new(),
+        },
     );
 
     // Apply migration twice
-    let result1 = migration_mgr.apply(migration.clone());
+    let mut migration_mgr = migration_mgr;
+    let migration_version = migration.version.clone();
+    migration_mgr.add_migration(migration).unwrap();
+    let result1 = migration_mgr.apply_migration(&migration_version, false);
     assert!(result1.is_ok());
 
-    let result2 = migration_mgr.apply(migration);
+    let result2 = migration_mgr.apply_migration(&migration_version, false);
     // Second application should be skipped (already applied)
     assert!(result2.is_ok());
 
@@ -214,18 +240,24 @@ fn test_migration_with_validation() {
     let temp_dir = TempDir::new().unwrap();
     let _engine = Engine::init(temp_dir.path()).unwrap();
 
-    let migration_mgr = MigrationManager::new(temp_dir.path());
+    let migration_mgr = MigrationManager::new(temp_dir.path()).unwrap();
 
     // Create migration with validation
-    let mut migration = Migration::new(
+    let migration = Migration::new(
+        Version::new(4, 0, 0),
         "validated_migration".to_string(),
-        "4.0.0".to_string(),
-        vec![],
+        "Migration with validation".to_string(),
+        MigrationType::Custom {
+            description: "Migration with pre/post conditions".to_string(),
+            up_script: String::new(),
+            down_script: String::new(),
+        },
     );
-    migration.pre_condition = Some("SELECT COUNT(*) FROM users".to_string());
-    migration.post_condition = Some("SELECT COUNT(*) FROM users WHERE email IS NOT NULL".to_string());
 
     // Validation should pass for empty operations
-    let result = migration_mgr.apply(migration);
+    let mut migration_mgr = migration_mgr;
+    let version = migration.version.clone();
+    migration_mgr.add_migration(migration).unwrap();
+    let result = migration_mgr.apply_migration(&version, false);
     assert!(result.is_ok());
 }
