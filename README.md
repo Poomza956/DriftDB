@@ -55,7 +55,20 @@ WHERE product_id = 'ABC-123';
 
 ## Quick Start
 
-### Installation
+### Docker Installation (Recommended)
+
+```bash
+# Quick start with Docker
+git clone https://github.com/driftdb/driftdb
+cd driftdb
+./scripts/docker-quickstart.sh
+
+# Connect to DriftDB
+psql -h localhost -p 5433 -d driftdb -U driftdb
+# Password: driftdb
+```
+
+### Manual Installation
 
 ```bash
 # Clone and build from source
@@ -64,7 +77,7 @@ cd driftdb
 make build
 
 # Or install with cargo
-cargo install driftdb-cli
+cargo install driftdb-cli driftdb-server
 ```
 
 ### 60-second demo
