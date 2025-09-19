@@ -15,7 +15,36 @@ use serde::{Deserialize, Serialize};
 use sqlparser::ast::{Expr, Statement};
 
 pub use parser::TemporalSqlParser;
+pub use parser::TemporalSqlParser as Parser;  // Alias for compatibility
 pub use executor::SqlExecutor;
+
+// Simplified Executor wrapper that doesn't require mutable reference
+pub struct Executor;
+
+impl Executor {
+    pub fn new() -> Self {
+        Executor
+    }
+
+    pub fn execute(&self, engine: &crate::engine::Engine, stmt: &TemporalStatement) -> crate::errors::Result<QueryResult> {
+        // For read queries, we can use the engine directly
+        // For write queries, we'll need to convert to DriftQL and execute
+        match &stmt.statement {
+            sqlparser::ast::Statement::Query(_) => {
+                // For queries, we need to convert to DriftQL and execute
+                // This is a temporary bridge until full SQL support is ready
+                Err(crate::errors::DriftError::InvalidQuery(
+                    "SQL queries not yet fully implemented - use DriftQL CLI".to_string()
+                ))
+            }
+            _ => {
+                Err(crate::errors::DriftError::InvalidQuery(
+                    "Only SELECT queries supported via SQL currently".to_string()
+                ))
+            }
+        }
+    }
+}
 
 /// SQL:2011 temporal clause types
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -70,6 +99,14 @@ pub struct TemporalQueryResult {
 
     /// Metadata about the temporal query
     pub temporal_metadata: Option<TemporalMetadata>,
+}
+
+/// Query result types for SQL execution
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum QueryResult {
+    Success { message: String },
+    Records { columns: Vec<String>, rows: Vec<Vec<serde_json::Value>> },
+    Error { message: String },
 }
 
 /// Metadata about temporal query execution

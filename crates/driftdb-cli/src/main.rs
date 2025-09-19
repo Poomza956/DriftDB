@@ -140,6 +140,7 @@ fn main() -> Result<()> {
             };
 
             for query_str in queries {
+                // For now, still use DriftQL parser until SQL module is complete
                 let query = driftdb_core::query::parse_driftql(&query_str)
                     .context("Failed to parse query")?;
                 let result = engine.execute_query(query)

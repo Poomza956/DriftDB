@@ -9,7 +9,7 @@ use crate::engine::Engine;
 use crate::errors::{DriftError, Result};
 use crate::events::{Event, EventType};
 
-use super::{TemporalStatement, SystemTimeClause, TemporalQueryResult, TemporalMetadata};
+use super::{TemporalStatement, SystemTimeClause, TemporalQueryResult, TemporalMetadata, QueryResult};
 use super::temporal::{TemporalSemantics, TemporalFilter, DriftDbPoint};
 
 pub struct SqlExecutor<'a> {
@@ -19,6 +19,47 @@ pub struct SqlExecutor<'a> {
 impl<'a> SqlExecutor<'a> {
     pub fn new(engine: &'a mut Engine) -> Self {
         Self { engine }
+    }
+
+    /// Execute SQL and return simplified QueryResult
+    pub fn execute_sql(&mut self, stmt: &TemporalStatement) -> Result<QueryResult> {
+        match self.execute(stmt) {
+            Ok(result) => {
+                // Convert TemporalQueryResult to QueryResult
+                if result.rows.is_empty() {
+                    Ok(QueryResult::Success {
+                        message: "Query executed successfully".to_string()
+                    })
+                } else {
+                    // Extract columns from first row
+                    let columns = if let Some(first) = result.rows.first() {
+                        if let serde_json::Value::Object(map) = first {
+                            map.keys().cloned().collect()
+                        } else {
+                            vec!["value".to_string()]
+                        }
+                    } else {
+                        vec![]
+                    };
+
+                    // Convert rows to arrays
+                    let rows: Vec<Vec<serde_json::Value>> = result.rows.into_iter().map(|row| {
+                        if let serde_json::Value::Object(map) = row {
+                            columns.iter().map(|col| {
+                                map.get(col).cloned().unwrap_or(serde_json::Value::Null)
+                            }).collect()
+                        } else {
+                            vec![row]
+                        }
+                    }).collect();
+
+                    Ok(QueryResult::Records { columns, rows })
+                }
+            }
+            Err(e) => Ok(QueryResult::Error {
+                message: format!("{}", e)
+            })
+        }
     }
 
     /// Execute a temporal SQL statement

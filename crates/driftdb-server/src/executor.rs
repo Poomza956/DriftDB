@@ -37,6 +37,50 @@ impl QueryExecutor {
         Self { engine }
     }
 
+    /// Convert SQL SELECT to DriftQL
+    fn sql_to_driftql_select(&self, sql: &str) -> Result<String> {
+        // Very simplified conversion - production would need full SQL parser
+        let lower = sql.to_lowercase();
+
+        // Handle SELECT * FROM table
+        if lower.starts_with("select * from") || lower.starts_with("select \\* from") {
+            let parts: Vec<&str> = sql.split_whitespace().collect();
+            if parts.len() >= 4 {
+                let table = parts[3].trim_end_matches(';');
+                return Ok(format!("SELECT * FROM {}", table));
+            }
+        }
+
+        // Handle SELECT 1 and other simple queries
+        if lower == "select 1" || lower == "select 1;" {
+            // Create a dummy query that will return something
+            return Ok("SELECT * FROM __dummy__".to_string());
+        }
+
+        // For now, just strip semicolon and hope it works
+        Ok(sql.trim_end_matches(';').to_string())
+    }
+
+    /// Convert SQL CREATE TABLE to DriftQL
+    fn sql_to_driftql_create(&self, sql: &str) -> Result<String> {
+        // Parse CREATE TABLE name (columns...)
+        let lower = sql.to_lowercase();
+
+        if !lower.starts_with("create table") {
+            return Err(anyhow!("Not a CREATE TABLE statement"));
+        }
+
+        // Find table name
+        let after_create = sql[12..].trim(); // Skip "CREATE TABLE"
+        let table_end = after_create.find('(')
+            .ok_or_else(|| anyhow!("Invalid CREATE TABLE syntax"))?;
+        let table_name = after_create[..table_end].trim();
+
+        // For now, default to id as primary key
+        // In production, would parse column definitions
+        Ok(format!("CREATE TABLE {} (pk=id)", table_name))
+    }
+
     pub async fn execute(&self, sql: &str) -> Result<QueryResult> {
         let sql = sql.trim();
 
@@ -102,60 +146,53 @@ impl QueryExecutor {
     async fn execute_select(&self, sql: &str) -> Result<QueryResult> {
         let engine = self.engine.read().await;
 
-        // For now, implement basic SELECT handling
-        // TODO: Integrate with DriftDB's SQL:2011 parser once module structure is fixed
+        // Convert simple SQL SELECT to DriftQL
+        let driftql = self.sql_to_driftql_select(sql)?;
 
-        // Parse table name from SELECT (very simplified)
-        let lower = sql.to_lowercase();
-        if lower.contains("from") {
-            let parts: Vec<&str> = sql.split_whitespace().collect();
-            if let Some(from_idx) = parts.iter().position(|&p| p.eq_ignore_ascii_case("from")) {
-                if from_idx + 1 < parts.len() {
-                    let table_name = parts[from_idx + 1].trim_end_matches(';');
+        // Parse and execute using DriftQL parser
+        let query = driftdb_core::query::parse_driftql(&driftql)
+            .map_err(|e| anyhow!("Failed to parse DriftQL: {}", e))?;
 
-                    // Create a simple query
-                    let query = driftdb_core::Query::Select {
-                        table: table_name.to_string(),
-                        conditions: vec![],
-                        as_of: None,
-                        limit: None,
+        match engine.query(&query) {
+            Ok(driftdb_core::QueryResult::Rows { data }) => {
+                // Convert to columns and rows format
+                if !data.is_empty() {
+                    let first = &data[0];
+                    let columns: Vec<String> = if let Value::Object(map) = first {
+                        map.keys().cloned().collect()
+                    } else {
+                        vec!["value".to_string()]
                     };
 
-                    // Query the table
-                    match engine.query(&query) {
-                        Ok(driftdb_core::QueryResult::Rows { data }) => {
-                            // Convert to columns and rows format
-                            if !data.is_empty() {
-                                let first = &data[0];
-                                let columns: Vec<String> = if let Value::Object(map) = first {
-                                    map.keys().cloned().collect()
-                                } else {
-                                    vec!["value".to_string()]
-                                };
-
-                                let rows: Vec<Vec<Value>> = data.into_iter().map(|record| {
-                                    if let Value::Object(map) = record {
-                                        columns.iter().map(|col| {
-                                            map.get(col).cloned().unwrap_or(Value::Null)
-                                        }).collect()
-                                    } else {
-                                        vec![record]
-                                    }
-                                }).collect();
-
-                                return Ok(QueryResult::Select { columns, rows });
-                            }
+                    let rows: Vec<Vec<Value>> = data.into_iter().map(|record| {
+                        if let Value::Object(map) = record {
+                            columns.iter().map(|col| {
+                                map.get(col).cloned().unwrap_or(Value::Null)
+                            }).collect()
+                        } else {
+                            vec![record]
                         }
-                        _ => {}
-                    }
+                    }).collect();
+
+                    Ok(QueryResult::Select { columns, rows })
+                } else {
+                    Ok(QueryResult::Select {
+                        columns: vec![],
+                        rows: vec![],
+                    })
                 }
             }
+            Ok(driftdb_core::QueryResult::Success { message }) => {
+                Ok(QueryResult::Select {
+                    columns: vec!["message".to_string()],
+                    rows: vec![vec![Value::String(message)]],
+                })
+            }
+            _ => Ok(QueryResult::Select {
+                columns: vec![],
+                rows: vec![],
+            })
         }
-
-        Ok(QueryResult::Select {
-            columns: vec![],
-            rows: vec![],
-        })
     }
 
     async fn execute_insert(&self, sql: &str) -> Result<QueryResult> {
@@ -182,13 +219,15 @@ impl QueryExecutor {
                     "data": values_str
                 });
 
-                // Create an INSERT event
-                let event = driftdb_core::events::Event::new_insert(
-                    table_name.to_string(),
-                    Value::String("temp_id".to_string()), // Simplified - should extract from values
-                    doc,
-                );
-                let _ = engine.apply_event(event);
+                // Convert SQL INSERT to DriftQL INSERT
+                let driftql = format!("INSERT INTO {} {}", table_name, doc);
+                let query = driftdb_core::query::parse_driftql(&driftql)
+                    .map_err(|e| anyhow!("Failed to parse DriftQL: {}", e))?;
+
+                match engine.execute_query(query) {
+                    Ok(_) => {},
+                    Err(e) => return Err(anyhow!("Insert failed: {}", e))
+                }
 
                 return Ok(QueryResult::Insert { count: 1 });
             }
@@ -236,28 +275,19 @@ impl QueryExecutor {
     async fn execute_create_table(&self, sql: &str) -> Result<QueryResult> {
         let mut engine = self.engine.write().await;
 
-        // Parse CREATE TABLE statement (simplified)
-        // Format: CREATE TABLE table_name (column_definitions)
-        let parts: Vec<&str> = sql.split_whitespace().collect();
-        if parts.len() < 3 || !parts[0].eq_ignore_ascii_case("create") || !parts[1].eq_ignore_ascii_case("table") {
-            return Err(anyhow!("Invalid CREATE TABLE syntax"));
+        // Convert SQL CREATE TABLE to DriftQL
+        let driftql = self.sql_to_driftql_create(sql)?;
+
+        let query = driftdb_core::query::parse_driftql(&driftql)
+            .map_err(|e| anyhow!("Failed to parse DriftQL: {}", e))?;
+
+        match engine.execute_query(query) {
+            Ok(_) => {
+                info!("Table created successfully");
+                Ok(QueryResult::CreateTable)
+            }
+            Err(e) => Err(anyhow!("Create table failed: {}", e))
         }
-
-        let table_name = parts[2].trim_end_matches('(');
-
-        // Extract primary key from column definitions (simplified)
-        let primary_key = if sql.to_lowercase().contains("primary key") {
-            // Try to find the column marked as primary key
-            "id" // Default to "id" for now
-        } else {
-            "id"
-        };
-
-        // Create the table with empty indexes for now
-        engine.create_table(table_name, primary_key, vec![])?;
-
-        info!("Created table: {}", table_name);
-        Ok(QueryResult::CreateTable)
     }
 
     async fn execute_show(&self, sql: &str) -> Result<QueryResult> {
