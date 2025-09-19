@@ -226,6 +226,94 @@ pub struct SetOperationQuery {
     pub operation: SetOperation,
 }
 
+/// Query execution plan node types
+#[derive(Debug, Clone)]
+pub enum PlanNode {
+    SeqScan {
+        table: String,
+        filter: Option<String>,
+        estimated_rows: usize,
+    },
+    IndexScan {
+        table: String,
+        index: String,
+        condition: String,
+        estimated_rows: usize,
+    },
+    NestedLoop {
+        left: Box<PlanNode>,
+        right: Box<PlanNode>,
+        join_type: JoinType,
+        condition: Option<String>,
+        estimated_rows: usize,
+    },
+    HashJoin {
+        left: Box<PlanNode>,
+        right: Box<PlanNode>,
+        join_type: JoinType,
+        hash_keys: Vec<String>,
+        estimated_rows: usize,
+    },
+    Sort {
+        input: Box<PlanNode>,
+        keys: Vec<String>,
+        estimated_rows: usize,
+    },
+    Limit {
+        input: Box<PlanNode>,
+        count: usize,
+        estimated_rows: usize,
+    },
+    Aggregate {
+        input: Box<PlanNode>,
+        group_by: Vec<String>,
+        aggregates: Vec<String>,
+        estimated_rows: usize,
+    },
+    SetOperation {
+        left: Box<PlanNode>,
+        right: Box<PlanNode>,
+        operation: SetOperation,
+        estimated_rows: usize,
+    },
+    Distinct {
+        input: Box<PlanNode>,
+        columns: Vec<String>,
+        estimated_rows: usize,
+    },
+    Subquery {
+        query: String,
+        correlated: bool,
+        estimated_rows: usize,
+    },
+}
+
+/// Query execution plan
+#[derive(Debug, Clone)]
+pub struct QueryPlan {
+    pub root: PlanNode,
+    pub estimated_cost: f64,
+    pub estimated_rows: usize,
+}
+
+impl PlanNode {
+    /// Get the estimated number of rows for this node
+    fn get_estimated_rows(&self) -> usize {
+        match self {
+            PlanNode::SeqScan { estimated_rows, .. } |
+            PlanNode::IndexScan { estimated_rows, .. } |
+            PlanNode::NestedLoop { estimated_rows, .. } |
+            PlanNode::HashJoin { estimated_rows, .. } |
+            PlanNode::Sort { estimated_rows, .. } |
+            PlanNode::Limit { estimated_rows, .. } |
+            PlanNode::Aggregate { estimated_rows, .. } |
+            PlanNode::SetOperation { estimated_rows, .. } |
+            PlanNode::Distinct { estimated_rows, .. } |
+            PlanNode::Subquery { estimated_rows, .. } => *estimated_rows,
+        }
+    }
+}
+
 pub struct QueryExecutor<'a> {
     engine_guard: Option<&'a EngineGuard>,
     engine: Option<Arc<tokio::sync::RwLock<Engine>>>,
@@ -947,6 +1035,11 @@ impl<'a> QueryExecutor<'a> {
         // Handle SHOW commands
         if sql.to_lowercase().starts_with("show ") {
             return self.execute_show(sql).await;
+        }
+
+        // Handle EXPLAIN commands
+        if sql.to_lowercase().starts_with("explain ") {
+            return self.execute_explain(sql).await;
         }
 
         // Handle SET commands (ignore for now)
@@ -1678,6 +1771,390 @@ impl<'a> QueryExecutor<'a> {
         } else {
             warn!("Unsupported SHOW command: {}", sql);
             Err(anyhow!("Unsupported SHOW command"))
+        }
+    }
+
+    /// Execute EXPLAIN command to show query plan
+    async fn execute_explain(&self, sql: &str) -> Result<QueryResult> {
+        // Remove "EXPLAIN " prefix
+        let query = sql[8..].trim();
+
+        // Check for ANALYZE option
+        let (analyze, actual_query) = if query.to_lowercase().starts_with("analyze ") {
+            (true, query[8..].trim())
+        } else {
+            (false, query)
+        };
+
+        // Generate query plan
+        let plan = self.generate_query_plan(actual_query).await?;
+
+        // Format plan as readable output
+        let plan_text = self.format_query_plan(&plan, 0);
+
+        // If ANALYZE is requested, also execute the query and add timing info
+        let output = if analyze {
+            let start = std::time::Instant::now();
+            let _result = Box::pin(self.execute(actual_query)).await?;
+            let elapsed = start.elapsed();
+
+            format!("{}\n\nExecution Time: {:.3} ms", plan_text, elapsed.as_secs_f64() * 1000.0)
+        } else {
+            plan_text
+        };
+
+        // Return as a single-column result
+        Ok(QueryResult::Select {
+            columns: vec!["QUERY PLAN".to_string()],
+            rows: output.lines().map(|line| vec![Value::String(line.to_string())]).collect(),
+        })
+    }
+
+    /// Generate a query execution plan
+    async fn generate_query_plan(&self, sql: &str) -> Result<QueryPlan> {
+        let lower = sql.to_lowercase();
+
+        // Check for set operations first
+        if let Some(set_op) = self.parse_set_operation(sql)? {
+            return self.generate_set_operation_plan(&set_op).await;
+        }
+
+        // Handle SELECT queries
+        if lower.starts_with("select") {
+            self.generate_select_plan(sql).await
+        } else if lower.starts_with("insert") {
+            Ok(QueryPlan {
+                root: PlanNode::SeqScan {
+                    table: "INSERT operation".to_string(),
+                    filter: None,
+                    estimated_rows: 1,
+                },
+                estimated_cost: 1.0,
+                estimated_rows: 1,
+            })
+        } else if lower.starts_with("update") {
+            self.generate_update_plan(sql).await
+        } else if lower.starts_with("delete") {
+            self.generate_delete_plan(sql).await
+        } else {
+            Err(anyhow!("Cannot generate plan for this query type"))
+        }
+    }
+
+    /// Generate plan for SELECT queries
+    async fn generate_select_plan(&self, sql: &str) -> Result<QueryPlan> {
+        let lower = sql.to_lowercase();
+
+        // Parse the query components
+        let select_start = if lower.starts_with("select ") { 7 } else { 0 };
+        let from_pos = lower.find(" from ").ok_or_else(|| anyhow!("Missing FROM clause"))?;
+        let select_part = &sql[select_start..from_pos];
+        let select_clause = self.parse_select_clause(select_part)?;
+
+        // Parse FROM clause
+        let from_pos = lower.find(" from ").unwrap() + 6;
+        let remaining = &sql[from_pos..];
+        let from_end = remaining.find(" WHERE ")
+            .or_else(|| remaining.find(" where "))
+            .or_else(|| remaining.find(" GROUP BY "))
+            .or_else(|| remaining.find(" group by "))
+            .or_else(|| remaining.find(" ORDER BY "))
+            .or_else(|| remaining.find(" order by "))
+            .or_else(|| remaining.find(" LIMIT "))
+            .or_else(|| remaining.find(" limit "))
+            .unwrap_or(remaining.len());
+
+        let from_part = remaining[..from_end].trim();
+        let from_clause = self.parse_from_clause(from_part)?;
+
+        // Build plan nodes bottom-up
+        let mut root = self.generate_from_plan(&from_clause).await?;
+
+        // Add WHERE filter if present
+        let after_from = &remaining[from_end..];
+        if let Some(where_pos) = after_from.to_lowercase().find(" where ") {
+            let where_start = where_pos + 7;
+            let where_clause = &after_from[where_start..];
+            let where_end = where_clause.to_lowercase().find(" group by ")
+                .or_else(|| where_clause.to_lowercase().find(" order by "))
+                .or_else(|| where_clause.to_lowercase().find(" limit "))
+                .unwrap_or(where_clause.len());
+            let conditions_str = where_clause[..where_end].trim();
+
+            // Update the root node with filter information
+            if let PlanNode::SeqScan { ref mut filter, .. } = root {
+                *filter = Some(conditions_str.to_string());
+            }
+        }
+
+        // Add DISTINCT if needed
+        match &select_clause {
+            SelectClause::AllDistinct | SelectClause::ColumnsDistinct(_) => {
+                let columns = match &select_clause {
+                    SelectClause::AllDistinct => vec!["*".to_string()],
+                    SelectClause::ColumnsDistinct(cols) => cols.clone(),
+                    _ => vec![],
+                };
+                root = PlanNode::Distinct {
+                    input: Box::new(root.clone()),
+                    columns,
+                    estimated_rows: root.get_estimated_rows() / 2, // Rough estimate
+                };
+            }
+            _ => {}
+        }
+
+        // Add GROUP BY if present
+        if let Some(group_pos) = after_from.to_lowercase().find(" group by ") {
+            let group_start = group_pos + 10;
+            let group_clause = &after_from[group_start..];
+            let group_end = group_clause.to_lowercase().find(" having ")
+                .or_else(|| group_clause.to_lowercase().find(" order by "))
+                .or_else(|| group_clause.to_lowercase().find(" limit "))
+                .unwrap_or(group_clause.len());
+            let group_str = group_clause[..group_end].trim();
+
+            let aggregates = match &select_clause {
+                SelectClause::Aggregations(aggs) => {
+                    aggs.iter().map(|a| format!("{:?}", a.function)).collect()
+                }
+                SelectClause::Mixed(_, aggs) => {
+                    aggs.iter().map(|a| format!("{:?}", a.function)).collect()
+                }
+                _ => vec![],
+            };
+
+            root = PlanNode::Aggregate {
+                input: Box::new(root.clone()),
+                group_by: group_str.split(',').map(|s| s.trim().to_string()).collect(),
+                aggregates,
+                estimated_rows: root.get_estimated_rows() / 10, // Rough estimate
+            };
+        }
+
+        // Add ORDER BY if present
+        if let Some(order_pos) = after_from.to_lowercase().find(" order by ") {
+            let order_start = order_pos + 10;
+            let order_clause = &after_from[order_start..];
+            let order_end = order_clause.to_lowercase().find(" limit ")
+                .unwrap_or(order_clause.len());
+            let order_str = order_clause[..order_end].trim();
+
+            root = PlanNode::Sort {
+                input: Box::new(root.clone()),
+                keys: vec![order_str.to_string()],
+                estimated_rows: root.get_estimated_rows(),
+            };
+        }
+
+        // Add LIMIT if present
+        if let Some(limit_pos) = after_from.to_lowercase().find(" limit ") {
+            let limit_start = limit_pos + 7;
+            let limit_clause = &after_from[limit_start..];
+            let limit_end = limit_clause.find(' ').unwrap_or(limit_clause.len());
+            let limit_str = limit_clause[..limit_end].trim();
+
+            if let Ok(limit_count) = limit_str.parse::<usize>() {
+                root = PlanNode::Limit {
+                    input: Box::new(root.clone()),
+                    count: limit_count,
+                    estimated_rows: limit_count.min(root.get_estimated_rows()),
+                };
+            }
+        }
+
+        let estimated_rows = root.get_estimated_rows();
+        Ok(QueryPlan {
+            root,
+            estimated_cost: estimated_rows as f64 * 0.01, // Simple cost model
+            estimated_rows,
+        })
+    }
+
+    /// Generate plan for FROM clause
+    async fn generate_from_plan(&self, from_clause: &FromClause) -> Result<PlanNode> {
+        match from_clause {
+            FromClause::Single(table_ref) => {
+                Ok(PlanNode::SeqScan {
+                    table: table_ref.name.clone(),
+                    filter: None,
+                    estimated_rows: 1000, // Default estimate
+                })
+            }
+            FromClause::WithJoins { base_table, joins } => {
+                let mut left = PlanNode::SeqScan {
+                    table: base_table.name.clone(),
+                    filter: None,
+                    estimated_rows: 1000,
+                };
+
+                for join in joins {
+                    let right = PlanNode::SeqScan {
+                        table: join.table.clone(),
+                        filter: None,
+                        estimated_rows: 1000,
+                    };
+
+                    let condition = join.condition.as_ref().map(|c| {
+                        format!("{}.{} {} {}.{}", c.left_table, c.left_column, c.operator, c.right_table, c.right_column)
+                    });
+
+                    left = PlanNode::NestedLoop {
+                        left: Box::new(left),
+                        right: Box::new(right),
+                        join_type: join.join_type.clone(),
+                        condition,
+                        estimated_rows: 1000, // Should calculate based on join selectivity
+                    };
+                }
+
+                Ok(left)
+            }
+            FromClause::DerivedTable(dt) => {
+                Ok(PlanNode::Subquery {
+                    query: dt.subquery.sql.clone(),
+                    correlated: dt.subquery.is_correlated,
+                    estimated_rows: 100,
+                })
+            }
+            _ => Ok(PlanNode::SeqScan {
+                table: "complex_from".to_string(),
+                filter: None,
+                estimated_rows: 1000,
+            })
+        }
+    }
+
+    /// Generate plan for set operations
+    async fn generate_set_operation_plan(&self, set_op: &SetOperationQuery) -> Result<QueryPlan> {
+        let left_plan = Box::pin(self.generate_query_plan(&set_op.left)).await?;
+        let right_plan = Box::pin(self.generate_query_plan(&set_op.right)).await?;
+
+        let estimated_rows = match &set_op.operation {
+            SetOperation::Union | SetOperation::UnionAll => {
+                left_plan.estimated_rows + right_plan.estimated_rows
+            }
+            SetOperation::Intersect | SetOperation::IntersectAll => {
+                left_plan.estimated_rows.min(right_plan.estimated_rows)
+            }
+            SetOperation::Except | SetOperation::ExceptAll => {
+                left_plan.estimated_rows
+            }
+        };
+
+        Ok(QueryPlan {
+            root: PlanNode::SetOperation {
+                left: Box::new(left_plan.root),
+                right: Box::new(right_plan.root),
+                operation: set_op.operation.clone(),
+                estimated_rows,
+            },
+            estimated_cost: (left_plan.estimated_cost + right_plan.estimated_cost) * 1.1,
+            estimated_rows,
+        })
+    }
+
+    /// Generate plan for UPDATE queries
+    async fn generate_update_plan(&self, _sql: &str) -> Result<QueryPlan> {
+        Ok(QueryPlan {
+            root: PlanNode::SeqScan {
+                table: "UPDATE target".to_string(),
+                filter: Some("WHERE conditions".to_string()),
+                estimated_rows: 100,
+            },
+            estimated_cost: 10.0,
+            estimated_rows: 100,
+        })
+    }
+
+    /// Generate plan for DELETE queries
+    async fn generate_delete_plan(&self, _sql: &str) -> Result<QueryPlan> {
+        Ok(QueryPlan {
+            root: PlanNode::SeqScan {
+                table: "DELETE target".to_string(),
+                filter: Some("WHERE conditions".to_string()),
+                estimated_rows: 100,
+            },
+            estimated_cost: 10.0,
+            estimated_rows: 100,
+        })
+    }
+
+    /// Format query plan as text
+    fn format_query_plan(&self, plan: &QueryPlan, _indent: usize) -> String {
+        let mut output = Vec::new();
+        output.push(format!("Query Plan (estimated cost: {:.2}, rows: {})", plan.estimated_cost, plan.estimated_rows));
+        output.push("-".repeat(60));
+        self.format_plan_node(&plan.root, &mut output, "", true);
+        output.join("\n")
+    }
+
+    /// Format a plan node recursively
+    fn format_plan_node(&self, node: &PlanNode, output: &mut Vec<String>, prefix: &str, is_last: bool) {
+        let connector = if is_last { "└── " } else { "├── " };
+        let node_desc = match node {
+            PlanNode::SeqScan { table, filter, estimated_rows } => {
+                if let Some(f) = filter {
+                    format!("Seq Scan on {} (filter: {}) [rows: {}]", table, f, estimated_rows)
+                } else {
+                    format!("Seq Scan on {} [rows: {}]", table, estimated_rows)
+                }
+            }
+            PlanNode::IndexScan { table, index, condition, estimated_rows } => {
+                format!("Index Scan on {} using {} ({}), [rows: {}]", table, index, condition, estimated_rows)
+            }
+            PlanNode::NestedLoop { join_type, condition, estimated_rows, .. } => {
+                let cond_str = condition.as_ref().map(|c| format!(" on {}", c)).unwrap_or_default();
+                format!("Nested Loop {:?} Join{} [rows: {}]", join_type, cond_str, estimated_rows)
+            }
+            PlanNode::HashJoin { join_type, hash_keys, estimated_rows, .. } => {
+                format!("Hash {:?} Join on ({}) [rows: {}]", join_type, hash_keys.join(", "), estimated_rows)
+            }
+            PlanNode::Sort { keys, estimated_rows, .. } => {
+                format!("Sort by {} [rows: {}]", keys.join(", "), estimated_rows)
+            }
+            PlanNode::Limit { count, estimated_rows, .. } => {
+                format!("Limit {} [rows: {}]", count, estimated_rows)
+            }
+            PlanNode::Aggregate { group_by, aggregates, estimated_rows, .. } => {
+                format!("Aggregate ({}) group by {} [rows: {}]",
+                    aggregates.join(", "), group_by.join(", "), estimated_rows)
+            }
+            PlanNode::SetOperation { operation, estimated_rows, .. } => {
+                format!("{:?} [rows: {}]", operation, estimated_rows)
+            }
+            PlanNode::Distinct { columns, estimated_rows, .. } => {
+                format!("Distinct on {} [rows: {}]", columns.join(", "), estimated_rows)
+            }
+            PlanNode::Subquery { correlated, estimated_rows, .. } => {
+                let corr_str = if *correlated { "Correlated " } else { "" };
+                format!("{}Subquery [rows: {}]", corr_str, estimated_rows)
+            }
+        };
+
+        output.push(format!("{}{}{}", prefix, connector, node_desc));
+
+        let new_prefix = if is_last {
+            format!("{}    ", prefix)
+        } else {
+            format!("{}│   ", prefix)
+        };
+
+        // Recursively format children
+        let children: Vec<&PlanNode> = match node {
+            PlanNode::NestedLoop { left, right, .. } |
+            PlanNode::HashJoin { left, right, .. } |
+            PlanNode::SetOperation { left, right, .. } => vec![left, right],
+            PlanNode::Sort { input, .. } |
+            PlanNode::Limit { input, .. } |
+            PlanNode::Aggregate { input, .. } |
+            PlanNode::Distinct { input, .. } => vec![input],
+            _ => vec![],
+        };
+
+        for (i, child) in children.iter().enumerate() {
+            let is_last_child = i == children.len() - 1;
+            self.format_plan_node(child, output, &new_prefix, is_last_child);
         }
     }
 
