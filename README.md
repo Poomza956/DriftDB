@@ -74,7 +74,28 @@ cargo install driftdb-cli
 make demo
 ```
 
-### Manual usage
+### PostgreSQL-Compatible Server
+
+DriftDB now includes a PostgreSQL wire protocol server, allowing you to connect with any PostgreSQL client:
+
+```bash
+# Start the server
+./target/release/driftdb-server
+
+# Connect with psql
+psql -h 127.0.0.1 -p 5433 -d driftdb -U driftdb
+
+# Connect with any PostgreSQL driver
+postgresql://driftdb:driftdb@127.0.0.1:5433/driftdb
+```
+
+The server supports:
+- PostgreSQL wire protocol v3
+- SQL queries with automatic temporal tracking
+- Authentication (cleartext and MD5)
+- Integration with existing PostgreSQL tools and ORMs
+
+### Manual CLI usage
 
 ```sql
 -- Initialize and connect to database

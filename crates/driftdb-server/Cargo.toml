@@ -1,0 +1,32 @@
+[package]
+name = "driftdb-server"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "driftdb-server"
+path = "src/main.rs"
+
+[dependencies]
+driftdb-core = { path = "../driftdb-core" }
+tokio = { version = "1", features = ["full"] }
+tokio-postgres = "0.7"
+postgres-protocol = "0.6"
+bytes = "1"
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+clap = { version = "4", features = ["derive", "env"] }
+uuid = { workspace = true }
+md5 = "0.7"
+hex = "0.4"
+async-trait = "0.1"
+futures = "0.3"
+pin-project = "1"
+dashmap = "5"
+arc-swap = "1"
+rand = "0.8"

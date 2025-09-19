@@ -341,10 +341,14 @@ impl<'a> SqlExecutor<'a> {
 
     fn extract_primary_key(&self, constraints: &Vec<sqlparser::ast::TableConstraint>) -> Result<String> {
         for constraint in constraints {
-            if let sqlparser::ast::TableConstraint::PrimaryKey { columns, .. } = constraint {
-                if !columns.is_empty() {
-                    return Ok(columns[0].value.clone());
+            // Check for primary key constraint
+            match constraint {
+                sqlparser::ast::TableConstraint::Unique { columns, is_primary, .. } if *is_primary => {
+                    if !columns.is_empty() {
+                        return Ok(columns[0].value.clone());
+                    }
                 }
+                _ => continue,
             }
         }
         Err(DriftError::InvalidQuery("No primary key defined".to_string()))
