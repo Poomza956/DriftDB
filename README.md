@@ -30,6 +30,10 @@ SELECT * FROM events;                -- Shows 'modified'
 - **UPDATE with conditions**: Modify specific rows with WHERE clauses
 - **DELETE with conditions**: Remove specific rows while preserving history
 - **Time-travel syntax**: `AS OF @seq:N` for querying any historical state
+- **Column selection**: `SELECT column1, column2 FROM table`
+- **Aggregation functions**: COUNT(*), COUNT(column), SUM, AVG, MIN, MAX
+- **GROUP BY and HAVING**: Group rows and filter groups with aggregation conditions
+- **ORDER BY and LIMIT**: Sort results and limit row count
 - **No authentication required**: Simplified setup for development
 
 ### Core Database Engine
@@ -185,6 +189,38 @@ WHERE id = 1;
 SELECT * FROM users
 FOR SYSTEM_TIME BETWEEN '2024-01-01' AND '2024-01-31'
 WHERE status = 'active';
+
+-- Advanced SQL Features (v0.6.0)
+-- Column selection
+SELECT name, email FROM users WHERE status = 'active';
+
+-- Aggregation functions
+SELECT COUNT(*) FROM users;
+SELECT COUNT(email), AVG(age) FROM users WHERE status = 'active';
+SELECT MIN(created_at), MAX(created_at) FROM users;
+
+-- GROUP BY and aggregations
+SELECT status, COUNT(*) FROM users GROUP BY status;
+SELECT department, AVG(salary), MIN(salary), MAX(salary)
+FROM employees GROUP BY department;
+
+-- HAVING clause for group filtering
+SELECT department, AVG(salary) FROM employees
+GROUP BY department HAVING AVG(salary) > 50000;
+
+-- ORDER BY and LIMIT
+SELECT * FROM users ORDER BY created_at DESC LIMIT 10;
+SELECT name, email FROM users WHERE status = 'active'
+ORDER BY name ASC LIMIT 5;
+
+-- Complex queries with all features
+SELECT department, COUNT(*) as emp_count, AVG(salary) as avg_salary
+FROM employees
+WHERE hire_date >= '2023-01-01'
+GROUP BY department
+HAVING COUNT(*) >= 3
+ORDER BY AVG(salary) DESC
+LIMIT 5;
 ```
 
 ## SQL:2011 Temporal Syntax
@@ -513,11 +549,12 @@ DriftDB is currently in **beta** stage and approaching production readiness.
 - ✅ Updated documentation accuracy
 - ✅ PostgreSQL protocol improvements
 
-### v0.6.0 (Next - Production Features)
+### v0.6.0 (Current - Advanced SQL Features - Complete)
+- ✅ Aggregations (COUNT, SUM, AVG, MIN, MAX)
+- ✅ GROUP BY and HAVING clauses
+- ✅ ORDER BY and LIMIT clauses
+- ✅ Column selection (SELECT column1, column2)
 - 📋 JOIN operations
-- 📋 Aggregations (COUNT, SUM, AVG)
-- 📋 GROUP BY and HAVING
-- 📋 ORDER BY and LIMIT
 - 📋 Subqueries
 
 ### v0.6.0 (Release Candidate)

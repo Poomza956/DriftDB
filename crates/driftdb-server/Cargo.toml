@@ -30,3 +30,6 @@ pin-project = "1"
 dashmap = "5"
 arc-swap = "1"
 rand = "0.8"
+
+[dev-dependencies]
+tempfile = { workspace = true }
