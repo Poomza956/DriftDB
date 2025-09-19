@@ -34,6 +34,8 @@ base64 = "0.21"
 rustls = "0.21"
 tokio-rustls = "0.24"
 rustls-pemfile = "1.0"
+sqlparser = "0.44"
+chrono = "0.4"
 
 [dev-dependencies]
 tempfile = { workspace = true }

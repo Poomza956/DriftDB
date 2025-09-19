@@ -196,6 +196,29 @@ impl TableStorage {
         Ok(state)
     }
 
+    pub fn find_sequence_at_timestamp(&self, timestamp: chrono::DateTime<chrono::Utc>) -> Result<Option<u64>> {
+        // Find the sequence number that corresponds to a given timestamp
+        let events = self.read_all_events()?;
+
+        // Find the latest event before or at the timestamp
+        let mut latest_seq = None;
+        for event in events {
+            // Convert event timestamp to chrono
+            let event_ts = chrono::DateTime::from_timestamp(
+                event.timestamp.unix_timestamp(),
+                0
+            ).unwrap_or(chrono::Utc::now());
+
+            if event_ts <= timestamp {
+                latest_seq = Some(event.sequence);
+            } else {
+                break;
+            }
+        }
+
+        Ok(latest_seq)
+    }
+
     pub fn schema(&self) -> &Schema {
         &self.schema
     }
