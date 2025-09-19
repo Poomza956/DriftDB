@@ -1,15 +1,41 @@
 # DriftDB
 
-A production-ready append-only database with time-travel queries, ACID transactions, and enterprise features.
+**The only database with native SQL:2011 temporal queries** - Query your data at any point in time using standard SQL.
+
+## 🚀 Why DriftDB?
+
+```sql
+-- Debug production issues by querying the past
+SELECT * FROM users
+FOR SYSTEM_TIME AS OF '2024-01-15T10:30:00Z'
+WHERE user_id = 12345;
+
+-- Compliance made simple
+SELECT * FROM transactions
+FOR SYSTEM_TIME BETWEEN '2024-01-01' AND '2024-01-31'
+WHERE amount > 10000;
+
+-- Track changes over time
+SELECT * FROM products
+FOR SYSTEM_TIME ALL
+WHERE product_id = 'ABC-123';
+```
 
 ## ✨ Core Features
 
+### SQL:2011 Temporal Queries (Native Support)
+- **`FOR SYSTEM_TIME AS OF`**: Query data at any point in time
+- **`FOR SYSTEM_TIME BETWEEN`**: Get all versions in a time range
+- **`FOR SYSTEM_TIME FROM...TO`**: Exclusive range queries
+- **`FOR SYSTEM_TIME ALL`**: Complete history of changes
+- **System-versioned tables**: Automatic history tracking
+
 ### Data Model & Storage
-- **Append-only storage**: Immutable drift events for complete audit trails
-- **Time travel queries**: Query any historical state with `AS OF` clauses
-- **ACID transactions**: Full transaction support with multiple isolation levels
+- **Append-only storage**: Immutable events preserve complete history
+- **Time travel queries**: Standard SQL:2011 temporal syntax
+- **ACID transactions**: Full transaction support with isolation levels
 - **Secondary indexes**: B-tree indexes for fast lookups
-- **Snapshots & compaction**: Optimized query performance with compression
+- **Snapshots & compaction**: Optimized performance with compression
 
 ### Production Features
 - **Write-Ahead Log (WAL)**: Crash recovery with guaranteed durability
@@ -50,37 +76,71 @@ make demo
 
 ### Manual usage
 
-```bash
-# Initialize a database
+```sql
+-- Initialize and connect to database
 driftdb init ./mydata
+driftdb sql ./mydata
 
-# Create a table
-driftdb sql -d ./mydata -e 'CREATE TABLE users (pk=id, INDEX(email, status))'
+-- Create a temporal table (SQL:2011)
+CREATE TABLE users (
+    id INTEGER PRIMARY KEY,
+    email VARCHAR(255),
+    status VARCHAR(20),
+    created_at TIMESTAMP
+) WITH SYSTEM VERSIONING;
 
-# Insert data
-driftdb sql -d ./mydata -e 'INSERT INTO users {"id": "user1", "email": "alice@example.com", "status": "active"}'
+-- Insert data
+INSERT INTO users VALUES (1, 'alice@example.com', 'active', CURRENT_TIMESTAMP);
 
-# Query data
-driftdb select -d ./mydata --table users --where 'status="active"'
+-- Standard SQL queries
+SELECT * FROM users WHERE status = 'active';
 
-# Time travel query
-driftdb select -d ./mydata --table users --as-of "@seq:100"
+-- Time travel query (SQL:2011)
+SELECT * FROM users
+FOR SYSTEM_TIME AS OF '2024-01-15T10:00:00Z'
+WHERE id = 1;
 
-# Show row history
-driftdb drift -d ./mydata --table users --key "user1"
+-- Query all historical versions
+SELECT * FROM users
+FOR SYSTEM_TIME ALL
+WHERE id = 1;
 
-# Create snapshot for faster queries
-driftdb snapshot -d ./mydata --table users
-
-# Compact storage
-driftdb compact -d ./mydata --table users
+-- Query range of time
+SELECT * FROM users
+FOR SYSTEM_TIME BETWEEN '2024-01-01' AND '2024-01-31'
+WHERE status = 'active';
 ```
 
-## DriftQL Syntax
+## SQL:2011 Temporal Syntax
 
-### Basic Operations
+### Standard Temporal Queries
+
 ```sql
--- Create table with indexes
+-- AS OF: Query at a specific point in time
+SELECT * FROM orders
+FOR SYSTEM_TIME AS OF '2024-01-15T10:30:00Z'
+WHERE customer_id = 123;
+
+-- BETWEEN: All versions in a time range (inclusive)
+SELECT * FROM accounts
+FOR SYSTEM_TIME BETWEEN '2024-01-01' AND '2024-01-31'
+WHERE balance > 10000;
+
+-- FROM...TO: Range query (exclusive end)
+SELECT * FROM inventory
+FOR SYSTEM_TIME FROM '2024-01-01' TO '2024-02-01'
+WHERE product_id = 'ABC-123';
+
+-- ALL: Complete history
+SELECT * FROM audit_log
+FOR SYSTEM_TIME ALL
+WHERE action = 'DELETE';
+```
+
+### Creating Temporal Tables
+
+```sql
+-- Create table with system versioning
 CREATE TABLE orders (pk=id, INDEX(status, customer_id))
 
 -- Insert full document
@@ -205,6 +265,54 @@ data/
 - **Key rotation**: Automatic key rotation support
 - **Rate limiting**: DoS protection with per-client limits
 
+## 🎯 Use Cases
+
+### Compliance & Audit
+```sql
+-- "Prove we had user consent when we sent that email"
+SELECT consent_status, consent_timestamp
+FROM users
+FOR SYSTEM_TIME AS OF '2024-01-15T14:30:00Z'
+WHERE email = 'user@example.com';
+```
+
+### Debugging Production Issues
+```sql
+-- "What was the state when the error occurred?"
+SELECT * FROM shopping_carts
+FOR SYSTEM_TIME AS OF '2024-01-15T09:45:00Z'
+WHERE session_id = 'xyz-789';
+```
+
+### Analytics & Reporting
+```sql
+-- "Show me how this metric changed over time"
+SELECT DATE(SYSTEM_TIME_START) as date, COUNT(*) as daily_users
+FROM users
+FOR SYSTEM_TIME ALL
+WHERE status = 'active'
+GROUP BY DATE(SYSTEM_TIME_START);
+```
+
+### Data Recovery
+```sql
+-- "Restore accidentally deleted data"
+INSERT INTO users
+SELECT * FROM users
+FOR SYSTEM_TIME AS OF '2024-01-15T08:00:00Z'
+WHERE id NOT IN (SELECT id FROM users);
+```
+
+## Comparison with Other Databases
+
+| Feature | DriftDB | PostgreSQL | MySQL | Oracle | SQL Server |
+|---------|---------|------------|-------|--------|------------|
+| SQL:2011 Temporal | ✅ Native | ⚠️ Extension | ❌ | 💰 Flashback | ⚠️ Complex |
+| Storage Overhead | ✅ Low (events) | ❌ High | ❌ High | ❌ High | ❌ High |
+| Query Past Data | ✅ Simple SQL | ❌ Complex | ❌ | 💰 Extra cost | ⚠️ Complex |
+| Audit Trail | ✅ Automatic | ❌ Manual | ❌ Manual | 💰 | ⚠️ Manual |
+| Open Source | ✅ | ✅ | ✅ | ❌ | ❌ |
+
 ## Development
 
 ```bash
@@ -301,19 +409,26 @@ DriftDB is currently in **alpha** stage and should **NOT** be used in production
 - ✅ CLI interface
 - ⚠️ Experimental features added but need hardening
 
-### v0.2.0 (Next - Beta Target)
-- 📋 Fix data durability issues
-- 📋 Proper WAL implementation with fsync
+### v0.2.0 (Current - SQL:2011 Support)
+- ✅ SQL:2011 temporal query syntax
+- ✅ FOR SYSTEM_TIME support
+- ✅ Standard SQL parser integration
+- ✅ Temporal table DDL
+- 🔧 Critical bug fixes for production safety
+
+### v0.3.0 (Next - Beta Target)
+- 📋 PostgreSQL wire protocol
+- 📋 JDBC/ODBC drivers
 - 📋 Real transaction isolation
 - 📋 Comprehensive test suite
-- 📋 Remove all panic points
+- 📋 Performance optimizations
 
-### v0.3.0 (Future - Release Candidate)
-- 📋 Performance optimization
+### v0.4.0 (Future - Release Candidate)
+- 📋 Production monitoring
 - 📋 Proper replication implementation
 - 📋 Security hardening
-- 📋 Production monitoring
 - 📋 Stress testing
+- 📋 Cloud deployment support
 
 ### v1.0 (Production Ready)
 - 📋 Battle-tested in production
