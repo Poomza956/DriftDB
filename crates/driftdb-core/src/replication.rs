@@ -361,7 +361,7 @@ impl ReplicationCoordinator {
                     sequence,
                     timestamp_ms: SystemTime::now()
                         .duration_since(UNIX_EPOCH)
-                        .unwrap()
+                        .unwrap_or_else(|_| std::time::Duration::from_secs(0))
                         .as_millis() as u64,
                 };
 
@@ -422,7 +422,7 @@ impl ReplicationCoordinator {
                     sequence: current_seq,
                     timestamp_ms: SystemTime::now()
                         .duration_since(UNIX_EPOCH)
-                        .unwrap()
+                        .unwrap_or_else(|_| std::time::Duration::from_secs(0))
                         .as_millis() as u64,
                 };
 

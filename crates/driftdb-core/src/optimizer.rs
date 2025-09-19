@@ -335,7 +335,7 @@ impl QueryOptimizer {
             .min_by(|a, b| {
                 let cost_a = self.cost_of_step(a);
                 let cost_b = self.cost_of_step(b);
-                cost_a.partial_cmp(&cost_b).unwrap()
+                cost_a.partial_cmp(&cost_b).unwrap_or(std::cmp::Ordering::Equal)
             })
             .cloned()
     }

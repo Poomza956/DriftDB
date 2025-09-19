@@ -310,7 +310,13 @@ impl BackupManager {
                 && file_name.to_str().is_some_and(|s| s.ends_with(".zst")) {
                 // For now, special case for schema.zst -> schema.yaml
                 // In production, we'd store original extension in metadata
-                let name_str = file_name.to_str().unwrap();
+                let name_str = match file_name.to_str() {
+                    Some(s) => s,
+                    None => {
+                        eprintln!("Warning: Skipping file with non-UTF8 name: {:?}", file_name);
+                        continue;
+                    }
+                };
                 let base_name = &name_str[..name_str.len() - 4]; // Remove .zst
 
                 // Restore common extensions based on known patterns

@@ -252,57 +252,75 @@ MIT
 
 ## Production Readiness
 
-### ✅ 100% Production Ready
-DriftDB is now fully production-ready with comprehensive enterprise features:
+### ⚠️ Alpha Stage - Not Production Ready
+DriftDB is currently in **alpha** stage and should **NOT** be used in production.
 
-**Complete Feature Set:**
-- Full ACID transaction support with multiple isolation levels
-- Master-slave replication with automatic failover
-- Comprehensive admin CLI and monitoring tools
-- Performance benchmarks for capacity planning
-- Enterprise-grade security with encryption and TLS
-- Complete backup/restore with point-in-time recovery
-- Schema migrations with version control
-- Production monitoring and observability
+**Current Status:**
+- Core functionality implemented but not battle-tested
+- Several critical issues need resolution
+- Data durability guarantees not yet reliable
+- Replication is experimental
+- Performance not optimized
+- Security features need hardening
+
+**Safe for:**
+- Development and experimentation
+- Learning about database internals
+- Proof of concept projects
+- Testing time-travel database concepts
+
+**NOT safe for:**
+- Production workloads
+- Data you cannot afford to lose
+- High-availability requirements
+- Security-sensitive applications
 
 ### Feature Maturity
 
 | Component | Status | Production Ready |
 |-----------|--------|------------------|
-| Core Storage Engine | ✅ Stable | Yes |
-| WAL & Crash Recovery | ✅ Stable | Yes |
-| ACID Transactions | ✅ Stable | Yes |
-| Backup & Restore | ✅ Stable | Yes |
-| Query Optimization | ✅ Stable | Yes |
-| Encryption | ✅ Stable | Yes |
-| Schema Migrations | ✅ Stable | Yes |
-| Connection Pooling | ✅ Stable | Yes |
-| Monitoring & Metrics | ✅ Stable | Yes |
-| Replication | ✅ Stable | Yes |
-| Admin Tools | ✅ Stable | Yes |
-| Performance Benchmarks | ✅ Complete | Yes |
+| Core Storage Engine | 🔶 Alpha | No |
+| WAL & Crash Recovery | 🔶 Alpha | No |
+| ACID Transactions | 🔶 Alpha | No |
+| Backup & Restore | 🔶 Alpha | No |
+| Query Optimization | 🔶 Experimental | No |
+| Encryption | 🔶 Experimental | No |
+| Schema Migrations | 🔶 Experimental | No |
+| Connection Pooling | 🔶 Alpha | No |
+| Monitoring & Metrics | 🔶 Placeholder | No |
+| Replication | 🔶 Experimental | No |
+| Admin Tools | 🔶 Alpha | No |
+| Performance Benchmarks | 🔶 Basic | No |
 
 ## Roadmap
 
-### v1.0 (Complete) ✅
-- ✅ Core database engine
-- ✅ ACID transactions
-- ✅ WAL and crash recovery
-- ✅ Backup and restore
-- ✅ Query optimization
-- ✅ Encryption
-- ✅ Schema migrations
-- ✅ Production monitoring
-- ✅ Master-slave replication
-- ✅ Admin tools
-- ✅ Performance benchmarks
+### v0.1.0 (Current - Alpha)
+- ✅ Basic storage engine
+- ✅ Simple event sourcing
+- ✅ Basic time-travel queries
+- ✅ CLI interface
+- ⚠️ Experimental features added but need hardening
 
-### v1.1 (Next Release)
-- 📋 Web-based admin UI
-- 📋 Kubernetes operators
-- 📋 Multi-region replication
-- 📋 Read replica load balancing
-- 📋 Automated backup scheduling
+### v0.2.0 (Next - Beta Target)
+- 📋 Fix data durability issues
+- 📋 Proper WAL implementation with fsync
+- 📋 Real transaction isolation
+- 📋 Comprehensive test suite
+- 📋 Remove all panic points
+
+### v0.3.0 (Future - Release Candidate)
+- 📋 Performance optimization
+- 📋 Proper replication implementation
+- 📋 Security hardening
+- 📋 Production monitoring
+- 📋 Stress testing
+
+### v1.0 (Production Ready)
+- 📋 Battle-tested in production
+- 📋 Full documentation
+- 📋 Performance guarantees
+- 📋 High availability
+- 📋 Enterprise features
 
 ### v2.0 (Future)
 - 📋 Multi-master replication

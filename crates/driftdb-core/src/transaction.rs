@@ -169,8 +169,9 @@ impl LockManager {
             if let Some(readers) = read_locks.get(key) {
                 if readers.len() > 1 || (readers.len() == 1 && !readers.contains(&txn_id)) {
                     // Other transactions have read locks
-                    let blocking_txn = *readers.iter().find(|&&id| id != txn_id).unwrap();
-                    return self.wait_for_lock(txn_id, key, LockType::Write, blocking_txn);
+                    if let Some(&blocking_txn) = readers.iter().find(|&&id| id != txn_id) {
+                        return self.wait_for_lock(txn_id, key, LockType::Write, blocking_txn);
+                    }
                 }
             }
         }
@@ -298,22 +299,46 @@ pub struct TransactionManager {
     current_version: Arc<AtomicU64>,
 }
 
-impl Default for TransactionManager {
-    fn default() -> Self {
+impl TransactionManager {
+    pub fn new() -> Self {
+        // Get data path from environment or use a sensible default
+        let data_path = std::env::var("DRIFTDB_DATA_PATH")
+            .unwrap_or_else(|_| "./data".to_string());
+        let wal_path = std::path::PathBuf::from(data_path).join("wal");
+
+        // Try to create the WAL directory
+        if let Err(e) = std::fs::create_dir_all(&wal_path) {
+            eprintln!("WARNING: Failed to create WAL directory: {}", e);
+        }
+
+        // Create WAL with proper error handling
+        let wal = match Wal::new(&wal_path) {
+            Ok(w) => Arc::new(w),
+            Err(e) => {
+                eprintln!("ERROR: Failed to create WAL at {:?}: {}", wal_path, e);
+                eprintln!("FALLBACK: Using temporary directory for WAL (DATA NOT DURABLE!)");
+
+                // Try fallback to temp directory
+                let temp_path = std::env::temp_dir().join("driftdb_wal_fallback");
+                let _ = std::fs::create_dir_all(&temp_path);
+
+                match Wal::new(temp_path) {
+                    Ok(w) => Arc::new(w),
+                    Err(e2) => {
+                        panic!("FATAL: Cannot create WAL even in temp directory: {}", e2);
+                    }
+                }
+            }
+        };
+
         Self {
             next_txn_id: Arc::new(AtomicU64::new(1)),
             active_transactions: Arc::new(RwLock::new(HashMap::new())),
             lock_manager: Arc::new(LockManager::new()),
-            wal: Arc::new(Wal::new(std::path::PathBuf::from("/tmp/wal")).unwrap()),
+            wal,
             metrics: Arc::new(Metrics::new()),
             current_version: Arc::new(AtomicU64::new(1)),
         }
-    }
-}
-
-impl TransactionManager {
-    pub fn new() -> Self {
-        Self::default()
     }
 
     pub fn new_with_deps(wal: Arc<Wal>, metrics: Arc<Metrics>) -> Self {
