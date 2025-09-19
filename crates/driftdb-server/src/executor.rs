@@ -8,6 +8,7 @@ use serde_json::Value;
 use std::sync::Arc;
 use std::collections::HashMap;
 use tokio::sync::{RwLock, Mutex};
+use parking_lot::Mutex as ParkingMutex;
 use tracing::{debug, info, warn};
 
 #[cfg(test)]
@@ -314,11 +315,50 @@ impl PlanNode {
     }
 }
 
+/// Prepared statement storage
+#[derive(Debug, Clone)]
+pub struct PreparedStatement {
+    pub name: String,
+    pub sql: String,
+    pub parsed_query: ParsedQuery,
+    pub param_types: Vec<ParamType>,
+    pub created_at: std::time::Instant,
+}
+
+/// Parsed query structure for prepared statements
+#[derive(Debug, Clone)]
+pub struct ParsedQuery {
+    pub query_type: QueryType,
+    pub base_sql: String,
+    pub param_positions: Vec<usize>, // Positions of $1, $2, etc.
+}
+
+/// Query type enum
+#[derive(Debug, Clone)]
+pub enum QueryType {
+    Select,
+    Insert,
+    Update,
+    Delete,
+    Other,
+}
+
+/// Parameter type for prepared statements
+#[derive(Debug, Clone)]
+pub enum ParamType {
+    Integer,
+    String,
+    Boolean,
+    Float,
+    Unknown,
+}
+
 pub struct QueryExecutor<'a> {
     engine_guard: Option<&'a EngineGuard>,
     engine: Option<Arc<tokio::sync::RwLock<Engine>>>,
     subquery_cache: Arc<Mutex<HashMap<String, QueryResult>>>, // Cache for non-correlated subqueries
     use_indexes: bool, // Enable/disable index optimization
+    prepared_statements: Arc<ParkingMutex<HashMap<String, PreparedStatement>>>, // Prepared statements cache
 }
 
 impl<'a> QueryExecutor<'a> {
@@ -328,6 +368,7 @@ impl<'a> QueryExecutor<'a> {
             engine: Some(engine),
             subquery_cache: Arc::new(Mutex::new(HashMap::new())),
             use_indexes: true, // Enable index optimization by default
+            prepared_statements: Arc::new(ParkingMutex::new(HashMap::new())),
         }
     }
 
@@ -337,6 +378,7 @@ impl<'a> QueryExecutor<'a> {
             engine: None,
             subquery_cache: Arc::new(Mutex::new(HashMap::new())),
             use_indexes: true,
+            prepared_statements: Arc::new(ParkingMutex::new(HashMap::new())),
         }
     }
 
@@ -1043,6 +1085,21 @@ impl<'a> QueryExecutor<'a> {
         // Handle EXPLAIN commands
         if sql.to_lowercase().starts_with("explain ") {
             return self.execute_explain(sql).await;
+        }
+
+        // Handle PREPARE commands
+        if sql.to_lowercase().starts_with("prepare ") {
+            return self.execute_prepare(sql).await;
+        }
+
+        // Handle EXECUTE commands
+        if sql.to_lowercase().starts_with("execute ") {
+            return self.execute_prepared(sql).await;
+        }
+
+        // Handle DEALLOCATE commands
+        if sql.to_lowercase().starts_with("deallocate ") {
+            return self.deallocate_prepared(sql).await;
         }
 
         // Handle SET commands (ignore for now)
@@ -1811,6 +1868,186 @@ impl<'a> QueryExecutor<'a> {
             columns: vec!["QUERY PLAN".to_string()],
             rows: output.lines().map(|line| vec![Value::String(line.to_string())]).collect(),
         })
+    }
+
+    /// Execute PREPARE command to create a prepared statement
+    async fn execute_prepare(&self, sql: &str) -> Result<QueryResult> {
+        // Parse: PREPARE stmt_name AS SELECT ...
+        let parts: Vec<&str> = sql.split_whitespace().collect();
+        if parts.len() < 4 || parts[2].to_uppercase() != "AS" {
+            return Err(anyhow!("Invalid PREPARE syntax. Use: PREPARE stmt_name AS SELECT ..."));
+        }
+
+        let stmt_name = parts[1];
+        let query_start = sql.find(" AS ").unwrap() + 4;
+        let query_sql = sql[query_start..].trim();
+
+        // Parse the query and identify parameters ($1, $2, etc.)
+        let parsed_query = self.parse_prepared_query(query_sql)?;
+
+        let prepared_stmt = PreparedStatement {
+            name: stmt_name.to_string(),
+            sql: query_sql.to_string(),
+            parsed_query,
+            param_types: Vec::new(), // Will be inferred on first execution
+            created_at: std::time::Instant::now(),
+        };
+
+        // Store the prepared statement
+        let mut statements = self.prepared_statements.lock();
+        statements.insert(stmt_name.to_string(), prepared_stmt);
+
+        info!("Prepared statement '{}' created", stmt_name);
+        Ok(QueryResult::Empty)
+    }
+
+    /// Execute a prepared statement with parameters
+    async fn execute_prepared(&self, sql: &str) -> Result<QueryResult> {
+        // Parse: EXECUTE stmt_name (param1, param2, ...)
+        let lower = sql.to_lowercase();
+        let parts: Vec<&str> = sql.split_whitespace().collect();
+
+        if parts.len() < 2 {
+            return Err(anyhow!("Invalid EXECUTE syntax. Use: EXECUTE stmt_name (params...)"));
+        }
+
+        let stmt_name = parts[1].trim_end_matches('(');
+
+        // Extract parameters if present
+        let params = if sql.contains('(') {
+            let param_start = sql.find('(').unwrap() + 1;
+            let param_end = sql.rfind(')').ok_or_else(|| anyhow!("Missing closing parenthesis"))?;
+            let param_str = &sql[param_start..param_end];
+            self.parse_execute_params(param_str)?
+        } else {
+            Vec::new()
+        };
+
+        // Get the prepared statement
+        let prepared = {
+            let statements = self.prepared_statements.lock();
+            statements.get(stmt_name)
+                .ok_or_else(|| anyhow!("Prepared statement '{}' not found", stmt_name))?
+                .clone()
+        }; // Lock is dropped here
+
+        // Substitute parameters into the query
+        let final_sql = self.substitute_params(&prepared.sql, &params)?;
+
+        debug!("Executing prepared statement '{}' with {} parameters", stmt_name, params.len());
+
+        // Execute the final query
+        Box::pin(self.execute(&final_sql)).await
+    }
+
+    /// Deallocate a prepared statement
+    async fn deallocate_prepared(&self, sql: &str) -> Result<QueryResult> {
+        // Parse: DEALLOCATE stmt_name
+        let parts: Vec<&str> = sql.split_whitespace().collect();
+
+        if parts.len() < 2 {
+            return Err(anyhow!("Invalid DEALLOCATE syntax. Use: DEALLOCATE stmt_name"));
+        }
+
+        let stmt_name = parts[1];
+
+        let mut statements = self.prepared_statements.lock();
+        if statements.remove(stmt_name).is_some() {
+            info!("Deallocated prepared statement '{}'", stmt_name);
+            Ok(QueryResult::Empty)
+        } else {
+            Err(anyhow!("Prepared statement '{}' not found", stmt_name))
+        }
+    }
+
+    /// Parse a query to identify parameters and structure
+    fn parse_prepared_query(&self, sql: &str) -> Result<ParsedQuery> {
+        let lower = sql.to_lowercase();
+
+        // Determine query type
+        let query_type = if lower.starts_with("select") {
+            QueryType::Select
+        } else if lower.starts_with("insert") {
+            QueryType::Insert
+        } else if lower.starts_with("update") {
+            QueryType::Update
+        } else if lower.starts_with("delete") {
+            QueryType::Delete
+        } else {
+            QueryType::Other
+        };
+
+        // Find all parameter placeholders ($1, $2, etc.)
+        let mut param_positions = Vec::new();
+        let mut chars: Vec<char> = sql.chars().collect();
+        let mut i = 0;
+
+        while i < chars.len() {
+            if chars[i] == '$' && i + 1 < chars.len() && chars[i + 1].is_ascii_digit() {
+                param_positions.push(i);
+                // Skip the parameter number
+                i += 2;
+                while i < chars.len() && chars[i].is_ascii_digit() {
+                    i += 1;
+                }
+            } else {
+                i += 1;
+            }
+        }
+
+        Ok(ParsedQuery {
+            query_type,
+            base_sql: sql.to_string(),
+            param_positions,
+        })
+    }
+
+    /// Parse parameters from EXECUTE command
+    fn parse_execute_params(&self, param_str: &str) -> Result<Vec<Value>> {
+        if param_str.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut params = Vec::new();
+        let parts = param_str.split(',');
+
+        for part in parts {
+            let trimmed = part.trim();
+            params.push(self.parse_sql_value(trimmed)?);
+        }
+
+        Ok(params)
+    }
+
+    /// Substitute parameter values into the prepared query
+    fn substitute_params(&self, sql: &str, params: &[Value]) -> Result<String> {
+        let mut result = sql.to_string();
+
+        // Replace parameters in reverse order to avoid index shifting
+        for (i, param) in params.iter().enumerate() {
+            let placeholder = format!("${}", i + 1);
+            let value_str = match param {
+                Value::String(s) => format!("'{}'", s.replace('\'', "''")),
+                Value::Number(n) => n.to_string(),
+                Value::Bool(b) => b.to_string(),
+                Value::Null => "NULL".to_string(),
+                _ => return Err(anyhow!("Unsupported parameter type")),
+            };
+
+            result = result.replace(&placeholder, &value_str);
+        }
+
+        // Check if any parameters were not replaced
+        if result.contains('$') && result.chars().any(|c| c == '$') {
+            // Simple check for remaining parameters
+            for i in 1..=10 {
+                if result.contains(&format!("${}", i)) {
+                    return Err(anyhow!("Parameter ${} not provided", i));
+                }
+            }
+        }
+
+        Ok(result)
     }
 
     /// Generate a query execution plan
