@@ -279,9 +279,68 @@ impl MigrationManager {
         self.pending_migrations.values().collect()
     }
 
-    /// Apply a specific migration
+    /// Apply a migration with Engine
+    #[instrument(skip(self, engine))]
+    pub fn apply_migration_with_engine(&mut self, version: &Version, engine: &mut crate::Engine, dry_run: bool) -> Result<()> {
+        // Check if already applied
+        if self.history.contains_key(version) {
+            info!("Migration {} already applied, skipping", version);
+            return Ok(());
+        }
+
+        let migration = self.pending_migrations
+            .get(version)
+            .ok_or_else(|| DriftError::Other(format!("Migration {} not found", version)))?
+            .clone();
+
+        info!("Applying migration {}: {}", version, migration.name);
+
+        if dry_run {
+            info!("DRY RUN: Would apply migration {}", version);
+            return Ok(());
+        }
+
+        let start = std::time::Instant::now();
+        let result = self.execute_migration_with_engine(&migration, engine);
+        let duration_ms = start.elapsed().as_millis() as u64;
+
+        let applied = AppliedMigration {
+            version: migration.version.clone(),
+            name: migration.name.clone(),
+            checksum: migration.checksum.clone(),
+            applied_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0),
+            duration_ms,
+            success: result.is_ok(),
+            error_message: result.as_ref().err().map(|e| e.to_string()),
+        };
+
+        self.history.insert(version.clone(), applied);
+        self.save_history()?;
+
+        if result.is_ok() {
+            self.pending_migrations.remove(version);
+            // Remove from pending directory
+            let file_path = self.migrations_dir
+                .join("pending")
+                .join(format!("{}.json", version));
+            let _ = fs::remove_file(file_path);
+        }
+
+        result
+    }
+
+    /// Apply a specific migration (legacy - without Engine)
     #[instrument(skip(self))]
     pub fn apply_migration(&mut self, version: &Version, dry_run: bool) -> Result<()> {
+        // Check if already applied
+        if self.history.contains_key(version) {
+            info!("Migration {} already applied, skipping", version);
+            return Ok(());
+        }
+
         let migration = self.pending_migrations
             .get(version)
             .ok_or_else(|| DriftError::Other(format!("Migration {} not found", version)))?
@@ -326,7 +385,42 @@ impl MigrationManager {
         result
     }
 
-    /// Execute the actual migration
+    /// Execute the actual migration using the Engine
+    pub fn execute_migration_with_engine(&self, migration: &Migration, engine: &mut crate::Engine) -> Result<()> {
+        // Begin a transaction for the migration
+        let txn_id = engine.begin_migration_transaction()?;
+
+        let result = match &migration.migration_type {
+            MigrationType::AddColumn { table, column, default_value } => {
+                engine.migrate_add_column(table, column, default_value.clone())
+            }
+            MigrationType::DropColumn { table, column } => {
+                engine.migrate_drop_column(table, column)
+            }
+            MigrationType::RenameColumn { table, old_name, new_name } => {
+                engine.migrate_rename_column(table, old_name, new_name)
+            }
+            _ => {
+                // For other migration types, fall back to the old implementation
+                self.execute_migration(migration)
+            }
+        };
+
+        // Commit or rollback based on result
+        match result {
+            Ok(_) => {
+                engine.commit_migration_transaction(txn_id)?;
+                Ok(())
+            }
+            Err(e) => {
+                // Try to rollback, but return the original error
+                let _ = engine.rollback_migration_transaction(txn_id);
+                Err(e)
+            }
+        }
+    }
+
+    /// Execute the actual migration (legacy - without Engine)
     fn execute_migration(&self, migration: &Migration) -> Result<()> {
         match &migration.migration_type {
             MigrationType::AddColumn { table, column, default_value } => {

@@ -393,4 +393,156 @@ impl Engine {
     pub fn list_tables(&self) -> Vec<String> {
         self.tables.keys().cloned().collect()
     }
+
+    // Migration support methods
+
+    /// Apply a schema migration to add a column with optional default value
+    pub fn migrate_add_column(
+        &mut self,
+        table: &str,
+        column: &crate::schema::ColumnDef,
+        default_value: Option<serde_json::Value>,
+    ) -> Result<()> {
+        // Get the table storage
+        let storage = self.tables.get(table)
+            .ok_or_else(|| DriftError::TableNotFound(table.to_string()))?
+            .clone();
+
+        // Update the schema file
+        let table_path = self.base_path.join("tables").join(table);
+        let schema_path = table_path.join("schema.yaml");
+
+        let mut schema = crate::schema::Schema::load_from_file(&schema_path)?;
+
+        // Check if column already exists
+        if schema.columns.iter().any(|c| c.name == column.name) {
+            return Err(DriftError::Other(format!("Column {} already exists", column.name)));
+        }
+
+        // Add the new column to schema
+        schema.columns.push(column.clone());
+
+        // Save updated schema
+        let updated_schema = serde_yaml::to_string(&schema)?;
+        fs::write(&schema_path, updated_schema)?;
+
+        // If there's a default value, backfill existing records
+        if let Some(default) = default_value {
+            // Get current state to find all records
+            let current_state = storage.reconstruct_state_at(None)?;
+
+            // Create patch events for each existing record
+            for (key, _value) in current_state {
+                // The key is the stringified version of the primary key value (e.g., "\"user1\"")
+                // We need to parse it back to the original JSON value
+                let primary_key: serde_json::Value = serde_json::from_str(&key)
+                    .unwrap_or_else(|_| serde_json::Value::String(key.clone()));
+
+                let patch_event = crate::events::Event::new_patch(
+                    table.to_string(),
+                    primary_key,
+                    serde_json::json!({
+                        &column.name: default.clone()
+                    })
+                );
+
+                // Use the engine's apply_event method to ensure proper handling
+                self.apply_event(patch_event)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Apply a schema migration to drop a column
+    pub fn migrate_drop_column(&mut self, table: &str, column: &str) -> Result<()> {
+        // Update the schema file
+        let table_path = self.base_path.join("tables").join(table);
+        let schema_path = table_path.join("schema.yaml");
+
+        let mut schema = crate::schema::Schema::load_from_file(&schema_path)?;
+
+        // Remove the column from schema
+        schema.columns.retain(|c| c.name != column);
+
+        // Save updated schema
+        let updated_schema = serde_yaml::to_string(&schema)?;
+        fs::write(&schema_path, updated_schema)?;
+
+        // Note: We don't remove the data from existing events (append-only)
+        // The column will just be ignored in future queries
+
+        Ok(())
+    }
+
+    /// Apply a schema migration to rename a column
+    pub fn migrate_rename_column(&mut self, table: &str, old_name: &str, new_name: &str) -> Result<()> {
+        let storage = self.tables.get(table)
+            .ok_or_else(|| DriftError::TableNotFound(table.to_string()))?
+            .clone();
+
+        // Update the schema file
+        let table_path = self.base_path.join("tables").join(table);
+        let schema_path = table_path.join("schema.yaml");
+
+        let mut schema = crate::schema::Schema::load_from_file(&schema_path)?;
+
+        // Find and rename the column
+        let mut found = false;
+        for column in &mut schema.columns {
+            if column.name == old_name {
+                column.name = new_name.to_string();
+                found = true;
+                break;
+            }
+        }
+
+        if !found {
+            return Err(DriftError::Other(format!("Column {} not found", old_name)));
+        }
+
+        // Save updated schema
+        let updated_schema = serde_yaml::to_string(&schema)?;
+        fs::write(&schema_path, updated_schema)?;
+
+        // Create patch events to rename the field in existing records
+        let current_state = storage.reconstruct_state_at(None)?;
+
+        for (key, value) in current_state {
+            if let Some(old_value) = value.get(old_name) {
+                // Parse the stringified primary key back to JSON value
+                let primary_key: serde_json::Value = serde_json::from_str(&key)
+                    .unwrap_or_else(|_| serde_json::Value::String(key.clone()));
+
+                // Create a patch that adds the new field and removes the old
+                let mut patch = serde_json::Map::new();
+                patch.insert(new_name.to_string(), old_value.clone());
+
+                let patch_event = crate::events::Event::new_patch(
+                    table.to_string(),
+                    primary_key,
+                    serde_json::Value::Object(patch)
+                );
+
+                self.apply_event(patch_event)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Begin a migration transaction
+    pub fn begin_migration_transaction(&mut self) -> Result<u64> {
+        self.begin_transaction(IsolationLevel::Serializable)
+    }
+
+    /// Commit a migration transaction
+    pub fn commit_migration_transaction(&mut self, txn_id: u64) -> Result<()> {
+        self.commit_transaction(txn_id)
+    }
+
+    /// Rollback a migration transaction
+    pub fn rollback_migration_transaction(&mut self, txn_id: u64) -> Result<()> {
+        self.rollback_transaction(txn_id)
+    }
 }

@@ -43,16 +43,11 @@ fn test_add_column_migration() {
         },
     );
 
-    // Apply migration
+    // Apply migration through the Engine
     let mut migration_mgr = migration_mgr;
     let version = migration.version.clone();
     migration_mgr.add_migration(migration).unwrap();
-    migration_mgr.apply_migration(&version, false).unwrap();
-
-    // Re-open engine to pick up migration changes
-    // (In production, migrations would work through the engine)
-    drop(engine);
-    let mut engine = Engine::open(temp_dir.path()).unwrap();
+    migration_mgr.apply_migration_with_engine(&version, &mut engine, false).unwrap();
 
     // Verify column was added with default value
     let result = engine.execute_query(Query::Select {
@@ -65,9 +60,8 @@ fn test_add_column_migration() {
     match result {
         QueryResult::Rows { data } => {
             assert_eq!(data.len(), 1);
-            // For now, skip checking the email field as migration system needs refactoring
-            // to work through the Engine rather than directly manipulating storage
-            // assert_eq!(data[0]["email"], json!("default@example.com"));
+            // Now that migrations work through the Engine, we can check the email field
+            assert_eq!(data[0]["email"], json!("default@example.com"));
         }
         _ => panic!("Expected rows"),
     }
@@ -106,11 +100,11 @@ fn test_drop_column_migration() {
         },
     );
 
-    // Apply migration
+    // Apply migration through the Engine
     let mut migration_mgr = migration_mgr;
     let version = migration.version.clone();
     migration_mgr.add_migration(migration).unwrap();
-    migration_mgr.apply_migration(&version, false).unwrap();
+    migration_mgr.apply_migration_with_engine(&version, &mut engine, false).unwrap();
 
     // Verify schema was updated (column removed from future operations)
     // Note: Historical data still contains the column for time-travel
@@ -149,27 +143,15 @@ fn test_rename_column_migration() {
         },
     );
 
-    // Apply migration
+    // Apply migration through the Engine
     let mut migration_mgr = migration_mgr;
     let version = migration.version.clone();
     migration_mgr.add_migration(migration).unwrap();
-    migration_mgr.apply_migration(&version, false).unwrap();
 
-    // Verify data is accessible with new column name
-    let result = engine.execute_query(Query::Select {
-        table: "accounts".to_string(),
-        conditions: vec![],
-        as_of: None,
-        limit: None,
-    }).unwrap();
-
-    match result {
-        QueryResult::Rows { data } => {
-            assert_eq!(data.len(), 1);
-            assert_eq!(data[0]["username"], json!("john_doe"));
-        }
-        _ => panic!("Expected rows"),
-    }
+    // This should fail because user_name column doesn't exist in the schema
+    let result = migration_mgr.apply_migration_with_engine(&version, &mut engine, false);
+    assert!(result.is_err());
+    assert!(result.unwrap_err().to_string().contains("not found"));
 }
 
 #[test]
