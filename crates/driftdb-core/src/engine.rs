@@ -394,6 +394,67 @@ impl Engine {
         self.tables.keys().cloned().collect()
     }
 
+    /// Get all data from a table (for SQL SELECT support)
+    pub fn get_table_data(&self, table_name: &str) -> Result<Vec<serde_json::Value>> {
+        let storage = self.tables.get(table_name)
+            .ok_or_else(|| DriftError::TableNotFound(table_name.to_string()))?;
+
+        // Get the current state of the table (None means latest)
+        let state = storage.reconstruct_state_at(None)?;
+
+        // Convert to Vec of JSON values
+        let mut results = Vec::new();
+        for (_key, value) in state {
+            results.push(value);
+        }
+
+        Ok(results)
+    }
+
+    /// Insert a record into a table (for SQL INSERT support)
+    pub fn insert_record(&mut self, table_name: &str, record: serde_json::Value) -> Result<()> {
+        let storage = self.tables.get(table_name)
+            .ok_or_else(|| DriftError::TableNotFound(table_name.to_string()))?
+            .clone();
+
+        // Extract primary key from record
+        let primary_key_field = &storage.schema().primary_key;
+        let primary_key = record.get(primary_key_field)
+            .ok_or_else(|| DriftError::Other(format!("Missing primary key field: {}", primary_key_field)))?
+            .clone();
+
+        let event = Event::new_insert(table_name.to_string(), primary_key, record);
+        self.apply_event(event)?;
+
+        Ok(())
+    }
+
+    /// Update a record in a table (for SQL UPDATE support)
+    pub fn update_record(&mut self, table_name: &str, primary_key: serde_json::Value, record: serde_json::Value) -> Result<()> {
+        let storage = self.tables.get(table_name)
+            .ok_or_else(|| DriftError::TableNotFound(table_name.to_string()))?
+            .clone();
+
+        // Use PATCH event for updates
+        let event = Event::new_patch(table_name.to_string(), primary_key, record);
+        self.apply_event(event)?;
+
+        Ok(())
+    }
+
+    /// Delete a record from a table (for SQL DELETE support)
+    pub fn delete_record(&mut self, table_name: &str, primary_key: serde_json::Value) -> Result<()> {
+        let storage = self.tables.get(table_name)
+            .ok_or_else(|| DriftError::TableNotFound(table_name.to_string()))?
+            .clone();
+
+        // Use SOFT_DELETE event for deletes (preserves audit trail)
+        let event = Event::new_soft_delete(table_name.to_string(), primary_key);
+        self.apply_event(event)?;
+
+        Ok(())
+    }
+
     // Migration support methods
 
     /// Apply a schema migration to add a column with optional default value
