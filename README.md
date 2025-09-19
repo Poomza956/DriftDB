@@ -1,6 +1,6 @@
 # DriftDB
 
-**The PostgreSQL-compatible time-travel database** - Query your data at any point in history using standard SQL with any PostgreSQL client.
+**The PostgreSQL-compatible time-travel database** - Query your data at any point in history using standard SQL with any PostgreSQL client. Now with full SQL support including WHERE, UPDATE, and DELETE!
 
 ## 🚀 Quick Start
 
@@ -26,6 +26,9 @@ SELECT * FROM events;                -- Shows 'modified'
 ### PostgreSQL Wire Protocol v3
 - **100% PostgreSQL compatible**: Connect with psql, pgAdmin, or any PostgreSQL driver
 - **Standard SQL support**: CREATE TABLE, INSERT, SELECT, UPDATE, DELETE
+- **WHERE clause support**: Full filtering with =, !=, >, <, >=, <= operators
+- **UPDATE with conditions**: Modify specific rows with WHERE clauses
+- **DELETE with conditions**: Remove specific rows while preserving history
 - **Time-travel syntax**: `AS OF @seq:N` for querying any historical state
 - **No authentication required**: Simplified setup for development
 
@@ -158,8 +161,15 @@ CREATE TABLE users (
 -- Insert data
 INSERT INTO users VALUES (1, 'alice@example.com', 'active', CURRENT_TIMESTAMP);
 
--- Standard SQL queries
+-- Standard SQL queries with WHERE clauses
 SELECT * FROM users WHERE status = 'active';
+SELECT * FROM users WHERE id > 100 AND status != 'deleted';
+
+-- UPDATE with conditions
+UPDATE users SET status = 'inactive' WHERE last_login < '2024-01-01';
+
+-- DELETE with conditions (soft delete preserves history)
+DELETE FROM users WHERE status = 'inactive' AND created_at < '2023-01-01';
 
 -- Time travel query (SQL:2011)
 SELECT * FROM users
@@ -468,28 +478,40 @@ DriftDB is currently in **alpha** stage and should **NOT** be used in production
 
 ## Roadmap
 
-### v0.1.0 (Current - Alpha)
+### v0.1.0 (Alpha - Complete)
 - ✅ Basic storage engine
 - ✅ Simple event sourcing
 - ✅ Basic time-travel queries
 - ✅ CLI interface
-- ⚠️ Experimental features added but need hardening
+- ✅ Experimental features added
 
-### v0.2.0 (Current - SQL:2011 Support)
+### v0.2.0 (SQL:2011 Support - Complete)
 - ✅ SQL:2011 temporal query syntax
 - ✅ FOR SYSTEM_TIME support
 - ✅ Standard SQL parser integration
 - ✅ Temporal table DDL
-- 🔧 Critical bug fixes for production safety
 
-### v0.3.0 (Next - Beta Target)
-- 📋 PostgreSQL wire protocol
-- 📋 JDBC/ODBC drivers
-- 📋 Real transaction isolation
-- 📋 Comprehensive test suite
-- 📋 Performance optimizations
+### v0.3.0 (PostgreSQL Compatibility - Complete)
+- ✅ PostgreSQL wire protocol v3
+- ✅ Connect with any PostgreSQL client
+- ✅ Basic SQL execution
+- ✅ Time-travel through PostgreSQL
 
-### v0.4.0 (Future - Release Candidate)
+### v0.4.0 (Current - Full SQL Support)
+- ✅ WHERE clause with multiple operators
+- ✅ UPDATE statement with conditions
+- ✅ DELETE statement with conditions
+- ✅ AND logic for multiple conditions
+- ✅ Soft deletes preserve history
+
+### v0.5.0 (Next - Production Features)
+- 📋 JOIN operations
+- 📋 Aggregations (COUNT, SUM, AVG)
+- 📋 GROUP BY and HAVING
+- 📋 ORDER BY and LIMIT
+- 📋 Subqueries
+
+### v0.6.0 (Release Candidate)
 - 📋 Production monitoring
 - 📋 Proper replication implementation
 - 📋 Security hardening
@@ -503,9 +525,9 @@ DriftDB is currently in **alpha** stage and should **NOT** be used in production
 - 📋 High availability
 - 📋 Enterprise features
 
-### v2.0 (Future)
+### v2.0 (Future Vision)
 - 📋 Multi-master replication
 - 📋 Sharding support
-- 📋 SQL compatibility layer
+- 📋 Full SQL compatibility
 - 📋 Change data capture (CDC)
 - 📋 GraphQL API
