@@ -81,8 +81,10 @@ impl TableStorage {
         if let Some(writer) = writer_guard.as_mut() {
             let bytes_written = writer.append_event(&event)?;
 
+            // Always sync after writing to ensure data is persisted
+            writer.sync()?;
+
             if bytes_written > self.segment_rotation_threshold() {
-                writer.sync()?;
                 meta.segment_count += 1;
                 let new_segment_path = self.path.join("segments")
                     .join(format!("{:08}.seg", meta.segment_count));

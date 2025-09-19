@@ -436,6 +436,8 @@ impl MigrationManager {
             let storage = crate::storage::TableStorage::open(&self.data_dir, table)?;
             let current_state = storage.reconstruct_state_at(None)?;
 
+            debug!("Backfilling {} existing records with default value for column {}", current_state.len(), column.name);
+
             for (key, _) in current_state {
                 let patch_event = crate::events::Event::new_patch(
                     table.to_string(),
@@ -444,8 +446,12 @@ impl MigrationManager {
                         &column.name: default
                     })
                 );
+                debug!("Creating patch event for key: {} with value: {:?}", key, default);
                 storage.append_event(patch_event)?;
             }
+
+            // Ensure events are synced to disk
+            storage.sync()?;
         }
 
         info!("Added column {} to table {}", column.name, table);
