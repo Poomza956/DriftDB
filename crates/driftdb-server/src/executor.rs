@@ -207,6 +207,25 @@ pub enum WhereCondition {
     Subquery(SubqueryExpression),
 }
 
+/// Set operation types
+#[derive(Debug, Clone, PartialEq)]
+pub enum SetOperation {
+    Union,
+    UnionAll,
+    Intersect,
+    IntersectAll,
+    Except,
+    ExceptAll,
+}
+
+/// Set operation specification
+#[derive(Debug, Clone)]
+pub struct SetOperationQuery {
+    pub left: String,  // Left SELECT query
+    pub right: String, // Right SELECT query
+    pub operation: SetOperation,
+}
+
 pub struct QueryExecutor<'a> {
     engine_guard: Option<&'a EngineGuard>,
     engine: Option<Arc<tokio::sync::RwLock<Engine>>>,
@@ -965,6 +984,11 @@ impl<'a> QueryExecutor<'a> {
 
     async fn execute_select(&self, sql: &str) -> Result<QueryResult> {
         let lower = sql.to_lowercase();
+
+        // Check for set operations (UNION, INTERSECT, EXCEPT)
+        if let Some(set_op) = self.parse_set_operation(sql)? {
+            return self.execute_set_operation(&set_op).await;
+        }
 
         // Parse SELECT clause to determine what kind of query this is
         let select_start = if lower.starts_with("select ") { 7 } else { 0 };
@@ -3128,6 +3152,208 @@ impl<'a> QueryExecutor<'a> {
         }
 
         Ok(result)
+    }
+
+    /// Parse set operations (UNION, INTERSECT, EXCEPT)
+    fn parse_set_operation(&self, sql: &str) -> Result<Option<SetOperationQuery>> {
+        let lower = sql.to_lowercase();
+
+        // Check for set operations
+        let operations = [
+            (" union all ", SetOperation::UnionAll),
+            (" union ", SetOperation::Union),
+            (" intersect all ", SetOperation::IntersectAll),
+            (" intersect ", SetOperation::Intersect),
+            (" except all ", SetOperation::ExceptAll),
+            (" except ", SetOperation::Except),
+        ];
+
+        for (keyword, operation) in operations.iter() {
+            if let Some(pos) = lower.find(keyword) {
+                // Split the query into left and right parts
+                let left = sql[..pos].trim();
+                let right = sql[pos + keyword.len()..].trim();
+
+                // Both sides must be SELECT statements
+                if !left.to_lowercase().starts_with("select") || !right.to_lowercase().starts_with("select") {
+                    if left.starts_with("(") && left.ends_with(")") && right.starts_with("(") && right.ends_with(")") {
+                        // Handle parenthesized subqueries
+                        let left_inner = &left[1..left.len()-1];
+                        let right_inner = &right[1..right.len()-1];
+                        if left_inner.to_lowercase().starts_with("select") && right_inner.to_lowercase().starts_with("select") {
+                            return Ok(Some(SetOperationQuery {
+                                left: left_inner.to_string(),
+                                right: right_inner.to_string(),
+                                operation: operation.clone(),
+                            }));
+                        }
+                    }
+                    continue;
+                }
+
+                return Ok(Some(SetOperationQuery {
+                    left: left.to_string(),
+                    right: right.to_string(),
+                    operation: operation.clone(),
+                }));
+            }
+        }
+
+        Ok(None)
+    }
+
+    /// Execute set operations
+    async fn execute_set_operation(&self, set_op: &SetOperationQuery) -> Result<QueryResult> {
+        debug!("Executing set operation: {:?}", set_op.operation);
+
+        // Execute both SELECT queries (using Box::pin for recursion)
+        let left_result = Box::pin(self.execute_select(&set_op.left)).await?;
+        let right_result = Box::pin(self.execute_select(&set_op.right)).await?;
+
+        // Extract columns and rows from results
+        let (left_columns, left_rows) = match left_result {
+            QueryResult::Select { columns, rows } => (columns, rows),
+            _ => return Err(anyhow!("Left side of set operation must be a SELECT query")),
+        };
+
+        let (right_columns, right_rows) = match right_result {
+            QueryResult::Select { columns, rows } => (columns, rows),
+            _ => return Err(anyhow!("Right side of set operation must be a SELECT query")),
+        };
+
+        // Validate that column counts match
+        if left_columns.len() != right_columns.len() {
+            return Err(anyhow!("Set operation requires equal number of columns: {} vs {}",
+                left_columns.len(), right_columns.len()));
+        }
+
+        // Apply the set operation
+        let result_rows = match set_op.operation {
+            SetOperation::Union => self.apply_union(left_rows, right_rows, false),
+            SetOperation::UnionAll => self.apply_union(left_rows, right_rows, true),
+            SetOperation::Intersect => self.apply_intersect(left_rows, right_rows, false),
+            SetOperation::IntersectAll => self.apply_intersect(left_rows, right_rows, true),
+            SetOperation::Except => self.apply_except(left_rows, right_rows, false),
+            SetOperation::ExceptAll => self.apply_except(left_rows, right_rows, true),
+        };
+
+        Ok(QueryResult::Select {
+            columns: left_columns, // Use left columns as the result columns
+            rows: result_rows,
+        })
+    }
+
+    /// Apply UNION operation
+    fn apply_union(&self, left: Vec<Vec<Value>>, right: Vec<Vec<Value>>, keep_duplicates: bool) -> Vec<Vec<Value>> {
+        use std::collections::HashSet;
+
+        if keep_duplicates {
+            // UNION ALL - just concatenate
+            let mut result = left;
+            result.extend(right);
+            result
+        } else {
+            // UNION - remove duplicates
+            let mut seen = HashSet::new();
+            let mut result = Vec::new();
+
+            for row in left.into_iter().chain(right) {
+                let key = format!("{:?}", row);
+                if seen.insert(key) {
+                    result.push(row);
+                }
+            }
+
+            result
+        }
+    }
+
+    /// Apply INTERSECT operation
+    fn apply_intersect(&self, left: Vec<Vec<Value>>, right: Vec<Vec<Value>>, keep_duplicates: bool) -> Vec<Vec<Value>> {
+        use std::collections::{HashMap, HashSet};
+
+        if keep_duplicates {
+            // INTERSECT ALL - keep minimum count of duplicates
+            let mut right_counts = HashMap::new();
+            for row in &right {
+                let key = format!("{:?}", row);
+                *right_counts.entry(key).or_insert(0) += 1;
+            }
+
+            let mut result = Vec::new();
+            for row in left {
+                let key = format!("{:?}", row);
+                if let Some(count) = right_counts.get_mut(&key) {
+                    if *count > 0 {
+                        *count -= 1;
+                        result.push(row);
+                    }
+                }
+            }
+
+            result
+        } else {
+            // INTERSECT - only distinct common rows
+            let right_set: HashSet<String> = right.iter()
+                .map(|row| format!("{:?}", row))
+                .collect();
+
+            let mut seen = HashSet::new();
+            let mut result = Vec::new();
+
+            for row in left {
+                let key = format!("{:?}", row);
+                if right_set.contains(&key) && seen.insert(key) {
+                    result.push(row);
+                }
+            }
+
+            result
+        }
+    }
+
+    /// Apply EXCEPT operation
+    fn apply_except(&self, left: Vec<Vec<Value>>, right: Vec<Vec<Value>>, keep_duplicates: bool) -> Vec<Vec<Value>> {
+        use std::collections::{HashMap, HashSet};
+
+        if keep_duplicates {
+            // EXCEPT ALL - subtract counts
+            let mut right_counts = HashMap::new();
+            for row in &right {
+                let key = format!("{:?}", row);
+                *right_counts.entry(key).or_insert(0) += 1;
+            }
+
+            let mut result = Vec::new();
+            for row in left {
+                let key = format!("{:?}", row);
+                let count = right_counts.get_mut(&key).map(|c| *c).unwrap_or(0);
+                if count == 0 {
+                    result.push(row);
+                } else {
+                    right_counts.insert(key, count - 1);
+                }
+            }
+
+            result
+        } else {
+            // EXCEPT - remove any rows that appear in right
+            let right_set: HashSet<String> = right.iter()
+                .map(|row| format!("{:?}", row))
+                .collect();
+
+            let mut seen = HashSet::new();
+            let mut result = Vec::new();
+
+            for row in left {
+                let key = format!("{:?}", row);
+                if !right_set.contains(&key) && seen.insert(key) {
+                    result.push(row);
+                }
+            }
+
+            result
+        }
     }
 
     /// Format results for specific column selection from joined data
