@@ -1,6 +1,0 @@
-name: simple_test
-primary_key: id
-columns:
-- name: id
-  type: string
-  index: false
