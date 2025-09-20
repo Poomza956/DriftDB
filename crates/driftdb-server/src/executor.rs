@@ -10,6 +10,9 @@ use std::collections::HashMap;
 use tokio::sync::{RwLock, Mutex};
 use parking_lot::Mutex as ParkingMutex;
 use tracing::{debug, info, warn};
+use time;
+
+use crate::transaction::{TransactionManager, PendingWrite, WriteOperation, IsolationLevel};
 
 #[cfg(test)]
 mod executor_subquery_tests;
@@ -96,6 +99,21 @@ enum JoinType {
     RightOuter,
     FullOuter,
     Cross,
+}
+
+/// Temporal clause types for SQL:2011 temporal queries
+#[derive(Debug, Clone)]
+enum TemporalClause {
+    AsOf(TemporalPoint),
+    // Future: Between, FromTo, All
+}
+
+/// A point in time for temporal queries
+#[derive(Debug, Clone)]
+enum TemporalPoint {
+    Sequence(u64),
+    Timestamp(String),
+    CurrentTimestamp,
 }
 
 /// JOIN condition
@@ -359,27 +377,43 @@ pub struct QueryExecutor<'a> {
     subquery_cache: Arc<Mutex<HashMap<String, QueryResult>>>, // Cache for non-correlated subqueries
     use_indexes: bool, // Enable/disable index optimization
     prepared_statements: Arc<ParkingMutex<HashMap<String, PreparedStatement>>>, // Prepared statements cache
+    transaction_manager: Arc<TransactionManager>, // Transaction management
+    session_id: String, // Session identifier for transaction tracking
 }
 
 impl<'a> QueryExecutor<'a> {
     pub fn new(engine: Arc<tokio::sync::RwLock<Engine>>) -> QueryExecutor<'static> {
+        let transaction_manager = Arc::new(TransactionManager::new(engine.clone()));
         QueryExecutor {
             engine_guard: None,
             engine: Some(engine),
             subquery_cache: Arc::new(Mutex::new(HashMap::new())),
             use_indexes: true, // Enable index optimization by default
             prepared_statements: Arc::new(ParkingMutex::new(HashMap::new())),
+            transaction_manager,
+            session_id: format!("session_{}", std::process::id()),
         }
     }
 
     pub fn new_with_guard(engine_guard: &'a EngineGuard) -> Self {
+        // Use the engine from the guard for transaction management
+        let engine_for_txn = engine_guard.get_engine_ref();
+        let transaction_manager = Arc::new(TransactionManager::new(engine_for_txn));
+
         Self {
             engine_guard: Some(engine_guard),
             engine: None,
             subquery_cache: Arc::new(Mutex::new(HashMap::new())),
             use_indexes: true,
             prepared_statements: Arc::new(ParkingMutex::new(HashMap::new())),
+            transaction_manager,
+            session_id: format!("guard_session_{}", std::process::id()),
         }
+    }
+
+    /// Set the session ID for this executor
+    pub fn set_session_id(&mut self, session_id: String) {
+        self.session_id = session_id;
     }
 
     /// Get read access to the engine
@@ -1127,14 +1161,15 @@ impl<'a> QueryExecutor<'a> {
         } else if lower.starts_with("create table") {
             self.execute_create_table(sql).await
         } else if lower.starts_with("begin") || lower.starts_with("start transaction") {
-            info!("Transaction started");
-            Ok(QueryResult::Empty)
+            self.execute_begin(sql).await
         } else if lower.starts_with("commit") {
-            info!("Transaction committed");
-            Ok(QueryResult::Empty)
+            self.execute_commit().await
         } else if lower.starts_with("rollback") {
-            info!("Transaction rolled back");
-            Ok(QueryResult::Empty)
+            self.execute_rollback(sql).await
+        } else if lower.starts_with("savepoint ") {
+            self.execute_savepoint(sql).await
+        } else if lower.starts_with("release savepoint ") {
+            self.execute_release_savepoint(sql).await
         } else {
             warn!("Unsupported SQL command: {}", sql);
             Err(anyhow!("Unsupported SQL command"))
@@ -1169,6 +1204,8 @@ impl<'a> QueryExecutor<'a> {
             .or_else(|| remaining.find(" order by "))
             .or_else(|| remaining.find(" LIMIT "))
             .or_else(|| remaining.find(" limit "))
+            .or_else(|| remaining.find(" FOR SYSTEM_TIME "))
+            .or_else(|| remaining.find(" for system_time "))
             .or_else(|| remaining.find(" AS OF "))
             .or_else(|| remaining.find(" as of "))
             .unwrap_or(remaining.len());
@@ -1192,6 +1229,7 @@ impl<'a> QueryExecutor<'a> {
             let where_end = where_clause.to_lowercase().find(" group by ")
                 .or_else(|| where_clause.to_lowercase().find(" order by "))
                 .or_else(|| where_clause.to_lowercase().find(" limit "))
+                .or_else(|| where_clause.to_lowercase().find(" for system_time "))
                 .or_else(|| where_clause.to_lowercase().find(" as of "))
                 .unwrap_or(where_clause.len());
 
@@ -1226,6 +1264,7 @@ impl<'a> QueryExecutor<'a> {
             let group_end = group_clause.to_lowercase().find(" having ")
                 .or_else(|| group_clause.to_lowercase().find(" order by "))
                 .or_else(|| group_clause.to_lowercase().find(" limit "))
+                .or_else(|| group_clause.to_lowercase().find(" for system_time "))
                 .or_else(|| group_clause.to_lowercase().find(" as of "))
                 .unwrap_or(group_clause.len());
 
@@ -1243,6 +1282,7 @@ impl<'a> QueryExecutor<'a> {
 
             let having_end = having_clause.to_lowercase().find(" order by ")
                 .or_else(|| having_clause.to_lowercase().find(" limit "))
+                .or_else(|| having_clause.to_lowercase().find(" for system_time "))
                 .or_else(|| having_clause.to_lowercase().find(" as of "))
                 .unwrap_or(having_clause.len());
 
@@ -1259,6 +1299,7 @@ impl<'a> QueryExecutor<'a> {
             let order_clause = &after_from[order_start..];
 
             let order_end = order_clause.to_lowercase().find(" limit ")
+                .or_else(|| order_clause.to_lowercase().find(" for system_time "))
                 .or_else(|| order_clause.to_lowercase().find(" as of "))
                 .unwrap_or(order_clause.len());
 
@@ -1274,7 +1315,8 @@ impl<'a> QueryExecutor<'a> {
             let limit_start = limit_pos + 7; // " limit " is 7 characters
             let limit_clause = &after_from[limit_start..];
 
-            let limit_end = limit_clause.to_lowercase().find(" as of ")
+            let limit_end = limit_clause.to_lowercase().find(" for system_time ")
+                .or_else(|| limit_clause.to_lowercase().find(" as of "))
                 .unwrap_or(limit_clause.len());
 
             let limit_str = limit_clause[..limit_end].trim();
@@ -1284,10 +1326,22 @@ impl<'a> QueryExecutor<'a> {
             None
         };
 
-        // Handle AS OF for time travel (simplified for JOINs - only works with single table for now)
-        if after_from.to_lowercase().contains(" as of ") {
-            warn!("AS OF (time travel) is not yet supported with JOIN queries");
-            return Err(anyhow!("AS OF clause is not supported with JOIN queries"));
+        // Parse temporal clause (FOR SYSTEM_TIME AS OF)
+        let temporal_clause = self.parse_temporal_clause(after_from)?;
+
+        // Apply temporal filtering to the data if specified
+        if temporal_clause.is_some() {
+            // For now, temporal queries only work with single tables
+            if !matches!(from_clause, FromClause::Single(_)) {
+                warn!("Temporal queries (FOR SYSTEM_TIME) are only supported for single table queries");
+                return Err(anyhow!("Temporal queries are not supported with JOINs or multiple tables"));
+            }
+
+            // Re-execute the query with temporal support
+            let (temporal_data, temporal_columns) = self.execute_temporal_join(&from_clause, &temporal_clause).await?;
+            joined_data = temporal_data;
+            all_columns = temporal_columns;
+            debug!("Temporal query produced {} rows", joined_data.len());
         }
 
         // Handle different types of queries based on SELECT clause and GROUP BY
@@ -3385,6 +3439,152 @@ impl<'a> QueryExecutor<'a> {
     }
 
     /// Execute JOIN operation
+    /// Parse temporal clause from SQL query
+    fn parse_temporal_clause(&self, sql_part: &str) -> Result<Option<TemporalClause>> {
+        let lower = sql_part.to_lowercase();
+
+        // Look for FOR SYSTEM_TIME AS OF
+        if let Some(pos) = lower.find(" for system_time as of ") {
+            let temporal_start = pos + 23; // Length of " for system_time as of "
+            let remaining = &sql_part[temporal_start..];
+
+            // Find the end of the temporal clause
+            let temporal_end = remaining.find(" WHERE ")
+                .or_else(|| remaining.find(" where "))
+                .or_else(|| remaining.find(" GROUP BY "))
+                .or_else(|| remaining.find(" group by "))
+                .or_else(|| remaining.find(" ORDER BY "))
+                .or_else(|| remaining.find(" order by "))
+                .or_else(|| remaining.find(" LIMIT "))
+                .or_else(|| remaining.find(" limit "))
+                .unwrap_or(remaining.len());
+
+            let temporal_value = remaining[..temporal_end].trim();
+            debug!("Parsing temporal value: {}", temporal_value);
+
+            // Parse the temporal point
+            let point = self.parse_temporal_point(temporal_value)?;
+            return Ok(Some(TemporalClause::AsOf(point)));
+        }
+
+        // Look for simpler AS OF syntax (legacy DriftDB)
+        if let Some(pos) = lower.find(" as of ") {
+            let temporal_start = pos + 7; // Length of " as of "
+            let remaining = &sql_part[temporal_start..];
+
+            // Find the end of the temporal clause
+            let temporal_end = remaining.find(" WHERE ")
+                .or_else(|| remaining.find(" where "))
+                .or_else(|| remaining.find(" GROUP BY "))
+                .or_else(|| remaining.find(" group by "))
+                .or_else(|| remaining.find(" ORDER BY "))
+                .or_else(|| remaining.find(" order by "))
+                .or_else(|| remaining.find(" LIMIT "))
+                .or_else(|| remaining.find(" limit "))
+                .unwrap_or(remaining.len());
+
+            let temporal_value = remaining[..temporal_end].trim();
+            debug!("Parsing temporal value (legacy): {}", temporal_value);
+
+            // Parse the temporal point
+            let point = self.parse_temporal_point(temporal_value)?;
+            return Ok(Some(TemporalClause::AsOf(point)));
+        }
+
+        Ok(None)
+    }
+
+    /// Parse a temporal point (timestamp or sequence number)
+    fn parse_temporal_point(&self, value: &str) -> Result<TemporalPoint> {
+        let trimmed = value.trim();
+
+        // Check for CURRENT_TIMESTAMP
+        if trimmed.to_uppercase() == "CURRENT_TIMESTAMP" {
+            return Ok(TemporalPoint::CurrentTimestamp);
+        }
+
+        // Check for sequence number (e.g., "SEQUENCE 100" or just "100")
+        if trimmed.to_uppercase().starts_with("SEQUENCE ") {
+            let seq_str = &trimmed[9..]; // Skip "SEQUENCE "
+            let seq = seq_str.parse::<u64>()
+                .map_err(|_| anyhow!("Invalid sequence number: {}", seq_str))?;
+            return Ok(TemporalPoint::Sequence(seq));
+        }
+
+        // Try to parse as a plain number (sequence)
+        if let Ok(seq) = trimmed.parse::<u64>() {
+            return Ok(TemporalPoint::Sequence(seq));
+        }
+
+        // Try to parse as timestamp
+        // Support various formats: 'YYYY-MM-DD HH:MM:SS' or ISO8601
+        if trimmed.starts_with('\'') && trimmed.ends_with('\'') {
+            let timestamp_str = &trimmed[1..trimmed.len()-1];
+            // For now, we'll use a simple approach
+            // In a real implementation, we'd parse the timestamp properly
+            return Ok(TemporalPoint::Timestamp(timestamp_str.to_string()));
+        }
+
+        Err(anyhow!("Invalid temporal point: {}. Expected CURRENT_TIMESTAMP, sequence number, or timestamp", value))
+    }
+
+    /// Execute JOIN with temporal support
+    async fn execute_temporal_join(&self, from_clause: &FromClause, temporal_clause: &Option<TemporalClause>) -> Result<(Vec<Value>, Vec<String>)> {
+        let engine = self.engine_read().await?;
+
+        match from_clause {
+            FromClause::Single(table_ref) => {
+                // Single table with temporal support
+                let table_data = match temporal_clause {
+                    Some(TemporalClause::AsOf(point)) => {
+                        match point {
+                            TemporalPoint::Sequence(seq) => {
+                                engine.get_table_data_at(&table_ref.name, *seq)
+                                    .map_err(|e| anyhow!("Failed to get temporal table data: {}", e))?
+                            },
+                            TemporalPoint::CurrentTimestamp => {
+                                // Current timestamp means latest data
+                                engine.get_table_data(&table_ref.name)
+                                    .map_err(|e| anyhow!("Failed to get table data: {}", e))?
+                            },
+                            TemporalPoint::Timestamp(ts) => {
+                                // Parse the timestamp string to OffsetDateTime
+                                let timestamp = time::OffsetDateTime::parse(&ts, &time::format_description::well_known::Rfc3339)
+                                    .or_else(|_| {
+                                        // Try ISO 8601 format
+                                        time::PrimitiveDateTime::parse(&ts, &time::format_description::well_known::Iso8601::DEFAULT)
+                                            .map(|dt| dt.assume_utc())
+                                    })
+                                    .map_err(|e| anyhow!("Invalid timestamp format '{}': {}", ts, e))?;
+
+                                // Get table data at the specific timestamp
+                                engine.get_table_data_at_timestamp(&table_ref.name, timestamp)
+                                    .map_err(|e| anyhow!("Failed to get table data at timestamp {}: {}", ts, e))?
+                            }
+                        }
+                    },
+                    None => {
+                        engine.get_table_data(&table_ref.name)
+                            .map_err(|e| anyhow!("Failed to get table data: {}", e))?
+                    }
+                };
+
+                // Create column names with table prefix if alias exists
+                let columns = self.get_table_columns(&engine, &table_ref.name).await?;
+                let prefixed_columns = if let Some(alias) = &table_ref.alias {
+                    columns.iter().map(|col| format!("{}.{}", alias, col)).collect()
+                } else {
+                    columns.iter().map(|col| format!("{}.{}", table_ref.name, col)).collect()
+                };
+
+                Ok((table_data, prefixed_columns))
+            },
+            _ => {
+                Err(anyhow!("Temporal queries only support single tables"))
+            }
+        }
+    }
+
     async fn execute_join(&self, from_clause: &FromClause) -> Result<(Vec<Value>, Vec<String>)> {
         let engine = self.engine_read().await?;
 
@@ -4290,6 +4490,112 @@ impl<'a> QueryExecutor<'a> {
 
         debug!("Returning {} joined rows with {} columns: {:?}", rows.len(), columns.len(), columns);
         Ok(QueryResult::Select { columns, rows })
+    }
+
+    // ==================== TRANSACTION METHODS ====================
+
+    /// Execute BEGIN transaction
+    async fn execute_begin(&self, sql: &str) -> Result<QueryResult> {
+        let lower = sql.to_lowercase();
+
+        // Parse isolation level if specified
+        let isolation_level = if lower.contains("read uncommitted") {
+            IsolationLevel::ReadUncommitted
+        } else if lower.contains("read committed") {
+            IsolationLevel::ReadCommitted
+        } else if lower.contains("repeatable read") {
+            IsolationLevel::RepeatableRead
+        } else if lower.contains("serializable") {
+            IsolationLevel::Serializable
+        } else {
+            IsolationLevel::default()
+        };
+
+        // Check for read-only mode
+        let is_read_only = lower.contains("read only");
+
+        // Begin transaction
+        let txn_id = self.transaction_manager
+            .begin_transaction(&self.session_id, isolation_level, is_read_only)
+            .await?;
+
+        info!("Started transaction {} for session {}", txn_id, self.session_id);
+        Ok(QueryResult::Empty)
+    }
+
+    /// Execute COMMIT transaction
+    async fn execute_commit(&self) -> Result<QueryResult> {
+        self.transaction_manager
+            .commit_transaction(&self.session_id)
+            .await?;
+
+        info!("Committed transaction for session {}", self.session_id);
+        Ok(QueryResult::Empty)
+    }
+
+    /// Execute ROLLBACK transaction
+    async fn execute_rollback(&self, sql: &str) -> Result<QueryResult> {
+        let lower = sql.to_lowercase();
+
+        // Check for ROLLBACK TO SAVEPOINT
+        if lower.contains("to savepoint ") || lower.contains("to ") {
+            let savepoint_pos = lower.find("to savepoint ")
+                .map(|p| p + 13)
+                .or_else(|| lower.find("to ").map(|p| p + 3))
+                .unwrap();
+
+            let savepoint_name = sql[savepoint_pos..].trim().trim_matches(';');
+
+            self.transaction_manager
+                .rollback_to_savepoint(&self.session_id, savepoint_name)?;
+
+            info!("Rolled back to savepoint {} for session {}", savepoint_name, self.session_id);
+        } else {
+            // Full rollback
+            self.transaction_manager
+                .rollback_transaction(&self.session_id)
+                .await?;
+
+            info!("Rolled back transaction for session {}", self.session_id);
+        }
+
+        Ok(QueryResult::Empty)
+    }
+
+    /// Execute SAVEPOINT
+    async fn execute_savepoint(&self, sql: &str) -> Result<QueryResult> {
+        let savepoint_pos = sql.to_lowercase().find("savepoint ")
+            .ok_or_else(|| anyhow!("Invalid SAVEPOINT syntax"))?;
+
+        let savepoint_name = sql[savepoint_pos + 10..]
+            .trim()
+            .trim_matches(';')
+            .to_string();
+
+        self.transaction_manager
+            .create_savepoint(&self.session_id, savepoint_name.clone())?;
+
+        info!("Created savepoint {} for session {}", savepoint_name, self.session_id);
+        Ok(QueryResult::Empty)
+    }
+
+    /// Execute RELEASE SAVEPOINT
+    async fn execute_release_savepoint(&self, sql: &str) -> Result<QueryResult> {
+        let savepoint_pos = sql.to_lowercase().find("savepoint ")
+            .ok_or_else(|| anyhow!("Invalid RELEASE SAVEPOINT syntax"))?;
+
+        let savepoint_name = sql[savepoint_pos + 10..]
+            .trim()
+            .trim_matches(';');
+
+        // For now, just log - actual release would remove from savepoint list
+        info!("Released savepoint {} for session {}", savepoint_name, self.session_id);
+        Ok(QueryResult::Empty)
+    }
+
+    /// Check if we're in a transaction
+    fn in_transaction(&self) -> bool {
+        self.transaction_manager.has_transaction(&self.session_id)
     }
 }
 

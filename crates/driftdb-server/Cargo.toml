@@ -34,6 +34,7 @@ dashmap = "5"
 arc-swap = "1"
 rand = "0.8"
 parking_lot = "0.12"
+time = { version = "0.3", features = ["parsing", "formatting", "macros"] }
 # HTTP server and metrics
 axum = "0.7"
 tower = "0.4"
@@ -41,6 +42,7 @@ tower-http = { version = "0.5", features = ["cors", "trace"] }
 prometheus = "0.13"
 lazy_static = "1.4"
 chrono = { version = "0.4", features = ["serde"] }
+sysinfo = "0.30"
 
 [dev-dependencies]
 tempfile = { workspace = true }

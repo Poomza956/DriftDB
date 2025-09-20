@@ -54,6 +54,16 @@ impl Index {
         self.entries.get(value)
     }
 
+    /// Get the number of unique indexed values
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Check if the index is empty
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
     pub fn save_to_file<P: AsRef<Path>>(&self, path: P) -> Result<()> {
         let file = File::create(path)?;
         let writer = BufWriter::new(file);

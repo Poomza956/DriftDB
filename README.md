@@ -430,6 +430,77 @@ WHERE id NOT IN (SELECT id FROM users);
 | Audit Trail | ✅ Automatic | ❌ Manual | ❌ Manual | 💰 | ⚠️ Manual |
 | Open Source | ✅ | ✅ | ✅ | ❌ | ❌ |
 
+## Testing
+
+DriftDB includes a comprehensive test suite with both Rust and Python tests organized into different categories.
+
+### Quick Start
+
+```bash
+# Run all tests (Rust + Python)
+make test
+
+# Run quick tests only (no slow/performance tests)
+make test-quick
+
+# Run specific test categories
+make test-unit        # Unit tests only
+make test-integration # Integration tests
+make test-sql        # SQL compatibility tests
+make test-python     # All Python tests
+```
+
+### Test Organization
+
+The test suite is organized into the following categories:
+
+```
+tests/
+├── unit/           # Fast, isolated unit tests
+├── integration/    # Cross-component integration tests
+├── sql/           # SQL standard compatibility tests
+├── performance/   # Performance benchmarks
+├── stress/        # Load and stress tests
+├── legacy/        # Migrated from root directory
+└── utils/         # Shared test utilities
+```
+
+### Running Specific Tests
+
+```bash
+# Run a specific test file
+python tests/unit/test_basic_operations.py
+
+# Run tests matching a pattern
+pytest tests/ -k "constraint"
+
+# Run with verbose output
+python tests/run_all_tests.py --verbose
+
+# Generate coverage report
+make test-coverage
+```
+
+### Writing Tests
+
+Tests should extend the `DriftDBTestCase` base class which provides:
+- Database connection management
+- Test table creation/cleanup
+- Assertion helpers for query validation
+- Transaction and savepoint support
+
+Example test:
+```python
+from tests.utils import DriftDBTestCase
+
+class TestNewFeature(DriftDBTestCase):
+    def test_feature(self):
+        self.create_test_table()
+        self.assert_query_succeeds("INSERT INTO test_table ...")
+        result = self.execute_query("SELECT * FROM test_table")
+        self.assert_result_count(result, 1)
+```
+
 ## Development
 
 ```bash

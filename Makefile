@@ -8,6 +8,45 @@ build:
 test:
 	cargo test --all
 
+# Run Python test suite
+test-python: build
+	@echo "=== Running Python Test Suite ==="
+	python tests/run_all_tests.py
+
+# Run quick tests (no slow/performance tests)
+test-quick: build
+	@echo "=== Running Quick Tests ==="
+	cargo test --all
+	python tests/run_all_tests.py --quick
+
+# Run unit tests only
+test-unit:
+	@echo "=== Running Unit Tests ==="
+	cargo test --lib
+	python tests/run_all_tests.py --unit
+
+# Run integration tests
+test-integration: build
+	@echo "=== Running Integration Tests ==="
+	cargo test --test '*'
+	python tests/run_all_tests.py --integration
+
+# Run SQL compatibility tests
+test-sql: build
+	@echo "=== Running SQL Tests ==="
+	python tests/run_all_tests.py --sql
+
+# Organize legacy Python tests
+test-organize:
+	@echo "=== Organizing Legacy Tests ==="
+	python tests/run_all_tests.py --organize
+
+# Generate test coverage report
+test-coverage:
+	@echo "=== Generating Coverage Report ==="
+	cargo tarpaulin --out Html
+	python tests/run_all_tests.py --coverage
+
 # Run benchmarks
 bench:
 	cargo bench --all

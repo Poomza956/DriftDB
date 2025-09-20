@@ -15,8 +15,11 @@ pub mod migration;
 pub mod optimizer;
 pub mod encryption;
 pub mod replication;
+pub mod raft;
 pub mod sql;
 pub mod rate_limit;
+pub mod constraints;
+pub mod sequences;
 
 #[cfg(test)]
 mod tests;

@@ -391,27 +391,200 @@ impl QueryOptimizer {
 
         if let Some(table_stats) = stats.get(table) {
             if let Some(col_stats) = table_stats.column_stats.get(&condition.column) {
+                // Account for nulls
+                let null_fraction = if table_stats.row_count > 0 {
+                    col_stats.null_count as f64 / table_stats.row_count as f64
+                } else {
+                    0.0
+                };
+
                 // Use statistics to estimate selectivity
-                match condition.operator.as_str() {
+                let non_null_selectivity = match condition.operator.as_str() {
                     "=" => {
                         // Point query selectivity
                         if col_stats.distinct_values > 0 {
-                            1.0 / col_stats.distinct_values as f64
+                            // Check if we have histogram data for more accurate estimate
+                            if let Some(histogram) = &col_stats.histogram {
+                                self.estimate_equality_selectivity_with_histogram(
+                                    &condition.value,
+                                    histogram,
+                                    table_stats.row_count
+                                )
+                            } else {
+                                // Uniform distribution assumption
+                                1.0 / col_stats.distinct_values as f64
+                            }
                         } else {
                             0.1 // Default
                         }
                     }
                     "<" | ">" | "<=" | ">=" => {
-                        // Range query selectivity (simplified)
-                        0.3 // Default 30% selectivity for range
+                        // Range query selectivity using min/max or histogram
+                        if let Some(histogram) = &col_stats.histogram {
+                            self.estimate_range_selectivity_with_histogram(
+                                &condition.value,
+                                &condition.operator,
+                                histogram,
+                                table_stats.row_count
+                            )
+                        } else if col_stats.min_value.is_some() && col_stats.max_value.is_some() {
+                            self.estimate_range_selectivity_with_bounds(
+                                &condition.value,
+                                &condition.operator,
+                                &col_stats.min_value,
+                                &col_stats.max_value
+                            )
+                        } else {
+                            0.3 // Default 30% selectivity for range
+                        }
                     }
+                    "IS NULL" => null_fraction,
+                    "IS NOT NULL" => 1.0 - null_fraction,
                     _ => 0.5 // Default 50% for unknown operators
+                };
+
+                // Adjust for nulls (most operators don't match nulls)
+                if condition.operator != "IS NULL" && condition.operator != "IS NOT NULL" {
+                    non_null_selectivity * (1.0 - null_fraction)
+                } else {
+                    non_null_selectivity
                 }
             } else {
                 0.3 // No statistics, use default
             }
         } else {
             0.3 // No table statistics
+        }
+    }
+
+    /// Estimate selectivity for equality using histogram
+    fn estimate_equality_selectivity_with_histogram(
+        &self,
+        value: &serde_json::Value,
+        histogram: &Histogram,
+        total_rows: usize,
+    ) -> f64 {
+        // Find the bucket containing the value
+        for bucket in &histogram.buckets {
+            if self.value_in_range(value, &bucket.lower_bound, &bucket.upper_bound) {
+                // Estimate based on bucket frequency
+                return bucket.frequency as f64 / total_rows as f64;
+            }
+        }
+        // Value not in histogram
+        0.01
+    }
+
+    /// Estimate selectivity for range queries using histogram
+    fn estimate_range_selectivity_with_histogram(
+        &self,
+        value: &serde_json::Value,
+        operator: &str,
+        histogram: &Histogram,
+        total_rows: usize,
+    ) -> f64 {
+        let mut matching_frequency = 0;
+
+        for bucket in &histogram.buckets {
+            match operator {
+                "<" => {
+                    if self.compare_values(&bucket.upper_bound, value) < 0 {
+                        matching_frequency += bucket.frequency;
+                    } else if self.value_in_range(value, &bucket.lower_bound, &bucket.upper_bound) {
+                        // Partial bucket match (estimate)
+                        matching_frequency += bucket.frequency / 2;
+                    }
+                }
+                ">" => {
+                    if self.compare_values(&bucket.lower_bound, value) > 0 {
+                        matching_frequency += bucket.frequency;
+                    } else if self.value_in_range(value, &bucket.lower_bound, &bucket.upper_bound) {
+                        // Partial bucket match (estimate)
+                        matching_frequency += bucket.frequency / 2;
+                    }
+                }
+                "<=" => {
+                    if self.compare_values(&bucket.upper_bound, value) <= 0 {
+                        matching_frequency += bucket.frequency;
+                    } else if self.value_in_range(value, &bucket.lower_bound, &bucket.upper_bound) {
+                        // Partial bucket match (estimate)
+                        matching_frequency += bucket.frequency / 2;
+                    }
+                }
+                ">=" => {
+                    if self.compare_values(&bucket.lower_bound, value) >= 0 {
+                        matching_frequency += bucket.frequency;
+                    } else if self.value_in_range(value, &bucket.lower_bound, &bucket.upper_bound) {
+                        // Partial bucket match (estimate)
+                        matching_frequency += bucket.frequency / 2;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        matching_frequency as f64 / total_rows as f64
+    }
+
+    /// Estimate range selectivity using min/max bounds
+    fn estimate_range_selectivity_with_bounds(
+        &self,
+        value: &serde_json::Value,
+        operator: &str,
+        min_value: &Option<serde_json::Value>,
+        max_value: &Option<serde_json::Value>,
+    ) -> f64 {
+        // Simplified linear interpolation between min and max
+        if let (Some(min), Some(max)) = (min_value, max_value) {
+            let position = self.interpolate_value_position(value, min, max);
+            match operator {
+                "<" | "<=" => position,
+                ">" | ">=" => 1.0 - position,
+                _ => 0.3,
+            }
+        } else {
+            0.3
+        }
+    }
+
+    /// Check if a value is within a range
+    fn value_in_range(&self, value: &serde_json::Value, lower: &serde_json::Value, upper: &serde_json::Value) -> bool {
+        self.compare_values(value, lower) >= 0 && self.compare_values(value, upper) <= 0
+    }
+
+    /// Compare two JSON values
+    fn compare_values(&self, a: &serde_json::Value, b: &serde_json::Value) -> i32 {
+        // Simple comparison for common types
+        match (a, b) {
+            (serde_json::Value::Number(n1), serde_json::Value::Number(n2)) => {
+                if let (Some(f1), Some(f2)) = (n1.as_f64(), n2.as_f64()) {
+                    f1.partial_cmp(&f2).map(|o| o as i32).unwrap_or(0)
+                } else {
+                    0
+                }
+            }
+            (serde_json::Value::String(s1), serde_json::Value::String(s2)) => {
+                s1.cmp(s2) as i32
+            }
+            _ => 0,
+        }
+    }
+
+    /// Interpolate value position between min and max
+    fn interpolate_value_position(&self, value: &serde_json::Value, min: &serde_json::Value, max: &serde_json::Value) -> f64 {
+        // Simple linear interpolation for numeric values
+        if let (serde_json::Value::Number(v), serde_json::Value::Number(min_n), serde_json::Value::Number(max_n)) = (value, min, max) {
+            if let (Some(v_f), Some(min_f), Some(max_f)) = (v.as_f64(), min_n.as_f64(), max_n.as_f64()) {
+                if max_f > min_f {
+                    ((v_f - min_f) / (max_f - min_f)).max(0.0).min(1.0)
+                } else {
+                    0.5
+                }
+            } else {
+                0.5
+            }
+        } else {
+            0.5 // Default to middle
         }
     }
 
@@ -426,7 +599,7 @@ impl QueryOptimizer {
         self.statistics.read()
             .get(table)
             .map(|s| s.row_count)
-            .unwrap_or(10000) // Default estimate
+            .unwrap_or(0) // Return 0 if no statistics - forces statistics collection
     }
 
     /// Calculate cost of a plan step

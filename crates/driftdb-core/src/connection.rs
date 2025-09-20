@@ -110,6 +110,16 @@ impl Connection {
         self.state = ConnectionState::Idle;
         self.current_transaction = None;
     }
+
+    /// Get the number of requests handled by this connection
+    pub fn request_count(&self) -> u64 {
+        self.requests_handled.load(Ordering::Relaxed)
+    }
+
+    /// Check if connection has an active transaction
+    pub fn has_transaction(&self) -> bool {
+        self.current_transaction.is_some()
+    }
 }
 
 /// Rate limiter using token bucket algorithm
@@ -424,11 +434,29 @@ impl ConnectionPool {
 
     /// Get pool statistics
     pub fn stats(&self) -> PoolStats {
+        let connections = self.connections.read();
+        let available = self.available.lock();
+        let active_count = connections.len() - available.len();
+
+        // Calculate detailed metrics
+        let mut with_transactions = 0;
+        let mut total_requests = 0u64;
+        for conn in connections.values() {
+            let conn_locked = conn.lock();
+            if conn_locked.has_transaction() {
+                with_transactions += 1;
+            }
+            total_requests += conn_locked.request_count();
+        }
+
         PoolStats {
-            total_connections: self.connections.read().len(),
-            available_connections: self.available.lock().len(),
+            total_connections: connections.len(),
+            available_connections: available.len(),
             active_clients: self.clients.read().len(),
             total_created: self.next_conn_id.load(Ordering::Relaxed) - 1,
+            active_connections: active_count,
+            connections_with_transactions: with_transactions,
+            total_requests_handled: total_requests,
         }
     }
 }
@@ -496,8 +524,11 @@ impl Drop for ConnectionGuard {
 pub struct PoolStats {
     pub total_connections: usize,
     pub available_connections: usize,
+    pub active_connections: usize,
     pub active_clients: usize,
     pub total_created: u64,
+    pub connections_with_transactions: usize,
+    pub total_requests_handled: u64,
 }
 
 /// Engine pool that manages connections to a DriftDB Engine
@@ -582,6 +613,11 @@ impl EngineGuard {
     /// Get write access to the engine
     pub async fn write(&self) -> tokio::sync::RwLockWriteGuard<Engine> {
         self.engine.write().await
+    }
+
+    /// Get a reference to the engine Arc for transaction management
+    pub fn get_engine_ref(&self) -> Arc<tokio::sync::RwLock<Engine>> {
+        self.engine.clone()
     }
 
     /// Get the connection ID

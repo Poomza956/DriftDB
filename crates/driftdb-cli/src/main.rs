@@ -104,6 +104,15 @@ enum Commands {
         #[arg(short, long)]
         data: PathBuf,
     },
+    /// Analyze tables and update optimizer statistics
+    Analyze {
+        /// Database directory path
+        #[arg(short, long)]
+        data: PathBuf,
+        /// Table name (optional, analyzes all tables if not specified)
+        #[arg(short, long)]
+        table: Option<String>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -293,6 +302,60 @@ fn main() -> Result<()> {
 
             for line in report {
                 println!("{}", line);
+            }
+        }
+        Commands::Analyze { data, table } => {
+            let engine = Engine::open(&data)
+                .context("Failed to open database")?;
+
+            // Create optimizer to store the statistics
+            let optimizer = driftdb_core::optimizer::QueryOptimizer::new();
+
+            if let Some(table_name) = table {
+                // Analyze specific table
+                println!("Analyzing table '{}'...", table_name);
+                let stats = engine.collect_table_statistics(&table_name)
+                    .context(format!("Failed to collect statistics for table '{}'", table_name))?;
+
+                println!("Table: {}", stats.table_name);
+                println!("  Rows: {}", stats.row_count);
+                println!("  Average row size: {} bytes", stats.avg_row_size);
+                println!("  Total size: {} bytes", stats.total_size_bytes);
+                println!("  Columns analyzed: {}", stats.column_stats.len());
+                println!("  Indexes: {}", stats.index_stats.len());
+
+                for (col_name, col_stats) in &stats.column_stats {
+                    println!("  Column '{}':", col_name);
+                    println!("    Distinct values: {}", col_stats.distinct_values);
+                    println!("    Null count: {}", col_stats.null_count);
+                    if col_stats.histogram.is_some() {
+                        println!("    Histogram: ✓");
+                    }
+                }
+
+                optimizer.update_statistics(&table_name, stats);
+                println!("✓ Statistics updated for table '{}'", table_name);
+            } else {
+                // Analyze all tables
+                let tables = engine.list_tables();
+                println!("Analyzing {} tables...", tables.len());
+
+                for table_name in &tables {
+                    println!("\nAnalyzing table '{}'...", table_name);
+                    match engine.collect_table_statistics(table_name) {
+                        Ok(stats) => {
+                            println!("  Rows: {}", stats.row_count);
+                            println!("  Columns: {}", stats.column_stats.len());
+                            println!("  Indexes: {}", stats.index_stats.len());
+                            optimizer.update_statistics(table_name, stats);
+                        }
+                        Err(e) => {
+                            eprintln!("  Error: {}", e);
+                        }
+                    }
+                }
+
+                println!("\n✓ Statistics updated for all tables");
             }
         }
     }

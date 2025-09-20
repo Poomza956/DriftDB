@@ -356,6 +356,14 @@ impl Session {
             Ok(result) => {
                 let duration = start_time.elapsed().as_secs_f64();
 
+                // Update transaction status based on the command
+                let sql_upper = sql.trim().to_uppercase();
+                if sql_upper.starts_with("BEGIN") {
+                    self.transaction_status = TransactionStatus::InTransaction;
+                } else if sql_upper.starts_with("COMMIT") || sql_upper.starts_with("ROLLBACK") {
+                    self.transaction_status = TransactionStatus::Idle;
+                }
+
                 // Record successful query metrics if registry is available
                 if crate::metrics::REGISTRY.gather().len() > 0 {
                     crate::metrics::record_query(&query_type, "success", duration);

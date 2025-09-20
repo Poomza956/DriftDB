@@ -135,15 +135,62 @@ async fn check_disk_space() -> anyhow::Result<f64> {
 
     // Get disk usage for current directory
     let path = Path::new(".");
+
+    // Use system command to get actual disk space
+    #[cfg(unix)]
+    {
+        use std::process::Command;
+
+        let output = Command::new("df")
+            .arg("-k")  // Use 1K blocks
+            .arg(".")
+            .output()?;
+
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let lines: Vec<&str> = stdout.lines().collect();
+
+            if lines.len() >= 2 {
+                // Parse the second line which contains the data
+                let parts: Vec<&str> = lines[1].split_whitespace().collect();
+                if parts.len() >= 4 {
+                    // Available space is typically in the 4th column (in KB)
+                    if let Ok(available_kb) = parts[3].parse::<u64>() {
+                        let available_gb = available_kb as f64 / (1024.0 * 1024.0);
+                        return Ok(available_gb);
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        use std::process::Command;
+
+        let output = Command::new("powershell")
+            .arg("-Command")
+            .arg("(Get-PSDrive -Name (Get-Location).Drive.Name).Free / 1GB")
+            .output()?;
+
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if let Ok(available_gb) = stdout.trim().parse::<f64>() {
+                return Ok(available_gb);
+            }
+        }
+    }
+
+    // Fallback: try to estimate based on metadata
     let metadata = tokio::fs::metadata(path).await?;
 
-    // This is a simplified check - in a real implementation,
-    // you might want to use a system-specific API to get actual disk space
-    let _ = metadata;
-
-    // For now, return a placeholder value
-    // In production, you would implement actual disk space checking
-    Ok(10.0) // Assume 10GB available
+    // If we can't get real disk space, at least check if we can write
+    // Return a conservative estimate
+    if metadata.permissions().readonly() {
+        Ok(0.0) // No write access
+    } else {
+        Ok(1.0) // Assume at least 1GB if we have write access
+    }
 }
 
 #[cfg(test)]

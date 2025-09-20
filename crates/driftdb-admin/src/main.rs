@@ -296,12 +296,22 @@ async fn show_status(data_dir: &PathBuf, format: &str) -> Result<()> {
     let engine = Engine::open(data_dir)?;
 
     if format == "json" {
+        let tables = engine.list_tables();
+        let total_size = engine.get_total_database_size();
+
+        // Calculate total events across all tables
+        let mut total_events = 0u64;
+        for table_name in &tables {
+            if let Ok(stats) = engine.get_table_stats(table_name) {
+                total_events += stats.sequence_count;
+            }
+        }
+
         let status = serde_json::json!({
             "version": env!("CARGO_PKG_VERSION"),
-            "uptime_seconds": 0, // Would track in production
-            "tables": engine.list_tables(),
-            "total_events": 0, // Would get from engine stats
-            "storage_size_bytes": 0, // Would calculate
+            "tables": tables,
+            "total_events": total_events,
+            "storage_size_bytes": total_size,
         });
 
         println!("{}", serde_json::to_string_pretty(&status)?);
@@ -326,6 +336,26 @@ async fn show_status(data_dir: &PathBuf, format: &str) -> Result<()> {
         table.add_row(Row::new(vec![
             Cell::new("Tables"),
             Cell::new(&format!("{}", tables.len())),
+        ]));
+
+        // Calculate total storage size
+        let total_size = engine.get_total_database_size();
+        let size_mb = total_size as f64 / (1024.0 * 1024.0);
+        table.add_row(Row::new(vec![
+            Cell::new("Total Storage"),
+            Cell::new(&format!("{:.2} MB", size_mb)),
+        ]));
+
+        // Calculate total events
+        let mut total_events = 0u64;
+        for table_name in &tables {
+            if let Ok(stats) = engine.get_table_stats(table_name) {
+                total_events += stats.sequence_count;
+            }
+        }
+        table.add_row(Row::new(vec![
+            Cell::new("Total Events"),
+            Cell::new(&format!("{}", total_events)),
         ]));
 
         table.add_row(Row::new(vec![
@@ -468,7 +498,7 @@ async fn handle_backup(command: BackupCommands, data_dir: &PathBuf) -> Result<()
             pb.set_style(ProgressStyle::default_spinner());
             pb.set_message("Restoring database...");
 
-            match backup_manager.restore_from_backup(&source, None::<&std::path::Path>) {
+            match backup_manager.restore_from_backup(&source, Option::<&PathBuf>::None) {
                 Ok(()) => {
                     pb.finish_with_message("Restore completed");
                     println!("{}", "✓ Restore completed".green());

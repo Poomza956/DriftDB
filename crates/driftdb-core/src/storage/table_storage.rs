@@ -10,6 +10,13 @@ use crate::events::Event;
 use crate::schema::Schema;
 use crate::storage::{Segment, SegmentWriter, TableMeta};
 
+#[derive(Debug, Clone)]
+pub struct TableStats {
+    pub sequence_count: u64,
+    pub segment_count: u64,
+    pub snapshot_count: u64,
+}
+
 pub struct TableStorage {
     path: PathBuf,
     schema: Schema,
@@ -225,6 +232,122 @@ impl TableStorage {
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Calculate the total size of all table files in bytes
+    pub fn calculate_size_bytes(&self) -> Result<u64> {
+        let mut total_size = 0u64;
+
+        // Calculate segments size
+        let segments_dir = self.path.join("segments");
+        if segments_dir.exists() {
+            for entry in fs::read_dir(&segments_dir)? {
+                let entry = entry?;
+                if let Ok(metadata) = entry.metadata() {
+                    total_size += metadata.len();
+                }
+            }
+        }
+
+        // Calculate snapshots size
+        let snapshots_dir = self.path.join("snapshots");
+        if snapshots_dir.exists() {
+            for entry in fs::read_dir(&snapshots_dir)? {
+                let entry = entry?;
+                if let Ok(metadata) = entry.metadata() {
+                    total_size += metadata.len();
+                }
+            }
+        }
+
+        // Calculate indexes size
+        let indexes_dir = self.path.join("indexes");
+        if indexes_dir.exists() {
+            for entry in fs::read_dir(&indexes_dir)? {
+                let entry = entry?;
+                if let Ok(metadata) = entry.metadata() {
+                    total_size += metadata.len();
+                }
+            }
+        }
+
+        // Add schema and meta files
+        if let Ok(metadata) = fs::metadata(self.path.join("schema.yaml")) {
+            total_size += metadata.len();
+        }
+        if let Ok(metadata) = fs::metadata(self.path.join("meta.json")) {
+            total_size += metadata.len();
+        }
+
+        Ok(total_size)
+    }
+
+    /// Get breakdown of table storage by component
+    pub fn get_storage_breakdown(&self) -> Result<HashMap<String, u64>> {
+        let mut breakdown = HashMap::new();
+
+        // Calculate segments size
+        let segments_dir = self.path.join("segments");
+        let mut segments_size = 0u64;
+        if segments_dir.exists() {
+            for entry in fs::read_dir(&segments_dir)? {
+                let entry = entry?;
+                if let Ok(metadata) = entry.metadata() {
+                    segments_size += metadata.len();
+                }
+            }
+        }
+        breakdown.insert("segments".to_string(), segments_size);
+
+        // Calculate snapshots size
+        let snapshots_dir = self.path.join("snapshots");
+        let mut snapshots_size = 0u64;
+        if snapshots_dir.exists() {
+            for entry in fs::read_dir(&snapshots_dir)? {
+                let entry = entry?;
+                if let Ok(metadata) = entry.metadata() {
+                    snapshots_size += metadata.len();
+                }
+            }
+        }
+        breakdown.insert("snapshots".to_string(), snapshots_size);
+
+        // Calculate indexes size
+        let indexes_dir = self.path.join("indexes");
+        let mut indexes_size = 0u64;
+        if indexes_dir.exists() {
+            for entry in fs::read_dir(&indexes_dir)? {
+                let entry = entry?;
+                if let Ok(metadata) = entry.metadata() {
+                    indexes_size += metadata.len();
+                }
+            }
+        }
+        breakdown.insert("indexes".to_string(), indexes_size);
+
+        Ok(breakdown)
+    }
+
+    /// Get metadata about the table
+    pub fn get_table_stats(&self) -> TableStats {
+        let meta = self.meta.read();
+
+        // Count actual snapshot files
+        let snapshots_dir = self.path.join("snapshots");
+        let snapshot_count = if snapshots_dir.exists() {
+            fs::read_dir(&snapshots_dir)
+                .ok()
+                .map(|entries| entries.filter_map(|e| e.ok()).count() as u64)
+                .unwrap_or(0)
+        } else {
+            0
+        };
+
+        TableStats {
+            sequence_count: meta.last_sequence,
+            segment_count: meta.segment_count,
+            snapshot_count,
+        }
     }
 
     fn segment_rotation_threshold(&self) -> u64 {

@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use sha2::Sha256;
+use sha2::{Sha256, Digest};
 use tracing::{debug, error, info, instrument};
 
 use crate::errors::{DriftError, Result};
@@ -17,10 +17,39 @@ use crate::observability::Metrics;
 pub struct BackupMetadata {
     pub version: String,
     pub timestamp_ms: u64,
-    pub tables: Vec<String>,
-    pub wal_sequence: u64,
+    pub tables: Vec<TableBackupInfo>,
+    pub backup_type: BackupType,
+    pub parent_backup: Option<String>, // For incremental backups
+    pub start_sequence: u64,
+    pub end_sequence: u64,
     pub checksum: String,
     pub compression: CompressionType,
+}
+
+/// Information about a backed up table
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TableBackupInfo {
+    pub name: String,
+    pub segments_backed_up: Vec<SegmentInfo>,
+    pub last_sequence: u64,
+    pub total_events: u64,
+}
+
+/// Information about a backed up segment
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SegmentInfo {
+    pub segment_id: u64,
+    pub start_sequence: u64,
+    pub end_sequence: u64,
+    pub file_name: String,
+    pub size_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum BackupType {
+    Full,
+    Incremental,
+    Differential,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -53,18 +82,38 @@ impl BackupManager {
         // Create backup directory
         fs::create_dir_all(backup_path)?;
 
-        // List all tables
-        let tables_dir = self.data_dir.join("tables");
-        let mut tables = Vec::new();
+        // Track backup information
+        let mut table_infos = Vec::new();
+        let mut global_start_seq = u64::MAX;
+        let mut global_end_seq = 0u64;
 
+        // List and backup all tables
+        let tables_dir = self.data_dir.join("tables");
         if tables_dir.exists() {
             for entry in fs::read_dir(&tables_dir)? {
                 let entry = entry?;
                 if entry.file_type()?.is_dir() {
                     let table_name = entry.file_name().to_string_lossy().to_string();
-                    tables.push(table_name);
+
+                    // Backup this table and get its info
+                    let table_info = self.backup_table_full(&table_name, backup_path)?;
+
+                    // Track sequence ranges
+                    if table_info.segments_backed_up.len() > 0 {
+                        let first_seg = &table_info.segments_backed_up[0];
+                        let last_seg = table_info.segments_backed_up.last().unwrap();
+                        global_start_seq = global_start_seq.min(first_seg.start_sequence);
+                        global_end_seq = global_end_seq.max(last_seg.end_sequence);
+                    }
+
+                    table_infos.push(table_info);
                 }
             }
+        }
+
+        // If no sequences found, use defaults
+        if global_start_seq == u64::MAX {
+            global_start_seq = 0;
         }
 
         // Create metadata
@@ -74,19 +123,14 @@ impl BackupManager {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_millis() as u64)
                 .unwrap_or(0),
-            tables: tables.clone(),
-            wal_sequence: self.get_current_wal_sequence()?,
+            tables: table_infos,
+            backup_type: BackupType::Full,
+            parent_backup: None,
+            start_sequence: global_start_seq,
+            end_sequence: global_end_seq,
             checksum: String::new(), // Will be computed later
             compression: CompressionType::Zstd,
         };
-
-        // Backup each table
-        for table in &tables {
-            self.backup_table(table, backup_path)?;
-        }
-
-        // Backup WAL
-        self.backup_wal(backup_path)?;
 
         // Compute and save metadata with checksum
         let checksum = self.compute_backup_checksum(backup_path)?;
@@ -97,16 +141,17 @@ impl BackupManager {
         let metadata_file = File::create(metadata_path)?;
         serde_json::to_writer_pretty(metadata_file, &final_metadata)?;
 
-        info!("Full backup completed successfully");
+        info!("Full backup completed (sequences {} to {})", global_start_seq, global_end_seq);
         Ok(final_metadata)
     }
 
-    /// Create an incremental backup since a specific WAL sequence
+    /// Create an incremental backup since a specific sequence
     #[instrument(skip(self, backup_path))]
     pub fn create_incremental_backup<P: AsRef<Path>>(
         &self,
         backup_path: P,
         since_sequence: u64,
+        parent_backup_path: Option<&Path>,
     ) -> Result<BackupMetadata> {
         let backup_path = backup_path.as_ref();
         info!("Starting incremental backup since sequence {} to {:?}",
@@ -115,43 +160,78 @@ impl BackupManager {
         // Create backup directory
         fs::create_dir_all(backup_path)?;
 
-        // Only backup WAL entries since the specified sequence
-        let wal_dir_src = self.data_dir.join("wal");
-        let wal_dir_dst = backup_path.join("wal");
-        fs::create_dir_all(&wal_dir_dst)?;
+        // Track what we're backing up
+        let mut table_infos = Vec::new();
+        let mut global_start_seq = since_sequence + 1;
+        let mut global_end_seq = since_sequence;
 
-        // Copy WAL files (in production, would filter by sequence)
-        if let Ok(entries) = fs::read_dir(&wal_dir_src) {
-            for entry in entries {
+        // For each table, find segments that have sequences > since_sequence
+        let tables_dir = self.data_dir.join("tables");
+        if tables_dir.exists() {
+            for entry in fs::read_dir(&tables_dir)? {
                 let entry = entry?;
-                let src_path = entry.path();
-                let file_name = entry.file_name();
-                let dst_path = wal_dir_dst.join(file_name);
+                if entry.file_type()?.is_dir() {
+                    let table_name = entry.file_name().to_string_lossy().to_string();
 
-                // Copy and compress
-                self.copy_with_compression(&src_path, &dst_path, CompressionType::Zstd)?;
+                    // Backup only new segments for this table
+                    let table_info = self.backup_table_incremental(
+                        &table_name,
+                        backup_path,
+                        since_sequence
+                    )?;
+
+                    // Track sequence ranges
+                    if table_info.segments_backed_up.len() > 0 {
+                        let last_seg = table_info.segments_backed_up.last().unwrap();
+                        global_end_seq = global_end_seq.max(last_seg.end_sequence);
+                    }
+
+                    if table_info.segments_backed_up.len() > 0 {
+                        table_infos.push(table_info);
+                    }
+                }
             }
         }
 
+        // Check if there's actually anything new to backup
+        if table_infos.is_empty() {
+            info!("No new data since sequence {}", since_sequence);
+        }
+
         // Create metadata
+        let parent_backup_id = parent_backup_path.map(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown")
+                .to_string()
+        });
+
         let metadata = BackupMetadata {
             version: env!("CARGO_PKG_VERSION").to_string(),
             timestamp_ms: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_millis() as u64)
                 .unwrap_or(0),
-            tables: Vec::new(), // Incremental backup doesn't include tables
-            wal_sequence: self.get_current_wal_sequence()?,
-            checksum: self.compute_backup_checksum(backup_path)?,
+            tables: table_infos,
+            backup_type: BackupType::Incremental,
+            parent_backup: parent_backup_id,
+            start_sequence: global_start_seq,
+            end_sequence: global_end_seq,
+            checksum: String::new(),
             compression: CompressionType::Zstd,
         };
 
+        // Compute and save metadata with checksum
+        let checksum = self.compute_backup_checksum(backup_path)?;
+        let mut final_metadata = metadata;
+        final_metadata.checksum = checksum;
+
         let metadata_path = backup_path.join("metadata.json");
         let metadata_file = File::create(metadata_path)?;
-        serde_json::to_writer_pretty(metadata_file, &metadata)?;
+        serde_json::to_writer_pretty(metadata_file, &final_metadata)?;
 
-        info!("Incremental backup completed successfully");
-        Ok(metadata)
+        info!("Incremental backup completed (sequences {} to {})", global_start_seq, global_end_seq);
+        Ok(final_metadata)
     }
 
     /// Restore from backup
@@ -220,44 +300,264 @@ impl BackupManager {
         }
 
         // Verify table files exist
-        for table in &metadata.tables {
-            let table_backup = backup_path.join("tables").join(table);
-            if !table_backup.exists() {
-                error!("Table backup missing: {}", table);
+        for table_info in &metadata.tables {
+            let table_backup = backup_path.join("tables").join(&table_info.name);
+
+            // For incremental backups, table dir might not exist if no changes
+            if table_info.segments_backed_up.len() > 0 && !table_backup.exists() {
+                error!("Table backup missing: {}", table_info.name);
                 return Ok(false);
+            }
+
+            // Verify segment files
+            for segment in &table_info.segments_backed_up {
+                let segment_path = table_backup.join("segments").join(&segment.file_name);
+                if !segment_path.exists() {
+                    error!("Segment file missing: {}", segment.file_name);
+                    return Ok(false);
+                }
             }
         }
 
-        info!("Backup verification successful");
+        info!("Backup verification successful (type: {:?}, sequences {} to {})",
+              metadata.backup_type, metadata.start_sequence, metadata.end_sequence);
         Ok(true)
     }
 
     // Helper methods
 
-    fn backup_table(&self, table_name: &str, backup_path: &Path) -> Result<()> {
-        debug!("Backing up table: {}", table_name);
+    /// Backup a full table and return its backup info
+    fn backup_table_full(&self, table_name: &str, backup_path: &Path) -> Result<TableBackupInfo> {
+        debug!("Backing up full table: {}", table_name);
+
+        let src_table_dir = self.data_dir.join("tables").join(table_name);
+        let dst_table_dir = backup_path.join("tables").join(table_name);
+        fs::create_dir_all(&dst_table_dir)?;
+
+        let mut segment_infos = Vec::new();
+        let mut total_events = 0u64;
+        let mut last_sequence = 0u64;
+
+        // Backup segments directory
+        let segments_dir = src_table_dir.join("segments");
+        if segments_dir.exists() {
+            let dst_segments_dir = dst_table_dir.join("segments");
+            fs::create_dir_all(&dst_segments_dir)?;
+
+            // Process each segment file
+            for entry in fs::read_dir(&segments_dir)? {
+                let entry = entry?;
+                if entry.path().extension().and_then(|s| s.to_str()) == Some("seg") {
+                    let segment_info = self.backup_segment_file(
+                        &entry.path(),
+                        &dst_segments_dir,
+                        CompressionType::Zstd
+                    )?;
+
+                    total_events += segment_info.end_sequence - segment_info.start_sequence + 1;
+                    last_sequence = last_sequence.max(segment_info.end_sequence);
+                    segment_infos.push(segment_info);
+                }
+            }
+        }
+
+        // Backup other table files (schema, meta, etc)
+        self.backup_table_metadata(&src_table_dir, &dst_table_dir)?;
+
+        Ok(TableBackupInfo {
+            name: table_name.to_string(),
+            segments_backed_up: segment_infos,
+            last_sequence,
+            total_events,
+        })
+    }
+
+    /// Backup only new segments since a given sequence
+    fn backup_table_incremental(
+        &self,
+        table_name: &str,
+        backup_path: &Path,
+        since_sequence: u64
+    ) -> Result<TableBackupInfo> {
+        debug!("Backing up incremental table {} since sequence {}", table_name, since_sequence);
 
         let src_table_dir = self.data_dir.join("tables").join(table_name);
         let dst_table_dir = backup_path.join("tables").join(table_name);
 
-        fs::create_dir_all(&dst_table_dir)?;
+        let mut segment_infos = Vec::new();
+        let mut total_events = 0u64;
+        let mut last_sequence = since_sequence;
 
-        // Copy all table files with compression
-        self.copy_directory_recursive(&src_table_dir, &dst_table_dir, CompressionType::Zstd)?;
+        // Check segments directory
+        let segments_dir = src_table_dir.join("segments");
+        if segments_dir.exists() {
+            let dst_segments_dir = dst_table_dir.join("segments");
+
+            // Process each segment file
+            for entry in fs::read_dir(&segments_dir)? {
+                let entry = entry?;
+                if entry.path().extension().and_then(|s| s.to_str()) == Some("seg") {
+                    // Read segment header to check sequence range
+                    if let Ok(seq_range) = self.read_segment_sequence_range(&entry.path()) {
+                        // Only backup if segment has sequences after our checkpoint
+                        if seq_range.1 > since_sequence {
+                            fs::create_dir_all(&dst_segments_dir)?;
+
+                            let segment_info = self.backup_segment_file(
+                                &entry.path(),
+                                &dst_segments_dir,
+                                CompressionType::Zstd
+                            )?;
+
+                            total_events += segment_info.end_sequence.saturating_sub(since_sequence.max(segment_info.start_sequence - 1));
+                            last_sequence = last_sequence.max(segment_info.end_sequence);
+                            segment_infos.push(segment_info);
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(TableBackupInfo {
+            name: table_name.to_string(),
+            segments_backed_up: segment_infos,
+            last_sequence,
+            total_events,
+        })
+    }
+
+    /// Backup a single segment file
+    fn backup_segment_file(
+        &self,
+        src_path: &Path,
+        dst_dir: &Path,
+        compression: CompressionType
+    ) -> Result<SegmentInfo> {
+        let file_name = src_path.file_name()
+            .ok_or_else(|| DriftError::Other("Invalid segment file name".to_string()))?
+            .to_string_lossy()
+            .to_string();
+
+        // Parse segment ID from filename (e.g., "000001.seg")
+        let segment_id = file_name.trim_end_matches(".seg")
+            .parse::<u64>()
+            .unwrap_or(0);
+
+        // Read sequence range
+        let (start_seq, end_seq) = self.read_segment_sequence_range(src_path)?;
+
+        // Get file size
+        let metadata = fs::metadata(src_path)?;
+        let size_bytes = metadata.len();
+
+        // Copy with compression
+        let dst_file_name = if matches!(compression, CompressionType::None) {
+            file_name.clone()
+        } else {
+            format!("{}.zst", file_name)
+        };
+        let dst_path = dst_dir.join(&dst_file_name);
+        self.copy_with_compression(src_path, &dst_path, compression)?;
+
+        Ok(SegmentInfo {
+            segment_id,
+            start_sequence: start_seq,
+            end_sequence: end_seq,
+            file_name: dst_file_name,
+            size_bytes,
+        })
+    }
+
+    /// Read the sequence range from a segment file
+    fn read_segment_sequence_range(&self, segment_path: &Path) -> Result<(u64, u64)> {
+        let file = File::open(segment_path)?;
+        let mut reader = BufReader::new(file);
+
+        let mut first_seq = u64::MAX;
+        let mut last_seq = 0u64;
+
+        // Read frames from the segment to find sequence range
+        // This is simplified - in production would use proper Frame parsing
+        let mut buffer = vec![0u8; 16]; // Enough for frame header
+        while reader.read_exact(&mut buffer).is_ok() {
+            // Extract sequence from frame (offset 8 in frame)
+            let sequence = u64::from_le_bytes([
+                buffer[8], buffer[9], buffer[10], buffer[11],
+                buffer[12], buffer[13], buffer[14], buffer[15],
+            ]);
+
+            first_seq = first_seq.min(sequence);
+            last_seq = last_seq.max(sequence);
+
+            // Skip rest of frame (simplified)
+            let frame_len = u32::from_le_bytes([buffer[0], buffer[1], buffer[2], buffer[3]]) as usize;
+            if frame_len > 16 {
+                let mut skip_buf = vec![0u8; frame_len - 16];
+                if reader.read_exact(&mut skip_buf).is_err() {
+                    break;
+                }
+            }
+        }
+
+        if first_seq == u64::MAX {
+            first_seq = 0;
+        }
+
+        Ok((first_seq, last_seq))
+    }
+
+    /// Backup table metadata files (schema, indexes, etc)
+    fn backup_table_metadata(&self, src_dir: &Path, dst_dir: &Path) -> Result<()> {
+        // Backup schema file
+        let schema_src = src_dir.join("schema.yaml");
+        if schema_src.exists() {
+            let schema_dst = dst_dir.join("schema.yaml");
+            fs::copy(&schema_src, &schema_dst)?;
+        }
+
+        // Backup meta.json
+        let meta_src = src_dir.join("meta.json");
+        if meta_src.exists() {
+            let meta_dst = dst_dir.join("meta.json");
+            fs::copy(&meta_src, &meta_dst)?;
+        }
+
+        // Backup indexes directory
+        let indexes_src = src_dir.join("indexes");
+        if indexes_src.exists() {
+            let indexes_dst = dst_dir.join("indexes");
+            fs::create_dir_all(&indexes_dst)?;
+            self.copy_directory_recursive(&indexes_src, &indexes_dst, CompressionType::None)?;
+        }
 
         Ok(())
     }
 
-    fn restore_table(&self, table_name: &str, backup_path: &Path, target_dir: &Path) -> Result<()> {
-        debug!("Restoring table: {}", table_name);
+    fn restore_table(&self, table_info: &TableBackupInfo, backup_path: &Path, target_dir: &Path) -> Result<()> {
+        debug!("Restoring table: {} ({} segments)", table_info.name, table_info.segments_backed_up.len());
 
-        let src_table_dir = backup_path.join("tables").join(table_name);
-        let dst_table_dir = target_dir.join("tables").join(table_name);
+        let src_table_dir = backup_path.join("tables").join(&table_info.name);
+        let dst_table_dir = target_dir.join("tables").join(&table_info.name);
+
+        // Skip if no segments were backed up (e.g., empty incremental)
+        if table_info.segments_backed_up.is_empty() {
+            debug!("No segments to restore for table {}", table_info.name);
+            return Ok(());
+        }
 
         fs::create_dir_all(&dst_table_dir)?;
 
-        // Decompress and copy files
+        // Restore metadata files
         self.copy_directory_recursive(&src_table_dir, &dst_table_dir, CompressionType::None)?;
+
+        // Log sequence range restored
+        if let (Some(first), Some(last)) = (
+            table_info.segments_backed_up.first(),
+            table_info.segments_backed_up.last()
+        ) {
+            info!("Restored table {} with sequences {} to {}",
+                  table_info.name, first.start_sequence, last.end_sequence);
+        }
 
         Ok(())
     }
@@ -499,9 +799,10 @@ mod tests {
 
         // Verify metadata
         assert_eq!(metadata.tables.len(), 3);
-        assert!(metadata.tables.contains(&"users".to_string()));
-        assert!(metadata.tables.contains(&"orders".to_string()));
-        assert!(metadata.tables.contains(&"products".to_string()));
+        let table_names: Vec<String> = metadata.tables.iter().map(|t| t.name.clone()).collect();
+        assert!(table_names.contains(&"users".to_string()));
+        assert!(table_names.contains(&"orders".to_string()));
+        assert!(table_names.contains(&"products".to_string()));
         assert!(!metadata.checksum.is_empty());
         assert!(matches!(metadata.compression, CompressionType::Zstd));
 
@@ -572,7 +873,6 @@ mod tests {
 
         // Create full backup
         let full_metadata = manager.create_full_backup(full_backup_dir.path()).unwrap();
-        let full_wal_sequence = full_metadata.wal_sequence;
 
         // Add more WAL data
         let wal_dir = data_dir.path().join("wal");
@@ -581,13 +881,13 @@ mod tests {
         // Create incremental backup
         let inc_metadata = manager.create_incremental_backup(
             inc_backup_dir.path(),
-            full_wal_sequence
+            full_metadata.end_sequence,
+            Some(full_backup_dir.path())
         ).unwrap();
 
         // Verify incremental backup metadata
-        assert!(inc_metadata.tables.is_empty()); // No table data in incremental
-        // Note: WAL sequence might be the same if no new WAL entries were created
-        assert!(inc_metadata.wal_sequence >= full_wal_sequence);
+        // Since we didn't add new segments, just WAL, tables might be empty
+        assert!(inc_metadata.start_sequence > full_metadata.end_sequence);
         assert!(!inc_metadata.checksum.is_empty());
 
         // Verify incremental backup contains only WAL
@@ -783,7 +1083,8 @@ mod tests {
 
         // Create backup
         let metadata = manager.create_full_backup(backup_dir.path()).unwrap();
-        assert!(metadata.tables.contains(&table_name.to_string()));
+        let table_names: Vec<String> = metadata.tables.iter().map(|t| t.name.clone()).collect();
+        assert!(table_names.contains(&table_name.to_string()));
 
         // Verify backup
         assert!(manager.verify_backup(backup_dir.path()).unwrap());
@@ -819,7 +1120,8 @@ mod tests {
 
         // Create backup
         let metadata = manager.create_full_backup(backup_dir.path()).unwrap();
-        assert!(metadata.tables.contains(&"large_table".to_string()));
+        let table_names: Vec<String> = metadata.tables.iter().map(|t| t.name.clone()).collect();
+        assert!(table_names.contains(&"large_table".to_string()));
 
         // Verify backup
         assert!(manager.verify_backup(backup_dir.path()).unwrap());

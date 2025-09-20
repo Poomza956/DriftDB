@@ -12,6 +12,8 @@ use crate::schema::{ColumnDef, Schema};
 use crate::snapshot::SnapshotManager;
 use crate::storage::{Segment, TableStorage};
 use crate::transaction::{IsolationLevel, TransactionManager};
+use crate::constraints::ConstraintManager;
+use crate::sequences::SequenceManager;
 
 pub struct Engine {
     base_path: PathBuf,
@@ -19,6 +21,8 @@ pub struct Engine {
     indexes: HashMap<String, Arc<RwLock<IndexManager>>>,
     snapshots: HashMap<String, Arc<SnapshotManager>>,
     transaction_manager: Arc<RwLock<TransactionManager>>,
+    constraint_manager: Arc<RwLock<ConstraintManager>>,
+    sequence_manager: Arc<SequenceManager>,
 }
 
 impl Engine {
@@ -43,6 +47,8 @@ impl Engine {
             indexes: HashMap::new(),
             snapshots: HashMap::new(),
             transaction_manager: Arc::new(RwLock::new(TransactionManager::new())),
+            constraint_manager: Arc::new(RwLock::new(ConstraintManager::new())),
+            sequence_manager: Arc::new(SequenceManager::new()),
         };
 
         let tables_dir = base_path.join("tables");
@@ -70,6 +76,8 @@ impl Engine {
             indexes: HashMap::new(),
             snapshots: HashMap::new(),
             transaction_manager: Arc::new(RwLock::new(TransactionManager::new())),
+            constraint_manager: Arc::new(RwLock::new(ConstraintManager::new())),
+            sequence_manager: Arc::new(SequenceManager::new()),
         })
     }
 
@@ -399,6 +407,184 @@ impl Engine {
         self.tables.keys().cloned().collect()
     }
 
+    /// Get storage size information for a table
+    pub fn get_table_size(&self, table_name: &str) -> Result<u64> {
+        let storage = self.tables.get(table_name)
+            .ok_or_else(|| DriftError::TableNotFound(table_name.to_string()))?;
+
+        storage.calculate_size_bytes()
+    }
+
+    /// Get storage breakdown for a table by component
+    pub fn get_table_storage_breakdown(&self, table_name: &str) -> Result<HashMap<String, u64>> {
+        let storage = self.tables.get(table_name)
+            .ok_or_else(|| DriftError::TableNotFound(table_name.to_string()))?;
+
+        storage.get_storage_breakdown()
+    }
+
+    /// Get statistics for a table
+    pub fn get_table_stats(&self, table_name: &str) -> Result<crate::storage::table_storage::TableStats> {
+        let storage = self.tables.get(table_name)
+            .ok_or_else(|| DriftError::TableNotFound(table_name.to_string()))?;
+
+        Ok(storage.get_table_stats())
+    }
+
+    /// Get total database size across all tables
+    pub fn get_total_database_size(&self) -> u64 {
+        let mut total_size = 0u64;
+
+        for (_, storage) in &self.tables {
+            if let Ok(size) = storage.calculate_size_bytes() {
+                total_size += size;
+            }
+        }
+
+        total_size
+    }
+
+    /// Collect real statistics for a table
+    pub fn collect_table_statistics(&self, table_name: &str) -> Result<crate::optimizer::TableStatistics> {
+        use crate::optimizer::{TableStatistics, ColumnStatistics, IndexStatistics, Histogram, HistogramBucket};
+
+        let storage = self.tables.get(table_name)
+            .ok_or_else(|| DriftError::TableNotFound(table_name.to_string()))?;
+
+        // Get current state to analyze
+        let current_state = storage.reconstruct_state_at(None)?;
+        let row_count = current_state.len();
+
+        // Calculate average row size
+        let total_size: usize = current_state.values()
+            .map(|v| v.to_string().len())
+            .sum();
+        let avg_row_size = if row_count > 0 { total_size / row_count } else { 0 };
+
+        // Get actual storage size
+        let total_size_bytes = storage.calculate_size_bytes()?;
+
+        // Collect column statistics
+        let mut column_stats = HashMap::new();
+        let schema = storage.schema();
+
+        for column in &schema.columns {
+            let mut values = Vec::new();
+            let mut null_count = 0;
+
+            // Collect all values for this column
+            for row in current_state.values() {
+                if let Some(value) = row.get(&column.name) {
+                    if value.is_null() {
+                        null_count += 1;
+                    } else {
+                        values.push(value.clone());
+                    }
+                } else {
+                    null_count += 1;
+                }
+            }
+
+            // Calculate statistics
+            let distinct_values: HashSet<_> = values.iter().collect();
+            let distinct_count = distinct_values.len();
+
+            // Find min/max values
+            let (min_value, max_value) = if !values.is_empty() {
+                let sorted: Vec<String> = values.iter()
+                    .filter_map(|v| {
+                        v.as_str()
+                            .map(String::from)
+                            .or_else(|| v.as_i64().map(|n| n.to_string()))
+                            .or_else(|| v.as_f64().map(|n| n.to_string()))
+                    })
+                    .collect();
+
+                if !sorted.is_empty() {
+                    let min = sorted.iter().min().map(|s| serde_json::json!(s));
+                    let max = sorted.iter().max().map(|s| serde_json::json!(s));
+                    (min, max)
+                } else {
+                    (None, None)
+                }
+            } else {
+                (None, None)
+            };
+
+            // Create histogram with up to 10 buckets
+            let histogram = if values.len() > 10 {
+                let bucket_size = values.len() / 10;
+                let mut buckets = Vec::new();
+
+                for i in 0..10 {
+                    let start = i * bucket_size;
+                    let end = ((i + 1) * bucket_size).min(values.len());
+                    if start < values.len() {
+                        let bucket_values = &values[start..end];
+                        if !bucket_values.is_empty() {
+                            buckets.push(HistogramBucket {
+                                lower_bound: bucket_values.first().unwrap().clone(),
+                                upper_bound: bucket_values.last().unwrap().clone(),
+                                frequency: bucket_values.len(),
+                            });
+                        }
+                    }
+                }
+
+                Some(Histogram { buckets })
+            } else {
+                None
+            };
+
+            column_stats.insert(column.name.clone(), ColumnStatistics {
+                distinct_values: distinct_count,
+                null_count,
+                min_value,
+                max_value,
+                histogram,
+            });
+        }
+
+        // Collect index statistics
+        let mut index_stats = HashMap::new();
+        if let Some(index_mgr) = self.indexes.get(table_name) {
+            let index_mgr = index_mgr.read();
+            for index_name in schema.indexed_columns() {
+                // Get index metadata
+                if let Some(index) = index_mgr.get_index(&index_name) {
+                    // Count unique keys in the index
+                    let unique_keys = index.len();
+
+                    index_stats.insert(index_name.clone(), IndexStatistics {
+                        index_name: index_name.clone(),
+                        unique_keys,
+                        depth: 3, // B-tree typical depth
+                        size_bytes: unique_keys as u64 * 64, // Estimate
+                    });
+                }
+            }
+        }
+
+        Ok(TableStatistics {
+            table_name: table_name.to_string(),
+            row_count,
+            avg_row_size,
+            total_size_bytes,
+            column_stats,
+            index_stats,
+            last_updated: chrono::Utc::now().timestamp() as u64,
+        })
+    }
+
+    /// Analyze all tables and update optimizer statistics
+    pub fn analyze_all_tables(&self, optimizer: &crate::optimizer::QueryOptimizer) -> Result<()> {
+        for table_name in self.list_tables() {
+            let stats = self.collect_table_statistics(&table_name)?;
+            optimizer.update_statistics(&table_name, stats);
+        }
+        Ok(())
+    }
+
     /// Get all data from a table (for SQL SELECT support)
     pub fn get_table_data(&self, table_name: &str) -> Result<Vec<serde_json::Value>> {
         let storage = self.tables.get(table_name)
@@ -460,10 +646,33 @@ impl Engine {
     }
 
     /// Insert a record into a table (for SQL INSERT support)
-    pub fn insert_record(&mut self, table_name: &str, record: serde_json::Value) -> Result<()> {
+    pub fn insert_record(&mut self, table_name: &str, mut record: serde_json::Value) -> Result<()> {
         let storage = self.tables.get(table_name)
             .ok_or_else(|| DriftError::TableNotFound(table_name.to_string()))?
             .clone();
+
+        // Get the schema for validation
+        let schema = storage.schema();
+
+        // Validate constraints and apply defaults
+        {
+            let mut constraint_mgr = self.constraint_manager.write();
+            constraint_mgr.validate_insert(schema, &mut record, self)
+                .map_err(|e| DriftError::Other(format!("Constraint violation: {}", e)))?;
+        }
+
+        // Check for auto-increment columns and generate values
+        for column in &schema.columns {
+            if let Some(obj) = record.as_object_mut() {
+                // If column is missing or null, check if it has auto-increment
+                if obj.get(&column.name).map_or(true, |v| v.is_null()) {
+                    // Try to get auto-increment value
+                    if let Ok(next_val) = self.sequence_manager.next_auto_increment(table_name, &column.name) {
+                        obj.insert(column.name.clone(), serde_json::json!(next_val));
+                    }
+                }
+            }
+        }
 
         // Extract primary key from record
         let primary_key_field = &storage.schema().primary_key;
@@ -655,6 +864,60 @@ impl Engine {
         }
 
         Ok(results)
+    }
+
+    /// Get the current global sequence number
+    pub fn get_current_sequence(&self) -> u64 {
+        // Get the maximum sequence number across all tables
+        let mut max_seq = 0u64;
+        for storage in self.tables.values() {
+            if let Ok(events) = storage.read_all_events() {
+                for event in events {
+                    max_seq = max_seq.max(event.sequence);
+                }
+            }
+        }
+        max_seq
+    }
+
+    /// Find the sequence number for a given timestamp
+    pub fn find_sequence_for_timestamp(&self, timestamp: time::OffsetDateTime) -> Result<u64> {
+        let mut closest_sequence = 0u64;
+        let mut closest_time_diff = i128::MAX;
+
+        // Search all tables for the closest event before or at the timestamp
+        for storage in self.tables.values() {
+            if let Ok(events) = storage.read_all_events() {
+                for event in events {
+                    // Check if this event is before or at the requested timestamp
+                    if event.timestamp <= timestamp {
+                        let time_diff = (timestamp - event.timestamp).whole_nanoseconds().abs();
+                        if time_diff < closest_time_diff {
+                            closest_time_diff = time_diff;
+                            closest_sequence = event.sequence;
+                        }
+                    }
+                }
+            }
+        }
+
+        if closest_sequence == 0 {
+            // No events found before this timestamp
+            return Err(DriftError::InvalidQuery(
+                format!("No data found before timestamp {}", timestamp)
+            ));
+        }
+
+        Ok(closest_sequence)
+    }
+
+    /// Get table data at a specific timestamp (time travel)
+    pub fn get_table_data_at_timestamp(&self, table_name: &str, timestamp: time::OffsetDateTime) -> Result<Vec<serde_json::Value>> {
+        // Find the sequence number for this timestamp
+        let sequence = self.find_sequence_for_timestamp(timestamp)?;
+
+        // Use the existing get_table_data_at method
+        self.get_table_data_at(table_name, sequence)
     }
 
     /// Begin a migration transaction

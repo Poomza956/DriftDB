@@ -18,6 +18,7 @@ use prometheus::{
 };
 use tokio::sync::RwLock;
 use tracing::{debug, error};
+use sysinfo::{System, Pid};
 
 use driftdb_core::Engine;
 use crate::session::SessionManager;
@@ -25,6 +26,9 @@ use crate::session::SessionManager;
 lazy_static! {
     /// Global metrics registry
     pub static ref REGISTRY: Registry = Registry::new();
+
+    /// System information for CPU metrics
+    static ref SYSTEM: RwLock<System> = RwLock::new(System::new_all());
 
     /// Total number of queries executed
     pub static ref QUERY_TOTAL: CounterVec = CounterVec::new(
@@ -80,6 +84,13 @@ lazy_static! {
         &["type"]
     ).unwrap();
 
+    /// CPU usage
+    pub static ref CPU_USAGE_PERCENT: GaugeVec = GaugeVec::new(
+        Opts::new("driftdb_cpu_usage_percent", "CPU usage percentage")
+            .namespace("driftdb"),
+        &["type"]
+    ).unwrap();
+
     /// Connection pool size
     pub static ref POOL_SIZE: Gauge = Gauge::new(
         "driftdb_pool_size_total",
@@ -107,7 +118,7 @@ lazy_static! {
     ).unwrap();
 
     /// Pool connection total created
-    pub static ref POOL_CONNECTIONS_CREATED: Counter = Counter::new(
+    pub static ref POOL_CONNECTIONS_CREATED: Gauge = Gauge::new(
         "driftdb_pool_connections_created_total",
         "Total number of connections created by the pool"
     ).unwrap();
@@ -123,6 +134,7 @@ pub fn init_metrics() -> anyhow::Result<()> {
     REGISTRY.register(Box::new(ERROR_TOTAL.clone()))?;
     REGISTRY.register(Box::new(SERVER_UPTIME.clone()))?;
     REGISTRY.register(Box::new(MEMORY_USAGE_BYTES.clone()))?;
+    REGISTRY.register(Box::new(CPU_USAGE_PERCENT.clone()))?;
     REGISTRY.register(Box::new(POOL_SIZE.clone()))?;
     REGISTRY.register(Box::new(POOL_AVAILABLE.clone()))?;
     REGISTRY.register(Box::new(POOL_ACTIVE.clone()))?;
@@ -207,8 +219,8 @@ async fn update_dynamic_metrics(state: &MetricsState) {
         }
     }
 
-    // Update memory usage (basic system info)
-    update_memory_metrics().await;
+    // Update system metrics (memory and CPU)
+    update_system_metrics().await;
 }
 
 /// Collect database size metrics
@@ -217,34 +229,86 @@ async fn collect_database_size_metrics(engine: &Engine) -> anyhow::Result<()> {
     let tables = engine.list_tables();
 
     for table_name in tables {
-        // For now, we'll set placeholder values
-        // In a real implementation, you would query actual table sizes
-        DATABASE_SIZE_BYTES
-            .with_label_values(&[&table_name, "data"])
-            .set(1024.0); // Placeholder value
+        // Get actual table storage breakdown
+        if let Ok(breakdown) = engine.get_table_storage_breakdown(&table_name) {
+            // Set metrics for each storage component
+            for (component, size_bytes) in breakdown {
+                DATABASE_SIZE_BYTES
+                    .with_label_values(&[&table_name, &component])
+                    .set(size_bytes as f64);
+            }
+        }
 
-        DATABASE_SIZE_BYTES
-            .with_label_values(&[&table_name, "index"])
-            .set(512.0); // Placeholder value
+        // Also get and record total table size
+        if let Ok(total_size) = engine.get_table_size(&table_name) {
+            DATABASE_SIZE_BYTES
+                .with_label_values(&[&table_name, "total"])
+                .set(total_size as f64);
+        }
     }
+
+    // Record total database size
+    let total_db_size = engine.get_total_database_size();
+    DATABASE_SIZE_BYTES
+        .with_label_values(&["_total", "all"])
+        .set(total_db_size as f64);
 
     Ok(())
 }
 
-/// Update memory usage metrics
-async fn update_memory_metrics() {
-    // This is a simplified implementation
-    // In production, you might want to use a system info crate
-    // to get actual memory usage statistics
+/// Update system metrics (memory and CPU)
+async fn update_system_metrics() {
+    // Get or update system information
+    let mut sys = SYSTEM.write().await;
+    sys.refresh_all();
+    sys.refresh_cpu();
 
-    // Placeholder values for demonstration
+    // Get current process info
+    let pid = Pid::from(std::process::id() as usize);
+    if let Some(process) = sys.process(pid) {
+        // Process memory metrics
+        MEMORY_USAGE_BYTES
+            .with_label_values(&["process_virtual"])
+            .set(process.virtual_memory() as f64);
+
+        MEMORY_USAGE_BYTES
+            .with_label_values(&["process_physical"])
+            .set(process.memory() as f64 * 1024.0); // Convert from KB to bytes
+
+        // Process CPU usage
+        CPU_USAGE_PERCENT
+            .with_label_values(&["process"])
+            .set(process.cpu_usage() as f64);
+    }
+
+    // System-wide memory metrics
     MEMORY_USAGE_BYTES
-        .with_label_values(&["heap"])
-        .set(50_000_000.0); // 50MB
+        .with_label_values(&["system_total"])
+        .set(sys.total_memory() as f64 * 1024.0); // Convert from KB to bytes
 
     MEMORY_USAGE_BYTES
-        .with_label_values(&["stack"])
-        .set(2_000_000.0); // 2MB
+        .with_label_values(&["system_used"])
+        .set(sys.used_memory() as f64 * 1024.0); // Convert from KB to bytes
+
+    MEMORY_USAGE_BYTES
+        .with_label_values(&["system_available"])
+        .set(sys.available_memory() as f64 * 1024.0); // Convert from KB to bytes
+
+    // System-wide CPU metrics
+    let cpus = sys.cpus();
+    if !cpus.is_empty() {
+        let total_cpu_usage: f32 = cpus.iter().map(|cpu| cpu.cpu_usage()).sum::<f32>() / cpus.len() as f32;
+        CPU_USAGE_PERCENT
+            .with_label_values(&["system"])
+            .set(total_cpu_usage as f64);
+    }
+
+    // Per-CPU core metrics
+    for (i, cpu) in sys.cpus().iter().enumerate() {
+        CPU_USAGE_PERCENT
+            .with_label_values(&[&format!("core_{}", i)])
+            .set(cpu.cpu_usage() as f64);
+    }
 }
 
 /// Metrics helper functions for use throughout the application
@@ -293,9 +357,9 @@ pub fn record_pool_wait_time(duration_seconds: f64, success: bool) {
         .observe(duration_seconds);
 }
 
-/// Record a new connection created by the pool
-pub fn record_pool_connection_created() {
-    POOL_CONNECTIONS_CREATED.inc();
+/// Update the total connections created by the pool
+pub fn update_pool_connections_created(total: u64) {
+    POOL_CONNECTIONS_CREATED.set(total as f64);
 }
 
 #[cfg(test)]

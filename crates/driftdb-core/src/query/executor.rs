@@ -74,9 +74,9 @@ impl Engine {
                 let backup_manager = BackupManager::new(self.base_path(), metrics);
 
                 let result = if incremental {
-                    // For incremental backup, we need the last WAL sequence
-                    // In a real implementation, we'd track this properly
-                    backup_manager.create_incremental_backup(&destination, 0)
+                    // For incremental backup, we need the last backup's end sequence
+                    // In production, we'd track this from the last backup metadata
+                    backup_manager.create_incremental_backup(&destination, 0, None)
                 } else {
                     backup_manager.create_full_backup(&destination)
                 }?;

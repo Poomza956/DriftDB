@@ -8,6 +8,7 @@ mod session;
 mod executor;
 mod health;
 mod metrics;
+mod transaction;
 
 use std::net::{SocketAddr, IpAddr};
 use std::sync::Arc;
@@ -219,8 +220,11 @@ async fn main() -> Result<()> {
                         metrics::update_pool_size(
                             stats.connection_stats.total_connections,
                             stats.connection_stats.available_connections,
-                            stats.connection_stats.total_connections - stats.connection_stats.available_connections
+                            stats.connection_stats.active_connections
                         );
+                        // Also update additional pool metrics
+                        metrics::POOL_CONNECTIONS_CREATED.set(stats.connection_stats.total_created as f64);
+                        // Could add more metrics here for transactions and requests
                     }
                 }
             };
