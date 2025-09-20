@@ -404,7 +404,8 @@ impl WindowExecutor {
             }
 
             WindowFunction::Sum(column) => {
-                let frame = window.frame.as_ref().unwrap_or(&WindowFrame::default());
+                let default_frame = WindowFrame::default();
+                let frame = window.frame.as_ref().unwrap_or(&default_frame);
                 for i in 0..row_count {
                     let frame_rows = self.get_frame_rows(i, row_count, frame);
                     let sum = self.sum_values(&partition.rows, &frame_rows, column);
@@ -413,7 +414,8 @@ impl WindowExecutor {
             }
 
             WindowFunction::Avg(column) => {
-                let frame = window.frame.as_ref().unwrap_or(&WindowFrame::default());
+                let default_frame = WindowFrame::default();
+                let frame = window.frame.as_ref().unwrap_or(&default_frame);
                 for i in 0..row_count {
                     let frame_rows = self.get_frame_rows(i, row_count, frame);
                     let avg = self.avg_values(&partition.rows, &frame_rows, column);
@@ -422,7 +424,8 @@ impl WindowExecutor {
             }
 
             WindowFunction::Count(column) => {
-                let frame = window.frame.as_ref().unwrap_or(&WindowFrame::default());
+                let default_frame = WindowFrame::default();
+                let frame = window.frame.as_ref().unwrap_or(&default_frame);
                 for i in 0..row_count {
                     let frame_rows = self.get_frame_rows(i, row_count, frame);
                     let count = self.count_values(&partition.rows, &frame_rows, column.as_deref());
@@ -431,7 +434,8 @@ impl WindowExecutor {
             }
 
             WindowFunction::Min(column) => {
-                let frame = window.frame.as_ref().unwrap_or(&WindowFrame::default());
+                let default_frame = WindowFrame::default();
+                let frame = window.frame.as_ref().unwrap_or(&default_frame);
                 for i in 0..row_count {
                     let frame_rows = self.get_frame_rows(i, row_count, frame);
                     let min = self.min_values(&partition.rows, &frame_rows, column);
@@ -440,7 +444,8 @@ impl WindowExecutor {
             }
 
             WindowFunction::Max(column) => {
-                let frame = window.frame.as_ref().unwrap_or(&WindowFrame::default());
+                let default_frame = WindowFrame::default();
+                let frame = window.frame.as_ref().unwrap_or(&default_frame);
                 for i in 0..row_count {
                     let frame_rows = self.get_frame_rows(i, row_count, frame);
                     let max = self.max_values(&partition.rows, &frame_rows, column);

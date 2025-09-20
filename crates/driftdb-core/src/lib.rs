@@ -28,6 +28,8 @@ pub mod fulltext;
 pub mod window;
 pub mod procedures;
 pub mod stats;
+pub mod query_optimizer;
+pub mod adaptive_pool;
 
 #[cfg(test)]
 mod tests;

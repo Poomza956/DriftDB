@@ -95,15 +95,21 @@ pub enum PlanStep {
 pub struct TableStatistics {
     pub table_name: String,
     pub row_count: usize,
+    pub column_count: usize,
     pub avg_row_size: usize,
     pub total_size_bytes: u64,
+    pub data_size_bytes: u64,
     pub column_stats: HashMap<String, ColumnStatistics>,
+    pub column_statistics: HashMap<String, ColumnStatistics>,
     pub index_stats: HashMap<String, IndexStatistics>,
     pub last_updated: u64,
+    pub collection_method: String,
+    pub collection_duration_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ColumnStatistics {
+    pub column_name: String,
     pub distinct_values: usize,
     pub null_count: usize,
     pub min_value: Option<serde_json::Value>,

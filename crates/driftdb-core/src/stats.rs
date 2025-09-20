@@ -636,7 +636,7 @@ impl StatisticsManager {
             if execution.duration_ms > 1000 {
                 let analysis = self.analyze_slow_query(&execution);
                 stats.queries.slow_queries.push(SlowQuery {
-                    execution,
+                    execution: execution.clone(),
                     analysis,
                 });
 

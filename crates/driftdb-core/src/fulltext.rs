@@ -376,7 +376,7 @@ impl SearchManager {
         // Add to table indexes
         {
             let mut table_indexes = self.table_indexes.write();
-            table_indexes.entry(table).or_insert_with(Vec::new).push(name);
+            table_indexes.entry(table).or_insert_with(Vec::new).push(name.clone());
         }
 
         // Update statistics

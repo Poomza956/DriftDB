@@ -35,6 +35,12 @@ pub enum DriftError {
     #[error("Parse error: {0}")]
     Parse(String),
 
+    #[error("Pool exhausted")]
+    PoolExhausted,
+
+    #[error("Internal error: {0}")]
+    Internal(String),
+
     #[error("Other error: {0}")]
     Other(String),
 }

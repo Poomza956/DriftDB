@@ -211,7 +211,7 @@ impl TriggerManager {
             let mut by_table = self.triggers_by_table.write();
             by_table.entry(table_name.clone())
                 .or_insert_with(Vec::new)
-                .push(definition);
+                .push(definition.clone());
         }
 
         // Update statistics

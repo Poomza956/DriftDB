@@ -826,6 +826,7 @@ dependencies = [
  "chrono",
  "crc32fast",
  "criterion",
+ "fastrand",
  "fs2",
  "futures",
  "hkdf",
