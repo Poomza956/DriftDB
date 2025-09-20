@@ -22,6 +22,8 @@ pub mod cache;
 pub mod constraints;
 pub mod sequences;
 pub mod parallel;
+pub mod views;
+pub mod triggers;
 
 #[cfg(test)]
 mod tests;

@@ -14,6 +14,7 @@ use crate::storage::{Segment, TableStorage};
 use crate::transaction::{IsolationLevel, TransactionManager};
 use crate::constraints::ConstraintManager;
 use crate::sequences::SequenceManager;
+use crate::views::{ViewManager, ViewDefinition, ViewBuilder};
 
 pub struct Engine {
     base_path: PathBuf,
@@ -23,6 +24,7 @@ pub struct Engine {
     transaction_manager: Arc<RwLock<TransactionManager>>,
     constraint_manager: Arc<RwLock<ConstraintManager>>,
     sequence_manager: Arc<SequenceManager>,
+    view_manager: Arc<ViewManager>,
 }
 
 impl Engine {
@@ -48,6 +50,7 @@ impl Engine {
             snapshots: HashMap::new(),
             transaction_manager: Arc::new(RwLock::new(TransactionManager::new())),
             constraint_manager: Arc::new(RwLock::new(ConstraintManager::new())),
+            view_manager: Arc::new(ViewManager::new()),
             sequence_manager: Arc::new(SequenceManager::new()),
         };
 
@@ -442,6 +445,48 @@ impl Engine {
         }
 
         total_size
+    }
+
+    /// Create a view
+    pub fn create_view(&self, definition: ViewDefinition) -> Result<()> {
+        self.view_manager.create_view(definition)
+    }
+
+    /// Create a view using builder pattern
+    pub fn create_view_from_sql(&self, name: &str, sql: &str) -> Result<()> {
+        let view = ViewBuilder::new(name, sql).build()?;
+        self.view_manager.create_view(view)
+    }
+
+    /// Drop a view
+    pub fn drop_view(&self, view_name: &str, cascade: bool) -> Result<()> {
+        self.view_manager.drop_view(view_name, cascade)
+    }
+
+    /// Query a view
+    pub fn query_view(
+        &self,
+        view_name: &str,
+        conditions: Vec<crate::query::WhereCondition>,
+        as_of: Option<crate::query::AsOf>,
+        limit: Option<usize>,
+    ) -> Result<Vec<serde_json::Value>> {
+        self.view_manager.query_view(view_name, conditions, as_of, limit)
+    }
+
+    /// List all views
+    pub fn list_views(&self) -> Vec<ViewDefinition> {
+        self.view_manager.list_views()
+    }
+
+    /// Refresh a materialized view
+    pub fn refresh_materialized_view(&self, view_name: &str) -> Result<()> {
+        self.view_manager.refresh_materialized_view(view_name)
+    }
+
+    /// Get view statistics
+    pub fn get_view_stats(&self) -> crate::views::ViewStatistics {
+        self.view_manager.statistics()
     }
 
     /// Collect real statistics for a table
