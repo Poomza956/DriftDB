@@ -18,8 +18,10 @@ pub mod replication;
 pub mod raft;
 pub mod sql;
 pub mod rate_limit;
+pub mod cache;
 pub mod constraints;
 pub mod sequences;
+pub mod parallel;
 
 #[cfg(test)]
 mod tests;

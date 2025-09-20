@@ -9,6 +9,7 @@
 pub mod parser;
 pub mod executor;
 pub mod temporal;
+pub mod joins;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};

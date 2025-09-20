@@ -31,11 +31,14 @@ chacha20poly1305 = "0.10"
 hkdf = "0.12"
 rand = "0.8"
 base64 = "0.21"
+lru = "0.12"
 rustls = "0.21"
 tokio-rustls = "0.24"
 rustls-pemfile = "1.0"
 sqlparser = "0.44"
 chrono = { version = "0.4", features = ["serde"] }
+rayon = "1.10"
+regex = "1.10"
 
 [dev-dependencies]
 tempfile = { workspace = true }

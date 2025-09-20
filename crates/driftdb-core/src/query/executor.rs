@@ -1,12 +1,12 @@
 use serde_json::json;
 use std::sync::Arc;
-use std::path::Path;
 
 use crate::engine::Engine;
 use crate::errors::Result;
 use crate::events::Event;
 use crate::backup::BackupManager;
 use crate::observability::Metrics;
+use crate::parallel::{ParallelExecutor, ParallelConfig};
 use super::{AsOf, Query, QueryResult, WhereCondition};
 
 impl Engine {
@@ -173,22 +173,38 @@ impl Engine {
 
         let state = storage.reconstruct_state_at(sequence)?;
 
-        let mut results: Vec<serde_json::Value> = state
-            .into_iter()
-            .filter_map(|(_, row)| {
-                if Self::matches_conditions(&row, &conditions) {
-                    Some(row)
-                } else {
-                    None
-                }
-            })
-            .collect();
+        // Use parallel execution for large datasets
+        if state.len() > 1000 {
+            // Create parallel executor with default config
+            let parallel_executor = ParallelExecutor::new(ParallelConfig::default())?;
 
-        if let Some(limit) = limit {
-            results.truncate(limit);
+            // Convert state to format expected by parallel executor
+            let data: Vec<(serde_json::Value, serde_json::Value)> = state
+                .into_iter()
+                .map(|(pk, row)| (pk, row))
+                .collect();
+
+            // Execute query in parallel
+            parallel_executor.parallel_select(data, &conditions, limit)
+        } else {
+            // Use sequential execution for small datasets
+            let mut results: Vec<serde_json::Value> = state
+                .into_iter()
+                .filter_map(|(_, row)| {
+                    if Self::matches_conditions(&row, &conditions) {
+                        Some(row)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            if let Some(limit) = limit {
+                results.truncate(limit);
+            }
+
+            Ok(results)
         }
-
-        Ok(results)
     }
 
     fn matches_conditions(row: &serde_json::Value, conditions: &[WhereCondition]) -> bool {
