@@ -219,6 +219,8 @@ impl Session {
 
                     let auth_msg = Message::AuthenticationMD5Password { salt };
                     self.send_message(stream, &auth_msg).await?;
+                    // Return here to wait for password message
+                    return Ok(());
                 }
                 protocol::auth::AuthMethod::ScramSha256 => {
                     // Generate SCRAM-SHA-256 challenge
@@ -229,6 +231,8 @@ impl Session {
                             mechanisms: vec!["SCRAM-SHA-256".to_string()],
                         };
                         self.send_message(stream, &auth_msg).await?;
+                        // Return here to wait for SASL response
+                        return Ok(());
                     }
                 }
                 protocol::auth::AuthMethod::Trust => {

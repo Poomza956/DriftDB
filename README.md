@@ -1,6 +1,6 @@
 # DriftDB
 
-**The PostgreSQL-compatible time-travel database** - Query your data at any point in history using standard SQL with any PostgreSQL client. Now with full SQL support including WHERE, UPDATE, and DELETE!
+**The PostgreSQL-compatible time-travel database** - Query your data at any point in history using standard SQL with any PostgreSQL client. Now with enterprise-grade SQL features including JOINs, subqueries, prepared statements, and production-ready infrastructure!
 
 ## 🚀 Quick Start
 
@@ -34,7 +34,13 @@ SELECT * FROM events;                -- Shows 'modified'
 - **Aggregation functions**: COUNT(*), COUNT(column), SUM, AVG, MIN, MAX
 - **GROUP BY and HAVING**: Group rows and filter groups with aggregation conditions
 - **ORDER BY and LIMIT**: Sort results and limit row count
-- **No authentication required**: Simplified setup for development
+- **JOIN operations**: INNER, LEFT, RIGHT, FULL OUTER, and CROSS joins
+- **Subqueries**: IN, EXISTS, and scalar subqueries in WHERE clauses
+- **Set operations**: UNION, INTERSECT, EXCEPT with ALL variants
+- **DISTINCT clause**: Remove duplicate rows from results
+- **Prepared statements**: PREPARE, EXECUTE, DEALLOCATE for query optimization
+- **EXPLAIN PLAN**: Query execution plan visualization with index usage
+- **Index optimization**: B-tree indexes on columns for faster queries
 
 ### Core Database Engine
 - **Event sourcing**: Every change is an immutable event with full history
@@ -76,21 +82,20 @@ SELECT * FROM events;                -- Shows 'modified'
 - **Secondary indexes**: B-tree indexes for fast lookups
 - **Snapshots & compaction**: Optimized performance with compression
 
-### Production Features
-- **Write-Ahead Log (WAL)**: Crash recovery with guaranteed durability
-- **Connection pooling**: Efficient resource management with configurable limits
-- **Rate limiting**: Per-client rate limiting with token bucket algorithm
-- **Backup & restore**: Full and incremental backups with checksums
-- **Schema migrations**: Safe, versioned schema evolution
-- **Query optimization**: Cost-based query planner with statistics
-- **Encryption**: AES-256-GCM at rest, TLS 1.3 in transit
+### Production Infrastructure
+- **Connection pooling**: Thread-safe connection pool with RAII guards
+- **Health checks**: Prometheus-compatible metrics at /metrics endpoint
+- **Authentication**: MD5 and SCRAM-SHA-256 authentication methods
+- **Rate limiting**: Token bucket algorithm with adaptive controls
+- **WAL recovery**: Crash recovery testing with data integrity verification
+- **Backup & restore**: Full database backup/restore with CRC verification
 
-### Observability & Operations
-- **Comprehensive metrics**: Read/write latency, throughput, errors
-- **Distributed tracing**: Full request tracing with OpenTelemetry
-- **Health checks**: Automated health monitoring endpoints
-- **Memory management**: Streaming APIs prevent OOM conditions
-- **Error handling**: No panics - all errors handled gracefully
+### Query Optimization
+- **B-tree indexes**: Secondary indexes on any column for fast lookups
+- **Query planner**: EXPLAIN PLAN shows index usage and execution strategy
+- **Prepared statements**: Statement caching reduces parsing overhead
+- **Index-accelerated WHERE**: Automatic index usage for equality predicates
+- **Efficient JOINs**: Nested loop join with index optimization where available
 
 ## Quick Start
 
