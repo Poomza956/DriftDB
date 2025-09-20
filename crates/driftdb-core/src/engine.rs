@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use tracing::{debug, info, warn};
 
 use crate::errors::{DriftError, Result};
 use crate::events::Event;
@@ -17,6 +18,8 @@ use crate::sequences::SequenceManager;
 use crate::views::{ViewManager, ViewDefinition, ViewBuilder};
 use crate::fulltext::{SearchManager, SearchConfig, SearchQuery, SearchResults};
 use crate::triggers::{TriggerManager, TriggerDefinition, TriggerBuilder};
+use crate::procedures::{ProcedureManager, ProcedureDefinition, ProcedureResult};
+use crate::stats::{StatisticsManager, StatsConfig, DatabaseStatistics, QueryExecution};
 
 pub struct Engine {
     base_path: PathBuf,
@@ -29,6 +32,8 @@ pub struct Engine {
     view_manager: Arc<ViewManager>,
     search_manager: Arc<SearchManager>,
     trigger_manager: Arc<TriggerManager>,
+    procedure_manager: Arc<ProcedureManager>,
+    stats_manager: Arc<RwLock<StatisticsManager>>,
 }
 
 impl Engine {
@@ -57,6 +62,8 @@ impl Engine {
             view_manager: Arc::new(ViewManager::new()),
             search_manager: Arc::new(SearchManager::new()),
             trigger_manager: Arc::new(TriggerManager::new()),
+            procedure_manager: Arc::new(ProcedureManager::new()),
+            stats_manager: Arc::new(RwLock::new(StatisticsManager::new(StatsConfig::default()))),
             sequence_manager: Arc::new(SequenceManager::new()),
         };
 
@@ -565,6 +572,95 @@ impl Engine {
     /// Get trigger statistics
     pub fn get_trigger_stats(&self) -> crate::triggers::TriggerStatistics {
         self.trigger_manager.statistics()
+    }
+
+    /// Create a stored procedure
+    pub fn create_procedure(&self, definition: ProcedureDefinition) -> Result<()> {
+        self.procedure_manager.create_procedure(definition)
+    }
+
+    /// Drop a stored procedure
+    pub fn drop_procedure(&self, name: &str) -> Result<()> {
+        self.procedure_manager.drop_procedure(name)
+    }
+
+    /// Execute a stored procedure
+    pub fn execute_procedure(
+        &self,
+        name: &str,
+        arguments: std::collections::HashMap<String, serde_json::Value>,
+    ) -> Result<ProcedureResult> {
+        self.procedure_manager.execute_procedure(name, arguments)
+    }
+
+    /// List all stored procedures
+    pub fn list_procedures(&self) -> Vec<String> {
+        self.procedure_manager.list_procedures()
+    }
+
+    /// Get procedure definition
+    pub fn get_procedure(&self, name: &str) -> Option<ProcedureDefinition> {
+        self.procedure_manager.get_procedure(name)
+    }
+
+    /// Get procedure statistics
+    pub fn get_procedure_stats(&self) -> crate::procedures::GlobalProcedureStats {
+        self.procedure_manager.statistics()
+    }
+
+    /// Collect statistics for a table
+    pub fn collect_table_stats(&self, table_name: &str) -> Result<crate::optimizer::TableStatistics> {
+        let storage = self.tables.get(table_name)
+            .ok_or_else(|| DriftError::TableNotFound(table_name.to_string()))?;
+
+        // Get current state of the table
+        let state = storage.reconstruct_state_at(None)?;
+        let data: Vec<serde_json::Value> = state.into_values().collect();
+
+        let stats_manager = self.stats_manager.read();
+        stats_manager.collect_table_statistics(table_name, &data)
+    }
+
+    /// Get database statistics
+    pub fn get_database_statistics(&self) -> DatabaseStatistics {
+        self.stats_manager.read().get_statistics()
+    }
+
+    /// Record query execution for statistics
+    pub fn record_query_execution(&self, execution: QueryExecution) {
+        self.stats_manager.read().record_query_execution(execution);
+    }
+
+    /// Update statistics configuration
+    pub fn update_stats_config(&self, config: StatsConfig) {
+        self.stats_manager.write().update_config(config);
+    }
+
+    /// Check if automatic statistics collection is due
+    pub fn should_collect_stats(&self) -> bool {
+        self.stats_manager.read().should_collect_stats()
+    }
+
+    /// Perform automatic statistics collection
+    pub fn auto_collect_statistics(&self) -> Result<()> {
+        if !self.should_collect_stats() {
+            return Ok(());
+        }
+
+        debug!("Performing automatic statistics collection");
+
+        // Collect stats for all tables
+        for table_name in self.list_tables() {
+            if let Err(e) = self.collect_table_stats(&table_name) {
+                warn!("Failed to collect stats for table '{}': {}", table_name, e);
+            }
+        }
+
+        // Mark collection as complete
+        self.stats_manager.read().mark_collection_complete();
+
+        info!("Automatic statistics collection completed");
+        Ok(())
     }
 
     /// Collect real statistics for a table
