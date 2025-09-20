@@ -952,8 +952,14 @@ impl<'a> QueryExecutor<'a> {
     /// Sort rows based on ORDER BY specification
     fn sort_rows(&self, rows: &mut Vec<Vec<Value>>, columns: &[String], order_by: &OrderBy) -> Result<()> {
         // Find the column index (case-insensitive for aggregation functions)
+        // Also check for table-prefixed columns
         let column_index = columns.iter().position(|col| {
-            col == &order_by.column || col.to_lowercase() == order_by.column.to_lowercase()
+            // Direct match
+            col == &order_by.column || col.to_lowercase() == order_by.column.to_lowercase() ||
+            // Check if column matches the suffix after the table prefix (e.g., "table.column" matches "column")
+            col.split('.').last().map_or(false, |suffix| {
+                suffix == order_by.column || suffix.to_lowercase() == order_by.column.to_lowercase()
+            })
         }).ok_or_else(|| anyhow!("ORDER BY column '{}' not found in result set", order_by.column))?;
 
         rows.sort_by(|a, b| {

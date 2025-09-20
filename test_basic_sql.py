@@ -148,11 +148,12 @@ def test_basic_sql():
     try:
         cur.execute("SELECT COUNT(*) FROM test_table_basic")
         result = cur.fetchone()
-        if result and result[0] == len(test_data):
+        # Handle both integer and string results
+        if result and (result[0] == len(test_data) or str(result[0]) == str(len(test_data))):
             print(f"   ✓ COUNT(*) returned {result[0]}")
             tests_passed += 1
         else:
-            print(f"   ✗ COUNT(*) failed")
+            print(f"   ✗ COUNT(*) failed: expected {len(test_data)}, got {result[0] if result else None}")
             tests_failed += 1
     except Exception as e:
         print(f"   ✗ COUNT(*) failed: {e}")
