@@ -30,6 +30,7 @@ pub mod procedures;
 pub mod stats;
 pub mod query_optimizer;
 pub mod adaptive_pool;
+pub mod distributed;
 
 #[cfg(test)]
 mod tests;

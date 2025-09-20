@@ -450,7 +450,7 @@ async fn handle_backup(command: BackupCommands, data_dir: &PathBuf) -> Result<()
             pb.set_message("Backing up database...");
 
             let result = if incremental {
-                backup_manager.create_incremental_backup(&destination, 0)
+                backup_manager.create_incremental_backup(&destination, 0, None)
             } else {
                 backup_manager.create_full_backup(&destination)
             };
@@ -463,7 +463,8 @@ async fn handle_backup(command: BackupCommands, data_dir: &PathBuf) -> Result<()
                         format!("✓ Backup created at {}", destination.display()).green()
                     );
                     println!("Tables backed up: {}", metadata.tables.len());
-                    println!("WAL sequence: {}", metadata.wal_sequence);
+                    println!("Start sequence: {}", metadata.start_sequence);
+                    println!("End sequence: {}", metadata.end_sequence);
                     println!("Compression: {:?}", metadata.compression);
                     println!("Checksum: {}", &metadata.checksum[..16]);
                 }
