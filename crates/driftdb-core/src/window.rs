@@ -17,6 +17,21 @@ use tracing::{debug, trace};
 
 use crate::errors::{DriftError, Result};
 
+/// A serializable wrapper for partition keys that can be used in HashMap
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+struct PartitionKey(String);
+
+impl PartitionKey {
+    fn from_values(values: &[Value]) -> Self {
+        // Convert to a stable string representation
+        let serialized = values.iter()
+            .map(|v| serde_json::to_string(v).unwrap_or_else(|_| "null".to_string()))
+            .collect::<Vec<_>>()
+            .join("|");
+        PartitionKey(serialized)
+    }
+}
+
 /// Window function types
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum WindowFunction {
@@ -195,23 +210,31 @@ impl WindowExecutor {
 
     /// Create partitions based on PARTITION BY columns
     fn create_partitions(&self, data: &[Value], partition_columns: &[String]) -> Result<Vec<Partition>> {
-        let mut partitions: BTreeMap<Vec<Value>, Vec<(usize, Value)>> = BTreeMap::new();
+        let mut partitions: HashMap<PartitionKey, Vec<(usize, Value)>> = HashMap::new();
 
         for (idx, row) in data.iter().enumerate() {
             // Extract partition key
-            let mut key = Vec::new();
+            let mut key_values = Vec::new();
             for col in partition_columns {
                 let value = row.get(col).cloned().unwrap_or(Value::Null);
-                key.push(value);
+                key_values.push(value);
             }
 
+            let key = PartitionKey::from_values(&key_values);
             partitions.entry(key).or_insert_with(Vec::new).push((idx, row.clone()));
         }
 
         // Convert to Partition structs
         let result = partitions
             .into_iter()
-            .map(|(key, rows)| Partition { key, rows })
+            .map(|(partition_key, rows)| {
+                // Reconstruct the Vec<Value> key from the partition key string
+                let key_values: Vec<Value> = partition_key.0
+                    .split('|')
+                    .map(|s| serde_json::from_str(s).unwrap_or(Value::Null))
+                    .collect();
+                Partition { key: key_values, rows }
+            })
             .collect();
 
         Ok(result)

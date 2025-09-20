@@ -94,6 +94,11 @@ impl Engine {
             transaction_manager: Arc::new(RwLock::new(TransactionManager::new())),
             constraint_manager: Arc::new(RwLock::new(ConstraintManager::new())),
             sequence_manager: Arc::new(SequenceManager::new()),
+            view_manager: Arc::new(ViewManager::new()),
+            search_manager: Arc::new(SearchManager::new()),
+            trigger_manager: Arc::new(TriggerManager::new()),
+            procedure_manager: Arc::new(ProcedureManager::new()),
+            stats_manager: Arc::new(RwLock::new(StatisticsManager::new(Default::default()))),
         })
     }
 
@@ -745,17 +750,25 @@ impl Engine {
                                 lower_bound: bucket_values.first().unwrap().clone(),
                                 upper_bound: bucket_values.last().unwrap().clone(),
                                 frequency: bucket_values.len(),
+                                min_value: bucket_values.first().unwrap().clone(),
+                                max_value: bucket_values.last().unwrap().clone(),
+                                distinct_count: bucket_values.len(),
                             });
                         }
                     }
                 }
 
-                Some(Histogram { buckets })
+                let bucket_count = buckets.len();
+                Some(Histogram {
+                    buckets,
+                    bucket_count,
+                })
             } else {
                 None
             };
 
             column_stats.insert(column.name.clone(), ColumnStatistics {
+                column_name: column.name.clone(),
                 distinct_values: distinct_count,
                 null_count,
                 min_value,
@@ -787,11 +800,16 @@ impl Engine {
         Ok(TableStatistics {
             table_name: table_name.to_string(),
             row_count,
+            column_count: storage.schema().columns.len(),
             avg_row_size,
             total_size_bytes,
-            column_stats,
+            data_size_bytes: total_size_bytes,
+            column_stats: column_stats.clone(),
+            column_statistics: column_stats,
             index_stats,
             last_updated: chrono::Utc::now().timestamp() as u64,
+            collection_method: "scan".to_string(),
+            collection_duration_ms: 0,
         })
     }
 

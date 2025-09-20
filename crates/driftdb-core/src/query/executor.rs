@@ -69,7 +69,7 @@ impl Engine {
                     message: format!("Table '{}' compacted", table),
                 })
             }
-            Query::BackupDatabase { destination, compression, incremental } => {
+            Query::BackupDatabase { destination, compression: _, incremental } => {
                 let metrics = Arc::new(Metrics::new());
                 let backup_manager = BackupManager::new(self.base_path(), metrics);
 
@@ -86,20 +86,20 @@ impl Engine {
                         destination, result.tables.len()),
                 })
             }
-            Query::BackupTable { table, destination, compression } => {
+            Query::BackupTable { table, destination, compression: _ } => {
                 // Table-specific backup would be implemented by copying just that table's files
                 // For now, return a placeholder
                 Ok(QueryResult::Success {
                     message: format!("Table '{}' backup created at '{}'", table, destination),
                 })
             }
-            Query::RestoreDatabase { source, target, verify } => {
+            Query::RestoreDatabase { source: _, target: _, verify: _ } => {
                 // TODO: Fix type issues with generic path handling
                 Ok(QueryResult::Success {
                     message: format!("Restore functionality pending type fixes"),
                 })
             }
-            Query::RestoreTable { table, source, target, verify } => {
+            Query::RestoreTable { table, source, target: _, verify: _ } => {
                 // Table-specific restore would be implemented similarly
                 Ok(QueryResult::Success {
                     message: format!("Table '{}' restored from '{}'", table, source),
@@ -181,7 +181,7 @@ impl Engine {
             // Convert state to format expected by parallel executor
             let data: Vec<(serde_json::Value, serde_json::Value)> = state
                 .into_iter()
-                .map(|(pk, row)| (pk, row))
+                .map(|(pk, row)| (serde_json::Value::String(pk), row))
                 .collect();
 
             // Execute query in parallel

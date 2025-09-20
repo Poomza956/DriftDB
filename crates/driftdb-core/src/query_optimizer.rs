@@ -524,9 +524,9 @@ impl QueryOptimizer {
             cardinality: (cardinality as f64 * selectivity) as u64,
             selectivity,
             resources: ResourceRequirements {
-                memory_bytes: cardinality * 100, // Rough estimate
-                cpu_cycles: cardinality * 10,
-                io_operations: cardinality / 1000, // Assume 1000 rows per I/O
+                memory_bytes: (cardinality * 100) as u64, // Rough estimate
+                cpu_cycles: (cardinality * 10) as u64,
+                io_operations: (cardinality / 1000) as u64, // Assume 1000 rows per I/O
                 network_operations: 0,
             },
         })

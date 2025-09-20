@@ -520,7 +520,7 @@ impl Drop for ConnectionGuard {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PoolStats {
     pub total_connections: usize,
     pub available_connections: usize,

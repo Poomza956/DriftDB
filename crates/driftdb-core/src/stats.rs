@@ -408,19 +408,24 @@ impl StatisticsManager {
 
         let collection_time = start_time.elapsed();
 
+        let column_count = column_stats.len();
         let table_stats = TableStatistics {
             table_name: table_name.to_string(),
-            row_count: row_count as u64,
-            column_count: column_stats.len(),
+            row_count,
+            column_count,
+            avg_row_size: if row_count > 0 { self.estimate_table_size(data) / row_count as u64 } else { 0 } as usize,
+            total_size_bytes: self.estimate_table_size(data),
+            data_size_bytes: self.estimate_table_size(data),
+            column_stats: column_stats.clone(),
             column_statistics: column_stats,
-            last_updated: SystemTime::now(),
+            index_stats: HashMap::new(),
+            last_updated: SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs(),
             collection_method: if use_sampling {
                 "SAMPLE".to_string()
             } else {
                 "FULL".to_string()
             },
             collection_duration_ms: collection_time.as_millis() as u64,
-            data_size_bytes: self.estimate_table_size(data),
         };
 
         // Update global statistics
@@ -428,12 +433,12 @@ impl StatisticsManager {
             let mut stats = self.stats.write();
             stats.tables.insert(table_name.to_string(), table_stats.clone());
             stats.global.table_count = stats.tables.len();
-            stats.global.total_rows = stats.tables.values().map(|t| t.row_count).sum();
+            stats.global.total_rows = stats.tables.values().map(|t| t.row_count as u64).sum();
             stats.global.total_size_bytes = stats.tables.values().map(|t| t.data_size_bytes).sum();
         }
 
         info!("Collected statistics for table '{}': {} rows, {} columns",
-              table_name, row_count, column_stats.len());
+              table_name, row_count, column_count);
 
         Ok(table_stats)
     }
@@ -474,7 +479,7 @@ impl StatisticsManager {
         }
 
         // Calculate statistics
-        let distinct_count = distinct_values.len() as u64;
+        let distinct_count = distinct_values.len();
         let total_count = data.len() as u64;
         let selectivity = if total_count > 0 {
             distinct_count as f64 / total_count as f64
@@ -508,15 +513,11 @@ impl StatisticsManager {
 
         Ok(ColumnStatistics {
             column_name: column_name.to_string(),
-            distinct_count,
-            null_count: null_count as u64,
-            selectivity,
-            min_value,
-            max_value,
-            avg_value,
+            distinct_values: distinct_count,
+            null_count,
+            min_value: min_value.map(|v| serde_json::json!(v)),
+            max_value: max_value.map(|v| serde_json::json!(v)),
             histogram,
-            avg_length,
-            data_type: self.infer_data_type(data, column_name),
         })
     }
 
@@ -537,9 +538,11 @@ impl StatisticsManager {
             // All values are the same
             return Histogram {
                 buckets: vec![HistogramBucket {
-                    min_value: min,
-                    max_value: max,
-                    frequency: values.len() as u64,
+                    lower_bound: serde_json::json!(min),
+                    upper_bound: serde_json::json!(max),
+                    frequency: values.len(),
+                    min_value: serde_json::json!(min),
+                    max_value: serde_json::json!(max),
                     distinct_count: 1,
                 }],
                 bucket_count: 1,
@@ -548,20 +551,26 @@ impl StatisticsManager {
 
         let bucket_width = range / self.config.histogram_buckets as f64;
         let mut buckets = vec![HistogramBucket {
-            min_value: 0.0,
-            max_value: 0.0,
+            lower_bound: serde_json::json!(0.0),
+            upper_bound: serde_json::json!(0.0),
             frequency: 0,
+            min_value: serde_json::json!(0.0),
+            max_value: serde_json::json!(0.0),
             distinct_count: 0,
         }; self.config.histogram_buckets];
 
         // Initialize bucket boundaries
         for (i, bucket) in buckets.iter_mut().enumerate() {
-            bucket.min_value = min + (i as f64 * bucket_width);
-            bucket.max_value = if i == self.config.histogram_buckets - 1 {
+            let bucket_min = min + (i as f64 * bucket_width);
+            let bucket_max = if i == self.config.histogram_buckets - 1 {
                 max
             } else {
                 min + ((i + 1) as f64 * bucket_width)
             };
+            bucket.lower_bound = serde_json::json!(bucket_min);
+            bucket.upper_bound = serde_json::json!(bucket_max);
+            bucket.min_value = serde_json::json!(bucket_min);
+            bucket.max_value = serde_json::json!(bucket_max);
         }
 
         // Count values in each bucket

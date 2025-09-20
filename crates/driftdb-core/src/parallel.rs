@@ -22,6 +22,31 @@ use crate::query::{WhereCondition, AsOf};
 use crate::storage::TableStorage;
 use crate::events::Event;
 
+/// Helper function to compare JSON values
+fn compare_json_values(a: &Value, b: &Value) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    use serde_json::Value as V;
+
+    match (a, b) {
+        (V::Null, V::Null) => Ordering::Equal,
+        (V::Null, _) => Ordering::Less,
+        (_, V::Null) => Ordering::Greater,
+        (V::Bool(a), V::Bool(b)) => a.cmp(b),
+        (V::Number(a), V::Number(b)) => {
+            // Handle numeric comparison
+            match (a.as_f64(), b.as_f64()) {
+                (Some(a), Some(b)) => a.partial_cmp(&b).unwrap_or(Ordering::Equal),
+                _ => Ordering::Equal,
+            }
+        },
+        (V::String(a), V::String(b)) => a.cmp(b),
+        (V::Array(a), V::Array(b)) => a.len().cmp(&b.len()),
+        (V::Object(a), V::Object(b)) => a.len().cmp(&b.len()),
+        // Mixed types - convert to string and compare
+        _ => a.to_string().cmp(&b.to_string()),
+    }
+}
+
 /// Configuration for parallel execution
 #[derive(Debug, Clone)]
 pub struct ParallelConfig {
@@ -298,14 +323,14 @@ impl ParallelExecutor {
             AggregateType::Min => {
                 data.iter()
                     .filter_map(|row| row.get(&func.column))
-                    .min()
+                    .min_by(|a, b| compare_json_values(a, b))
                     .cloned()
                     .unwrap_or(Value::Null)
             }
             AggregateType::Max => {
                 data.iter()
                     .filter_map(|row| row.get(&func.column))
-                    .max()
+                    .max_by(|a, b| compare_json_values(a, b))
                     .cloned()
                     .unwrap_or(Value::Null)
             }
@@ -366,7 +391,10 @@ impl ParallelExecutor {
             probe_data
                 .into_par_iter()
                 .flat_map(|probe_row| {
-                    let key_value = probe_row.get(probe_key)?.to_string();
+                    let key_value = match probe_row.get(probe_key) {
+                        Some(val) => val.to_string(),
+                        None => return vec![],
+                    };
 
                     if let Some(matching_rows) = index.get(&key_value) {
                         matching_rows
@@ -456,28 +484,30 @@ impl ParallelExecutor {
                         if let (Some(a), Some(b)) = (field_value.as_f64(), cond.value.as_f64()) {
                             a > b
                         } else {
-                            field_value > &cond.value
+                            compare_json_values(field_value, &cond.value) == std::cmp::Ordering::Greater
                         }
                     }
                     "<" => {
                         if let (Some(a), Some(b)) = (field_value.as_f64(), cond.value.as_f64()) {
                             a < b
                         } else {
-                            field_value < &cond.value
+                            compare_json_values(field_value, &cond.value) == std::cmp::Ordering::Less
                         }
                     }
                     ">=" => {
                         if let (Some(a), Some(b)) = (field_value.as_f64(), cond.value.as_f64()) {
                             a >= b
                         } else {
-                            field_value >= &cond.value
+                            let ord = compare_json_values(field_value, &cond.value);
+                            ord == std::cmp::Ordering::Greater || ord == std::cmp::Ordering::Equal
                         }
                     }
                     "<=" => {
                         if let (Some(a), Some(b)) = (field_value.as_f64(), cond.value.as_f64()) {
                             a <= b
                         } else {
-                            field_value <= &cond.value
+                            let ord = compare_json_values(field_value, &cond.value);
+                            ord == std::cmp::Ordering::Less || ord == std::cmp::Ordering::Equal
                         }
                     }
                     "LIKE" => {

@@ -128,6 +128,7 @@ pub struct IndexStatistics {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Histogram {
     pub buckets: Vec<HistogramBucket>,
+    pub bucket_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -135,6 +136,9 @@ pub struct HistogramBucket {
     pub lower_bound: serde_json::Value,
     pub upper_bound: serde_json::Value,
     pub frequency: usize,
+    pub min_value: serde_json::Value,
+    pub max_value: serde_json::Value,
+    pub distinct_count: usize,
 }
 
 /// Query optimizer

@@ -66,7 +66,7 @@ impl CacheEntry {
 
 /// Query cache key
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
-struct CacheKey {
+pub struct CacheKey {
     query_hash: String,
     database: String,
     user: Option<String>,
