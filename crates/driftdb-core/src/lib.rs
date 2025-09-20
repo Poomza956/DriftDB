@@ -24,6 +24,8 @@ pub mod sequences;
 pub mod parallel;
 pub mod views;
 pub mod triggers;
+pub mod fulltext;
+pub mod window;
 
 #[cfg(test)]
 mod tests;

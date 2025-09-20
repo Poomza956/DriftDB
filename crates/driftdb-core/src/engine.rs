@@ -15,6 +15,8 @@ use crate::transaction::{IsolationLevel, TransactionManager};
 use crate::constraints::ConstraintManager;
 use crate::sequences::SequenceManager;
 use crate::views::{ViewManager, ViewDefinition, ViewBuilder};
+use crate::fulltext::{SearchManager, SearchConfig, SearchQuery, SearchResults};
+use crate::triggers::{TriggerManager, TriggerDefinition, TriggerBuilder};
 
 pub struct Engine {
     base_path: PathBuf,
@@ -25,6 +27,8 @@ pub struct Engine {
     constraint_manager: Arc<RwLock<ConstraintManager>>,
     sequence_manager: Arc<SequenceManager>,
     view_manager: Arc<ViewManager>,
+    search_manager: Arc<SearchManager>,
+    trigger_manager: Arc<TriggerManager>,
 }
 
 impl Engine {
@@ -51,6 +55,8 @@ impl Engine {
             transaction_manager: Arc::new(RwLock::new(TransactionManager::new())),
             constraint_manager: Arc::new(RwLock::new(ConstraintManager::new())),
             view_manager: Arc::new(ViewManager::new()),
+            search_manager: Arc::new(SearchManager::new()),
+            trigger_manager: Arc::new(TriggerManager::new()),
             sequence_manager: Arc::new(SequenceManager::new()),
         };
 
@@ -487,6 +493,78 @@ impl Engine {
     /// Get view statistics
     pub fn get_view_stats(&self) -> crate::views::ViewStatistics {
         self.view_manager.statistics()
+    }
+
+    /// Create a full-text search index
+    pub fn create_search_index(
+        &self,
+        name: String,
+        table: String,
+        column: String,
+        config: SearchConfig,
+    ) -> Result<()> {
+        self.search_manager.create_index(name, table, column, config)
+    }
+
+    /// Drop a search index
+    pub fn drop_search_index(&self, name: &str) -> Result<()> {
+        self.search_manager.drop_index(name)
+    }
+
+    /// Index a document for full-text search
+    pub fn index_document(&self, index_name: &str, document_id: String, content: String) -> Result<()> {
+        self.search_manager.index_document(index_name, document_id, content)
+    }
+
+    /// Perform a full-text search
+    pub fn search(
+        &self,
+        index_name: &str,
+        query: SearchQuery,
+        limit: Option<usize>,
+        offset: Option<usize>,
+    ) -> Result<SearchResults> {
+        self.search_manager.search(index_name, query, limit, offset)
+    }
+
+    /// Get search statistics
+    pub fn get_search_stats(&self) -> crate::fulltext::GlobalSearchStats {
+        self.search_manager.statistics()
+    }
+
+    /// List all search indexes
+    pub fn list_search_indexes(&self) -> Vec<String> {
+        self.search_manager.list_indexes()
+    }
+
+    /// Create a trigger
+    pub fn create_trigger(&self, definition: TriggerDefinition) -> Result<()> {
+        self.trigger_manager.create_trigger(definition)
+    }
+
+    /// Drop a trigger
+    pub fn drop_trigger(&self, trigger_name: &str) -> Result<()> {
+        self.trigger_manager.drop_trigger(trigger_name)
+    }
+
+    /// Enable or disable a trigger
+    pub fn set_trigger_enabled(&self, trigger_name: &str, enabled: bool) -> Result<()> {
+        self.trigger_manager.set_trigger_enabled(trigger_name, enabled)
+    }
+
+    /// List all triggers
+    pub fn list_triggers(&self) -> Vec<TriggerDefinition> {
+        self.trigger_manager.list_triggers()
+    }
+
+    /// List triggers for a specific table
+    pub fn list_table_triggers(&self, table_name: &str) -> Vec<TriggerDefinition> {
+        self.trigger_manager.list_table_triggers(table_name)
+    }
+
+    /// Get trigger statistics
+    pub fn get_trigger_stats(&self) -> crate::triggers::TriggerStatistics {
+        self.trigger_manager.statistics()
     }
 
     /// Collect real statistics for a table
