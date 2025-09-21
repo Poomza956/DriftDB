@@ -1,103 +1,163 @@
-# DriftDB Features
+# DriftDB Features - Actual Implementation Status
 
-**Note:** This document describes both implemented and planned features. For a detailed breakdown of what's actually implemented vs planned, see [FEATURES_HONEST.md](./FEATURES_HONEST.md).
+## ✅ Actually Implemented & Working
 
-## Core Database Features (Mixed Implementation)
+### Storage Engine
+- ✅ **Append-only architecture** with time-travel capabilities (core/src/storage/)
+- ✅ **Columnar storage** with compression (core/src/columnar.rs)
+- ✅ **CRC32 verification** on every data frame (core/src/storage/frame.rs)
+- ✅ **Atomic writes** with fsync (core/src/storage/segment.rs)
+- ✅ **Crash recovery** via segment validation
+- ⚠️ **LSM tree storage** - Structures defined, not fully integrated (core/src/index_strategies.rs)
 
-### Storage Engine ✅
-- **Append-only architecture** with time-travel capabilities ✅
-- **Columnar storage** with compression and encoding optimization ✅
-- **LSM tree storage** for write-optimized workloads ⚠️ (structure only)
-- **CRC32 verification** on every data frame ✅
-- **Atomic writes** with fsync on segment boundaries ✅
-- **Crash recovery** via tail truncation of corrupt segments ✅
+### Indexing
+- ✅ **B+ Tree indexes** - Full implementation (index_strategies.rs)
+- ✅ **Hash indexes** - Full implementation
+- ✅ **Bloom filters** - Full implementation
+- ⚠️ **Bitmap indexes** - Structure defined, not integrated
+- ⚠️ **Inverted indexes** - Basic structure only
+- ❌ **GiST indexes** - Only enum variant, no implementation
+- ❌ **ART indexes** - Only enum variant, no implementation
 
-### Indexing Strategies ⚠️
-- **B+ Tree indexes** for range queries ✅
-- **Hash indexes** for point lookups ✅
-- **Bitmap indexes** for low-cardinality columns ⚠️ (structure only)
-- **Bloom filters** for membership testing ✅
-- **GiST indexes** for spatial data ❌ (planned)
-- **ART (Adaptive Radix Tree)** for string keys ❌ (planned)
-- **Inverted indexes** for full-text search ⚠️ (basic only)
+### Transaction Support
+- ✅ **MVCC implementation** with version management (mvcc.rs)
+- ✅ **Multiple isolation levels** defined (Read Uncommitted, Read Committed, Repeatable Read, Serializable, Snapshot)
+- ✅ **Transaction coordinator** structure
+- ⚠️ **Distributed transactions** - Coordinator exists but not integrated with engine
+- ❌ **Deadlock detection** - Not implemented
 
-### Transaction Support ⚠️
-- **MVCC (Multi-Version Concurrency Control)** with snapshot isolation ✅
-- **Multiple isolation levels** ✅ (defined, not all tested)
-- **Distributed transactions** with 2PC coordination ⚠️ (structure only)
-- **Optimistic concurrency control** ⚠️
-- **Deadlock detection and prevention** ❌ (not implemented)
+### Query Processing
+- ✅ **Query plan visualization** with Text, JSON, DOT, HTML formats (query_plan.rs)
+- ✅ **Parallel execution framework** with thread pools (parallel.rs)
+- ✅ **Query result caching** with LRU eviction (cache.rs)
+- ✅ **SQL parser** using sqlparser-rs (sql/parser.rs)
+- ⚠️ **Query optimizer** - Structure exists, optimization rules are placeholders
+- ⚠️ **Cost-based optimization** - Framework only
 
-### Query Processing ⚠️
-- **Cost-based query optimizer** with statistics ⚠️ (basic structure)
-- **Query plan visualization** (Text, JSON, DOT, HTML formats) ✅
-- **Parallel query execution** with thread pools ✅
-- **Query result caching** with LRU eviction ✅
-- **Adaptive query optimization** ⚠️ (structure only)
-- **Pipeline execution model** ⚠️
+### SQL Features
+- ✅ **Basic SQL operations** - CREATE, INSERT, SELECT, DELETE
+- ✅ **Time-travel queries** - AS OF functionality
+- ⚠️ **JOINs** - Structures defined (sql/joins.rs), not integrated with executor
+- ⚠️ **Window functions** - Structures defined (window.rs), not integrated
+- ⚠️ **Stored procedures** - Framework exists (procedures.rs), not executable
+- ⚠️ **Triggers** - Framework exists (triggers.rs), not executable
+- ⚠️ **Views** - Framework exists (views.rs), not integrated
+- ❌ **Common Table Expressions (CTEs)** - Not implemented
 
-### SQL Support ⚠️
-- **Full SQL parser** with temporal extensions ✅
-- **Complex JOINs** (INNER, OUTER, CROSS, SEMI, ANTI) ⚠️ (defined, not integrated)
-- **Window functions** (ROW_NUMBER, RANK, LAG, LEAD, etc.) ⚠️ (structure only)
-- **Common Table Expressions (CTEs)** ❌ (not implemented)
-- **Stored procedures** with procedural language ⚠️ (framework only)
-- **Database triggers** with event-driven execution ⚠️ (framework only)
-- **Views** (regular and materialized) ⚠️ (framework only)
+### Distributed Features
+- ✅ **Raft consensus** with leader election (consensus.rs)
+- ✅ **Pre-vote optimization**
+- ✅ **Learner and witness nodes** support
+- ✅ **Consistent hashing** implementation (distributed.rs)
+- ⚠️ **Multi-node coordination** - Structure exists, not tested
+- ⚠️ **Automatic failover** - Partially implemented
 
-### Distributed Features ⚠️
-- **Consistent hashing** for data distribution ✅
-- **Multi-node coordination** with partition management ✅
-- **Raft consensus** with leader election ✅
-- **Pre-vote optimization** to prevent disruption ✅
-- **Learner and witness nodes** for flexible deployments ✅
-- **Automatic failover** and recovery ⚠️ (partial)
-- **Cross-region replication** ⚠️ (structure only)
+### Security & Encryption
+- ✅ **AES-GCM encryption** implementation (encryption.rs)
+- ✅ **ChaCha20-Poly1305** implementation
+- ✅ **Key derivation** with HKDF
+- ⚠️ **TLS support** - Structures defined, not integrated
+- ❌ **Role-based access control** - Not implemented
+- ❌ **Audit logging** - Basic structure only
 
-### Time-Travel & Temporal ✅
-- **AS OF queries** for historical data access ✅
-- **Point-in-time recovery** ✅
-- **Temporal joins** across time dimensions ✅
-- **Audit trail preservation** with soft deletes ✅
-- **Snapshot management** with compression ✅
+### Performance Features
+- ✅ **Connection pooling** with adaptive sizing (adaptive_pool.rs)
+- ✅ **Circuit breakers** for connection management
+- ✅ **Dictionary encoding** for columnar storage
+- ✅ **Run-length encoding**
+- ✅ **Delta encoding**
+- ⚠️ **Zone maps** - Mentioned but not implemented
 
-### Performance Features ⚠️
-- **Adaptive connection pooling** with circuit breakers ✅
-- **Query result caching** with TTL and invalidation ✅
-- **Parallel execution** for large datasets ✅
-- **Zone maps** for partition pruning ⚠️ (mentioned only)
-- **Dictionary encoding** for repeated values ✅
-- **Run-length encoding** for sequential data ✅
-- **Delta encoding** for time-series data ✅
+## ⚠️ Partially Implemented (Framework exists but not functional)
 
-### Security & Encryption ⚠️
-- **TLS/SSL support** for network communication ⚠️ (structure only)
-- **AES-GCM encryption** at rest ✅
-- **ChaCha20-Poly1305** as alternative cipher ✅
-- **Key derivation** with HKDF ✅
-- **Role-based access control** ❌ (not implemented)
-- **Audit logging** for compliance ❌ (basic structure only)
+These features have code structure but lack the integration or implementation to actually work:
 
-## Legend
+- **Query optimization rules** - Defined but mostly return input unchanged
+- **Distributed query execution** - Coordinator exists but not wired to engine
+- **Materialized views** - Can be defined but don't refresh
+- **Stored procedures** - Can be stored but not executed
+- **Triggers** - Can be defined but don't fire
+- **Full-text search** - TF-IDF scoring exists but not integrated with queries
 
-- ✅ Implemented and functional
-- ⚠️ Partially implemented (structure exists but not fully integrated)
-- ❌ Not implemented (planned/mentioned only)
+## ❌ Not Implemented (Missing completely)
 
-## Production Readiness
+These features are mentioned in code comments or enums but have no implementation:
 
-**Current Status:** Development/Prototype
+- **Geospatial functions**
+- **User-defined functions (UDFs)**
+- **JSON operations** beyond basic storage
+- **Array and composite types**
+- **Client libraries**
+- **Admin dashboard UI**
+- **Write-ahead logging** (WAL structure exists but not used)
+- **Automatic vacuum**
+- **Memory-mapped files**
+- **Read replicas management**
+- **Automatic load balancing**
+- **Pluggable storage backends**
+- **Hook system for custom logic**
 
-While DriftDB has many advanced features defined, the current implementation is best suited for:
-- Development and testing environments
-- Proof of concept projects
+## 🎯 What Actually Works Today
+
+If you want to use DriftDB right now, you can reliably use:
+
+1. **Core Operations**
+   - Create tables with schemas
+   - Insert records with automatic timestamps
+   - Query data with WHERE conditions
+   - Time-travel queries with AS OF
+   - Soft deletes preserving history
+
+2. **Storage Features**
+   - Append-only storage with CRC32 verification
+   - Snapshot creation with compression
+   - B-tree secondary indexes
+   - Basic backup and restore
+
+3. **Basic Distribution**
+   - Raft consensus for leader election
+   - Basic replication framework
+
+## 📊 Implementation Statistics
+
+- **~30% Fully Working**: Core storage, basic SQL, time-travel
+- **~40% Partially Implemented**: Framework exists but needs integration
+- **~30% Not Implemented**: Planned or mentioned only
+
+## 🚧 Production Readiness
+
+**Current Status: Development/Prototype**
+
+DriftDB is suitable for:
 - Learning and experimentation
+- Proof of concept projects
+- Development environments
 
-For production use, significant additional work is needed on:
-- Testing and validation
-- Error handling and recovery
-- Performance optimization
-- Monitoring and management tools
-- Documentation and examples
+NOT ready for:
+- Production workloads
+- Mission-critical data
+- High-performance requirements
 
-See [FEATURES_HONEST.md](./FEATURES_HONEST.md) for a detailed assessment of each feature's implementation status.
+### Why Not Production Ready?
+
+1. **Incomplete Integration**: Many features exist in isolation but aren't connected
+2. **Limited Testing**: Advanced features lack comprehensive tests
+3. **Naive Implementations**: Many algorithms use simple rather than optimized approaches
+4. **Missing Error Recovery**: Error handling paths often incomplete
+5. **No Performance Tuning**: No benchmarking or optimization done
+6. **Lack of Documentation**: Most features undocumented beyond code comments
+
+## 🛠️ Development Priorities
+
+To make DriftDB production-ready, focus on:
+
+1. **Integration First**: Connect existing components (e.g., wire triggers to engine)
+2. **Testing**: Comprehensive test coverage for all features
+3. **Error Handling**: Proper error recovery and resilience
+4. **Performance**: Benchmark and optimize critical paths
+5. **Documentation**: User guides and API documentation
+6. **Tooling**: Management CLI, monitoring, migration tools
+
+## 💡 Conclusion
+
+DriftDB has ambitious architecture with many enterprise features sketched out, but currently delivers a functional time-series database with basic SQL support. The codebase is more of a "database construction kit" than a finished database product.
