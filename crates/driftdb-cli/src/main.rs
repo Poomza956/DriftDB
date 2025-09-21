@@ -149,11 +149,20 @@ fn main() -> Result<()> {
             };
 
             for query_str in queries {
-                // For now, still use DriftQL parser until SQL module is complete
-                let query = driftdb_core::query::parse_driftql(&query_str)
-                    .context("Failed to parse query")?;
-                let result = engine.execute_query(query)
-                    .context("Failed to execute query")?;
+                // Try SQL first, fall back to DriftQL
+                let result = if query_str.trim().to_uppercase().starts_with("SELECT")
+                    || (query_str.trim().to_uppercase().starts_with("INSERT") && query_str.contains("VALUES"))
+                    || (query_str.trim().to_uppercase().starts_with("CREATE TABLE") && query_str.contains("(")) {
+                    // Use SQL bridge for SQL queries
+                    driftdb_core::sql_bridge::execute_sql(&mut engine, &query_str)
+                        .context("Failed to execute SQL query")?
+                } else {
+                    // Use DriftQL parser for DriftQL commands
+                    let query = driftdb_core::query::parse_driftql(&query_str)
+                        .context("Failed to parse DriftQL query")?;
+                    engine.execute_query(query)
+                        .context("Failed to execute DriftQL query")?
+                };
 
                 match result {
                     QueryResult::Success { message } => println!("{}", message),

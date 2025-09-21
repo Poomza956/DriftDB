@@ -27,23 +27,10 @@ impl Executor {
         Executor
     }
 
-    pub fn execute(&self, engine: &crate::engine::Engine, stmt: &TemporalStatement) -> crate::errors::Result<QueryResult> {
-        // For read queries, we can use the engine directly
-        // For write queries, we'll need to convert to DriftQL and execute
-        match &stmt.statement {
-            sqlparser::ast::Statement::Query(_) => {
-                // For queries, we need to convert to DriftQL and execute
-                // This is a temporary bridge until full SQL support is ready
-                Err(crate::errors::DriftError::InvalidQuery(
-                    "SQL queries not yet fully implemented - use DriftQL CLI".to_string()
-                ))
-            }
-            _ => {
-                Err(crate::errors::DriftError::InvalidQuery(
-                    "Only SELECT queries supported via SQL currently".to_string()
-                ))
-            }
-        }
+    pub fn execute(&mut self, engine: &mut crate::engine::Engine, stmt: &TemporalStatement) -> crate::errors::Result<QueryResult> {
+        // Use the SQL executor
+        let mut executor = executor::SqlExecutor::new(engine);
+        executor.execute_sql(stmt)
     }
 }
 

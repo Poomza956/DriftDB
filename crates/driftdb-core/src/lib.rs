@@ -36,6 +36,7 @@ pub mod mvcc;
 pub mod query_plan;
 pub mod consensus;
 pub mod columnar;
+pub mod sql_bridge;
 
 #[cfg(test)]
 mod tests;

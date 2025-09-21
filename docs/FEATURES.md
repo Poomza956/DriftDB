@@ -35,14 +35,15 @@
 - ⚠️ **Cost-based optimization** - Framework only
 
 ### SQL Features
-- ✅ **Basic SQL operations** - CREATE, INSERT, SELECT, DELETE
+- ✅ **Basic SQL operations** - CREATE TABLE, INSERT, SELECT, DELETE
+- ✅ **SQL JOINs** - INNER, LEFT, CROSS JOINs fully working via sql_bridge
 - ✅ **Time-travel queries** - AS OF functionality
-- ⚠️ **JOINs** - Structures defined (sql/joins.rs), not integrated with executor
 - ⚠️ **Window functions** - Structures defined (window.rs), not integrated
 - ⚠️ **Stored procedures** - Framework exists (procedures.rs), not executable
 - ⚠️ **Triggers** - Framework exists (triggers.rs), not executable
 - ⚠️ **Views** - Framework exists (views.rs), not integrated
 - ❌ **Common Table Expressions (CTEs)** - Not implemented
+- ❌ **Aggregations** - SUM, COUNT, GROUP BY not implemented
 
 ### Distributed Features
 - ✅ **Raft consensus** with leader election (consensus.rs)
@@ -101,10 +102,11 @@ These features are mentioned in code comments or enums but have no implementatio
 
 If you want to use DriftDB right now, you can reliably use:
 
-1. **Core Operations**
-   - Create tables with schemas
-   - Insert records with automatic timestamps
-   - Query data with WHERE conditions
+1. **Core SQL Operations**
+   - CREATE TABLE with standard SQL syntax
+   - INSERT with VALUES clause
+   - SELECT with WHERE conditions
+   - JOINs: INNER JOIN, LEFT JOIN, CROSS JOIN
    - Time-travel queries with AS OF
    - Soft deletes preserving history
 
