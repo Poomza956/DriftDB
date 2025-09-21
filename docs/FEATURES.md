@@ -1,153 +1,103 @@
 # DriftDB Features
 
-## Core Database Features
+**Note:** This document describes both implemented and planned features. For a detailed breakdown of what's actually implemented vs planned, see [FEATURES_HONEST.md](./FEATURES_HONEST.md).
 
-### Storage Engine
-- **Append-only architecture** with time-travel capabilities
-- **Columnar storage** with compression and encoding optimization
-- **LSM tree storage** for write-optimized workloads
-- **CRC32 verification** on every data frame
-- **Atomic writes** with fsync on segment boundaries
-- **Crash recovery** via tail truncation of corrupt segments
+## Core Database Features (Mixed Implementation)
 
-### Indexing Strategies
-- **B+ Tree indexes** for range queries
-- **Hash indexes** for point lookups
-- **Bitmap indexes** for low-cardinality columns
-- **Bloom filters** for membership testing
-- **GiST indexes** for spatial data
-- **ART (Adaptive Radix Tree)** for string keys
-- **Inverted indexes** for full-text search
+### Storage Engine ✅
+- **Append-only architecture** with time-travel capabilities ✅
+- **Columnar storage** with compression and encoding optimization ✅
+- **LSM tree storage** for write-optimized workloads ⚠️ (structure only)
+- **CRC32 verification** on every data frame ✅
+- **Atomic writes** with fsync on segment boundaries ✅
+- **Crash recovery** via tail truncation of corrupt segments ✅
 
-### Transaction Support
-- **MVCC (Multi-Version Concurrency Control)** with snapshot isolation
-- **Multiple isolation levels**:
-  - Read Uncommitted
-  - Read Committed
-  - Repeatable Read
-  - Serializable
-  - Snapshot Isolation
-- **Distributed transactions** with 2PC coordination
-- **Optimistic concurrency control**
-- **Deadlock detection and prevention**
+### Indexing Strategies ⚠️
+- **B+ Tree indexes** for range queries ✅
+- **Hash indexes** for point lookups ✅
+- **Bitmap indexes** for low-cardinality columns ⚠️ (structure only)
+- **Bloom filters** for membership testing ✅
+- **GiST indexes** for spatial data ❌ (planned)
+- **ART (Adaptive Radix Tree)** for string keys ❌ (planned)
+- **Inverted indexes** for full-text search ⚠️ (basic only)
 
-### Query Processing
-- **Cost-based query optimizer** with statistics
-- **Query plan visualization** (Text, JSON, DOT, HTML formats)
-- **Parallel query execution** with thread pools
-- **Query result caching** with LRU eviction
-- **Adaptive query optimization** based on runtime statistics
-- **Pipeline execution model**
+### Transaction Support ⚠️
+- **MVCC (Multi-Version Concurrency Control)** with snapshot isolation ✅
+- **Multiple isolation levels** ✅ (defined, not all tested)
+- **Distributed transactions** with 2PC coordination ⚠️ (structure only)
+- **Optimistic concurrency control** ⚠️
+- **Deadlock detection and prevention** ❌ (not implemented)
 
-### SQL Support
-- **Full SQL parser** with temporal extensions
-- **Complex JOINs** (INNER, OUTER, CROSS, SEMI, ANTI)
-- **Window functions** (ROW_NUMBER, RANK, LAG, LEAD, etc.)
-- **Common Table Expressions (CTEs)**
-- **Stored procedures** with procedural language
-- **Database triggers** with event-driven execution
-- **Views** (regular and materialized)
+### Query Processing ⚠️
+- **Cost-based query optimizer** with statistics ⚠️ (basic structure)
+- **Query plan visualization** (Text, JSON, DOT, HTML formats) ✅
+- **Parallel query execution** with thread pools ✅
+- **Query result caching** with LRU eviction ✅
+- **Adaptive query optimization** ⚠️ (structure only)
+- **Pipeline execution model** ⚠️
 
-### Distributed Features
-- **Consistent hashing** for data distribution
-- **Multi-node coordination** with partition management
-- **Raft consensus** with leader election
-- **Pre-vote optimization** to prevent disruption
-- **Learner and witness nodes** for flexible deployments
-- **Automatic failover** and recovery
-- **Cross-region replication**
+### SQL Support ⚠️
+- **Full SQL parser** with temporal extensions ✅
+- **Complex JOINs** (INNER, OUTER, CROSS, SEMI, ANTI) ⚠️ (defined, not integrated)
+- **Window functions** (ROW_NUMBER, RANK, LAG, LEAD, etc.) ⚠️ (structure only)
+- **Common Table Expressions (CTEs)** ❌ (not implemented)
+- **Stored procedures** with procedural language ⚠️ (framework only)
+- **Database triggers** with event-driven execution ⚠️ (framework only)
+- **Views** (regular and materialized) ⚠️ (framework only)
 
-### Time-Travel & Temporal
-- **AS OF queries** for historical data access
-- **Point-in-time recovery**
-- **Temporal joins** across time dimensions
-- **Audit trail preservation** with soft deletes
-- **Snapshot management** with compression
+### Distributed Features ⚠️
+- **Consistent hashing** for data distribution ✅
+- **Multi-node coordination** with partition management ✅
+- **Raft consensus** with leader election ✅
+- **Pre-vote optimization** to prevent disruption ✅
+- **Learner and witness nodes** for flexible deployments ✅
+- **Automatic failover** and recovery ⚠️ (partial)
+- **Cross-region replication** ⚠️ (structure only)
 
-### Performance Features
-- **Adaptive connection pooling** with circuit breakers
-- **Query result caching** with TTL and invalidation
-- **Parallel execution** for large datasets
-- **Zone maps** for partition pruning
-- **Dictionary encoding** for repeated values
-- **Run-length encoding** for sequential data
-- **Delta encoding** for time-series data
+### Time-Travel & Temporal ✅
+- **AS OF queries** for historical data access ✅
+- **Point-in-time recovery** ✅
+- **Temporal joins** across time dimensions ✅
+- **Audit trail preservation** with soft deletes ✅
+- **Snapshot management** with compression ✅
 
-### Security & Encryption
-- **TLS/SSL support** for network communication
-- **AES-GCM encryption** at rest
-- **ChaCha20-Poly1305** as alternative cipher
-- **Key derivation** with HKDF
-- **Role-based access control**
-- **Audit logging** for compliance
+### Performance Features ⚠️
+- **Adaptive connection pooling** with circuit breakers ✅
+- **Query result caching** with TTL and invalidation ✅
+- **Parallel execution** for large datasets ✅
+- **Zone maps** for partition pruning ⚠️ (mentioned only)
+- **Dictionary encoding** for repeated values ✅
+- **Run-length encoding** for sequential data ✅
+- **Delta encoding** for time-series data ✅
 
-### Monitoring & Operations
-- **Comprehensive metrics** collection
-- **Query performance tracking**
-- **Resource usage monitoring**
-- **Health checks** and status endpoints
-- **Backup and restore** capabilities
-- **Incremental backups** with parent tracking
-- **Point-in-time recovery**
+### Security & Encryption ⚠️
+- **TLS/SSL support** for network communication ⚠️ (structure only)
+- **AES-GCM encryption** at rest ✅
+- **ChaCha20-Poly1305** as alternative cipher ✅
+- **Key derivation** with HKDF ✅
+- **Role-based access control** ❌ (not implemented)
+- **Audit logging** for compliance ❌ (basic structure only)
 
-### Data Types & Functions
-- **Rich data type support** (primitives, strings, binary, JSON)
-- **Full-text search** with TF-IDF scoring
-- **Geospatial functions** (planned)
-- **JSON operations** and indexing
-- **Array and composite types**
-- **User-defined functions** (UDFs)
+## Legend
 
-### Developer Experience
-- **DriftQL** - SQL-like query language
-- **CLI tool** for database management
-- **Admin dashboard** for monitoring
-- **REST API server** for remote access
-- **Client libraries** (planned)
-- **Migration system** with version control
+- ✅ Implemented and functional
+- ⚠️ Partially implemented (structure exists but not fully integrated)
+- ❌ Not implemented (planned/mentioned only)
 
-## Architecture Highlights
+## Production Readiness
 
-### Reliability
-- Process-level file locking prevents concurrent writes
-- Automatic segment repair on corruption
-- Write-ahead logging for durability
-- Checkpoint and recovery mechanisms
-- Automatic vacuum and maintenance
+**Current Status:** Development/Prototype
 
-### Scalability
-- Horizontal scaling with data partitioning
-- Read replicas for load distribution
-- Async replication for geo-distribution
-- Connection pooling for resource efficiency
-- Automatic load balancing
+While DriftDB has many advanced features defined, the current implementation is best suited for:
+- Development and testing environments
+- Proof of concept projects
+- Learning and experimentation
 
-### Flexibility
-- Pluggable storage backends
-- Extensible index types
-- Custom aggregate functions
-- Procedural language extensions
-- Hook system for custom logic
+For production use, significant additional work is needed on:
+- Testing and validation
+- Error handling and recovery
+- Performance optimization
+- Monitoring and management tools
+- Documentation and examples
 
-## Performance Characteristics
-
-### Write Performance
-- Append-only design for fast inserts
-- Batch writing with configurable buffers
-- LSM tree for high-throughput writes
-- Minimal write amplification
-- Concurrent writes with MVCC
-
-### Read Performance
-- Columnar storage for analytical queries
-- Zone maps for partition elimination
-- Bloom filters for negative lookups
-- Memory-mapped files for fast access
-- Query result caching
-
-### Space Efficiency
-- Multiple compression algorithms (Snappy, Zstd, LZ4)
-- Dictionary encoding for repeated values
-- Delta encoding for time-series
-- Automatic compaction and merging
-- Configurable retention policies
+See [FEATURES_HONEST.md](./FEATURES_HONEST.md) for a detailed assessment of each feature's implementation status.
