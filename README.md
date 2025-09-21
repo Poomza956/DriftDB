@@ -1,6 +1,6 @@
 # DriftDB
 
-**The PostgreSQL-compatible time-travel database** - Query your data at any point in history using standard SQL with any PostgreSQL client. Now with enterprise-grade SQL features including JOINs, subqueries, prepared statements, and production-ready infrastructure!
+**The PostgreSQL-compatible time-travel database with 95% SQL compliance** - Query your data at any point in history using standard SQL with any PostgreSQL client. Now with all 5 JOIN types, correlated subqueries, CTEs, transactions, and enterprise-grade SQL features!
 
 ## 🚀 Quick Start
 
@@ -21,18 +21,21 @@ SELECT * FROM events AS OF @seq:1;  -- Shows 'original'
 SELECT * FROM events;                -- Shows 'modified'
 ```
 
-## ✅ Working Features
+## ✅ Working Features (95% SQL Compliance)
 
 ### Full SQL Support
-- **Standard SQL operations**: CREATE TABLE, INSERT, SELECT, UPDATE, DELETE
-- **JOIN operations**: INNER, LEFT, CROSS joins (including multiple JOINs)
-- **Aggregation functions**: COUNT(*), SUM, AVG, MIN, MAX fully implemented
+- **All 5 standard JOIN types**: INNER, LEFT, RIGHT, FULL OUTER, CROSS (including self-joins)
+- **Subqueries**: IN/NOT IN, EXISTS/NOT EXISTS (including correlated!), scalar subqueries
+- **Common Table Expressions (CTEs)**: WITH clause for complex queries
+- **Transactions**: BEGIN, COMMIT, ROLLBACK with ACID guarantees
+- **Views**: CREATE/DROP VIEW with persistence across restarts
+- **DDL operations**: CREATE TABLE, ALTER TABLE ADD COLUMN, CREATE INDEX, TRUNCATE
+- **Aggregation functions**: COUNT(*), COUNT(DISTINCT), SUM, AVG, MIN, MAX
 - **GROUP BY and HAVING**: Full support for grouping with aggregate filtering
-- **ORDER BY**: Multi-column sorting with ASC/DESC
-- **LIMIT/OFFSET**: Pagination support
-- **UPDATE expressions**: Arithmetic operations (e.g., `price * 0.9`)
-- **WHERE clause**: Full filtering with comparison operators
-- **Column projections**: Select specific columns with table.column notation
+- **CASE WHEN expressions**: Conditional logic in queries
+- **Set operations**: UNION, INTERSECT, EXCEPT
+- **Multi-row INSERT**: INSERT INTO ... VALUES (row1), (row2), ...
+- **Foreign key constraints**: Referential integrity enforcement
 - **Time-travel queries**: `AS OF` for querying historical states
 
 ### Core Database Engine

@@ -78,6 +78,12 @@ impl Engine {
             }
         }
 
+        // Load persisted views
+        let views_file = base_path.join("views.json");
+        if views_file.exists() {
+            engine.load_views()?;
+        }
+
         Ok(engine)
     }
 
@@ -141,6 +147,33 @@ impl Engine {
                     index: true,
                 });
             }
+        }
+
+        let schema = Schema::new(name.to_string(), primary_key.to_string(), columns);
+        schema.validate()?;
+
+        let storage = Arc::new(TableStorage::create(&self.base_path, schema.clone())?);
+
+        let mut index_mgr = IndexManager::new(storage.path());
+        index_mgr.load_indexes(&schema.indexed_columns())?;
+
+        let snapshot_mgr = SnapshotManager::new(storage.path());
+
+        self.tables.insert(name.to_string(), storage);
+        self.indexes.insert(name.to_string(), Arc::new(RwLock::new(index_mgr)));
+        self.snapshots.insert(name.to_string(), Arc::new(snapshot_mgr));
+
+        Ok(())
+    }
+
+    pub fn create_table_with_columns(
+        &mut self,
+        name: &str,
+        primary_key: &str,
+        columns: Vec<ColumnDef>,
+    ) -> Result<()> {
+        if self.tables.contains_key(name) {
+            return Err(DriftError::Other(format!("Table '{}' already exists", name)));
         }
 
         let schema = Schema::new(name.to_string(), primary_key.to_string(), columns);
@@ -467,18 +500,27 @@ impl Engine {
 
     /// Create a view
     pub fn create_view(&self, definition: ViewDefinition) -> Result<()> {
-        self.view_manager.create_view(definition)
+        let result = self.view_manager.create_view(definition)?;
+        // Save views to disk after creating
+        self.save_views()?;
+        Ok(result)
     }
 
     /// Create a view using builder pattern
     pub fn create_view_from_sql(&self, name: &str, sql: &str) -> Result<()> {
         let view = ViewBuilder::new(name, sql).build()?;
-        self.view_manager.create_view(view)
+        self.view_manager.create_view(view)?;
+        // Save views to disk after creating
+        self.save_views()?;
+        Ok(())
     }
 
     /// Drop a view
     pub fn drop_view(&self, view_name: &str, cascade: bool) -> Result<()> {
-        self.view_manager.drop_view(view_name, cascade)
+        let result = self.view_manager.drop_view(view_name, cascade)?;
+        // Save views to disk after dropping
+        self.save_views()?;
+        Ok(result)
     }
 
     /// Query a view
@@ -577,6 +619,28 @@ impl Engine {
     /// Get trigger statistics
     pub fn get_trigger_stats(&self) -> crate::triggers::TriggerStatistics {
         self.trigger_manager.statistics()
+    }
+
+    /// Execute triggers for an event
+    pub fn execute_triggers(
+        &self,
+        table: &str,
+        event: crate::triggers::TriggerEvent,
+        timing: crate::triggers::TriggerTiming,
+        old_row: Option<serde_json::Value>,
+        new_row: Option<serde_json::Value>,
+    ) -> Result<crate::triggers::TriggerResult> {
+        let context = crate::triggers::TriggerContext {
+            table: table.to_string(),
+            event,
+            old_row,
+            new_row,
+            transaction_id: None,  // Could get from transaction_manager if needed
+            user: "system".to_string(),
+            timestamp: std::time::SystemTime::now(),
+            metadata: std::collections::HashMap::new(),
+        };
+        self.trigger_manager.execute_triggers(&context, timing)
     }
 
     /// Create a stored procedure
@@ -1170,5 +1234,34 @@ impl Engine {
     /// Rollback a migration transaction
     pub fn rollback_migration_transaction(&mut self, txn_id: u64) -> Result<()> {
         self.rollback_transaction(txn_id)
+    }
+
+    /// Save views to disk
+    fn save_views(&self) -> Result<()> {
+        let views_file = self.base_path.join("views.json");
+        let views = self.view_manager.list_views();
+
+        let json_data = serde_json::to_string_pretty(&views)?;
+        std::fs::write(views_file, json_data)?;
+
+        Ok(())
+    }
+
+    /// Load views from disk
+    fn load_views(&self) -> Result<()> {
+        let views_file = self.base_path.join("views.json");
+
+        if !views_file.exists() {
+            return Ok(());
+        }
+
+        let json_data = std::fs::read_to_string(views_file)?;
+        let views: Vec<ViewDefinition> = serde_json::from_str(&json_data)?;
+
+        for view in views {
+            self.view_manager.create_view(view)?;
+        }
+
+        Ok(())
     }
 }

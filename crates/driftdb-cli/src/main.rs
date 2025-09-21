@@ -155,7 +155,18 @@ fn main() -> Result<()> {
                     || upper_query.starts_with("INSERT")
                     || upper_query.starts_with("UPDATE")
                     || upper_query.starts_with("DELETE")
-                    || upper_query.starts_with("CREATE TABLE") {
+                    || upper_query.starts_with("CREATE ")  // Catch all CREATE statements
+                    || upper_query.starts_with("DROP")
+                    || upper_query.starts_with("CALL")
+                    || upper_query.starts_with("ALTER")
+                    || upper_query.starts_with("TRUNCATE")
+                    || upper_query.starts_with("BEGIN")
+                    || upper_query.starts_with("START")
+                    || upper_query.starts_with("COMMIT")
+                    || upper_query.starts_with("ROLLBACK")
+                    || upper_query.starts_with("EXPLAIN")
+                    || upper_query.starts_with("ANALYZE")
+                    || upper_query.starts_with("WITH") {  // CTEs start with WITH
                     // Use SQL bridge for SQL queries
                     driftdb_core::sql_bridge::execute_sql(&mut engine, &query_str)
                         .context("Failed to execute SQL query")?

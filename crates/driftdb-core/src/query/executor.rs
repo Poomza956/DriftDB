@@ -26,6 +26,24 @@ impl Engine {
                     ))?
                     .clone();
 
+                // Check if primary key already exists
+                let existing = self.select(
+                    &table,
+                    vec![super::WhereCondition {
+                        column: pk_field.clone(),
+                        operator: "=".to_string(),
+                        value: primary_key.clone(),
+                    }],
+                    None,
+                    Some(1),
+                )?;
+
+                if !existing.is_empty() {
+                    return Err(crate::errors::DriftError::InvalidQuery(
+                        format!("Primary key violation: {} already exists", primary_key)
+                    ));
+                }
+
                 let event = Event::new_insert(table.clone(), primary_key, data);
                 let seq = self.apply_event(event)?;
 
@@ -211,7 +229,7 @@ impl Engine {
         conditions.iter().all(|cond| {
             if let serde_json::Value::Object(map) = row {
                 if let Some(field_value) = map.get(&cond.column) {
-                    field_value == &cond.value
+                    Self::compare_values(field_value, &cond.value, &cond.operator)
                 } else {
                     false
                 }
@@ -219,6 +237,59 @@ impl Engine {
                 false
             }
         })
+    }
+
+    fn compare_values(left: &serde_json::Value, right: &serde_json::Value, operator: &str) -> bool {
+        // Handle NULL comparisons
+        if left.is_null() || right.is_null() {
+            match operator {
+                "=" | "==" => left.is_null() && right.is_null(),
+                "!=" | "<>" => !(left.is_null() && right.is_null()),
+                _ => false, // NULL comparisons with <, >, etc. always return false
+            }
+        } else {
+            match operator {
+                "=" | "==" => left == right,
+                "!=" | "<>" => left != right,
+            "<" => {
+                match (left.as_f64(), right.as_f64()) {
+                    (Some(l), Some(r)) => l < r,
+                    _ => match (left.as_str(), right.as_str()) {
+                        (Some(l), Some(r)) => l < r,
+                        _ => false,
+                    }
+                }
+            }
+            "<=" => {
+                match (left.as_f64(), right.as_f64()) {
+                    (Some(l), Some(r)) => l <= r,
+                    _ => match (left.as_str(), right.as_str()) {
+                        (Some(l), Some(r)) => l <= r,
+                        _ => false,
+                    }
+                }
+            }
+            ">" => {
+                match (left.as_f64(), right.as_f64()) {
+                    (Some(l), Some(r)) => l > r,
+                    _ => match (left.as_str(), right.as_str()) {
+                        (Some(l), Some(r)) => l > r,
+                        _ => false,
+                    }
+                }
+            }
+            ">=" => {
+                match (left.as_f64(), right.as_f64()) {
+                    (Some(l), Some(r)) => l >= r,
+                    _ => match (left.as_str(), right.as_str()) {
+                        (Some(l), Some(r)) => l >= r,
+                        _ => false,
+                    }
+                }
+            }
+            _ => false, // Unknown operator
+            }
+        }
     }
 
     fn get_drift_history(&self, table: &str, primary_key: serde_json::Value) -> Result<Vec<serde_json::Value>> {
@@ -244,9 +315,20 @@ impl Engine {
         Ok(history)
     }
 
-    fn get_table_primary_key(&self, table: &str) -> Result<String> {
+    pub fn get_table_primary_key(&self, table: &str) -> Result<String> {
         let storage = self.tables.get(table)
             .ok_or_else(|| crate::errors::DriftError::TableNotFound(table.to_string()))?;
         Ok(storage.schema().primary_key.clone())
+    }
+
+    pub fn get_table_columns(&self, table: &str) -> Result<Vec<String>> {
+        let storage = self.tables.get(table)
+            .ok_or_else(|| crate::errors::DriftError::TableNotFound(table.to_string()))?;
+
+        // Get columns from schema
+        let schema = storage.schema();
+
+        // Return all column names from the schema
+        Ok(schema.columns.iter().map(|c| c.name.clone()).collect())
     }
 }
