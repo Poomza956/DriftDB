@@ -41,6 +41,12 @@ pub enum DriftError {
     #[error("Internal error: {0}")]
     Internal(String),
 
+    #[error("Not leader")]
+    NotLeader,
+
+    #[error("Timeout")]
+    Timeout,
+
     #[error("Other error: {0}")]
     Other(String),
 }

@@ -20,6 +20,8 @@ parking_lot = { workspace = true }
 tracing = { workspace = true }
 nom = { workspace = true }
 uuid = { workspace = true, features = ["v4", "serde"] }
+snap = { workspace = true }
+byteorder = { workspace = true }
 fs2 = { workspace = true }
 sha2 = "0.10"
 async-trait = "0.1"

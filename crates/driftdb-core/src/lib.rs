@@ -31,6 +31,11 @@ pub mod stats;
 pub mod query_optimizer;
 pub mod adaptive_pool;
 pub mod distributed;
+pub mod index_strategies;
+pub mod mvcc;
+pub mod query_plan;
+pub mod consensus;
+pub mod columnar;
 
 #[cfg(test)]
 mod tests;
