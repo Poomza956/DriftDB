@@ -35,15 +35,19 @@
 - ⚠️ **Cost-based optimization** - Framework only
 
 ### SQL Features
-- ✅ **Basic SQL operations** - CREATE TABLE, INSERT, SELECT, DELETE
-- ✅ **SQL JOINs** - INNER, LEFT, CROSS JOINs fully working via sql_bridge
+- ✅ **Basic SQL operations** - CREATE TABLE, INSERT, SELECT, UPDATE, DELETE
+- ✅ **SQL JOINs** - INNER, LEFT, CROSS JOINs fully working (including multiple JOINs)
+- ✅ **Aggregations** - SUM, COUNT, AVG, MIN, MAX fully implemented
+- ✅ **GROUP BY** - Full support with HAVING clause
+- ✅ **ORDER BY** - ASC/DESC sorting with multiple columns
+- ✅ **LIMIT/OFFSET** - Pagination support
+- ✅ **UPDATE statements** - Including arithmetic expressions (price * 0.9)
 - ✅ **Time-travel queries** - AS OF functionality
 - ⚠️ **Window functions** - Structures defined (window.rs), not integrated
 - ⚠️ **Stored procedures** - Framework exists (procedures.rs), not executable
 - ⚠️ **Triggers** - Framework exists (triggers.rs), not executable
 - ⚠️ **Views** - Framework exists (views.rs), not integrated
 - ❌ **Common Table Expressions (CTEs)** - Not implemented
-- ❌ **Aggregations** - SUM, COUNT, GROUP BY not implemented
 
 ### Distributed Features
 - ✅ **Raft consensus** with leader election (consensus.rs)

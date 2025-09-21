@@ -23,24 +23,17 @@ SELECT * FROM events;                -- Shows 'modified'
 
 ## ✅ Working Features
 
-### PostgreSQL Wire Protocol v3
-- **PostgreSQL compatible**: Connect with psql, pgAdmin, or any PostgreSQL driver
-- **Standard SQL support**: CREATE TABLE, INSERT, SELECT, UPDATE, DELETE
-- **WHERE clause support**: Full filtering with =, !=, >, <, >=, <= operators
-- **UPDATE with conditions**: Modify specific rows with WHERE clauses
-- **DELETE with conditions**: Remove specific rows while preserving history
-- **Time-travel syntax**: `AS OF @seq:N` for querying any historical state
-- **Column selection**: `SELECT column1, column2 FROM table`
-- **Aggregation functions**: COUNT(*), COUNT(column), SUM, AVG, MIN, MAX
-- **GROUP BY and HAVING**: Group rows and filter groups with aggregation conditions
-- **ORDER BY and LIMIT**: Sort results and limit row count
-- **JOIN operations**: INNER, LEFT, RIGHT, FULL OUTER, and CROSS joins
-- **Subqueries**: IN, EXISTS, and scalar subqueries in WHERE clauses
-- **Set operations**: UNION, INTERSECT, EXCEPT with ALL variants
-- **DISTINCT clause**: Remove duplicate rows from results
-- **Prepared statements**: PREPARE, EXECUTE, DEALLOCATE for query optimization
-- **EXPLAIN PLAN**: Query execution plan visualization with index usage
-- **Index optimization**: B-tree indexes on columns for faster queries
+### Full SQL Support
+- **Standard SQL operations**: CREATE TABLE, INSERT, SELECT, UPDATE, DELETE
+- **JOIN operations**: INNER, LEFT, CROSS joins (including multiple JOINs)
+- **Aggregation functions**: COUNT(*), SUM, AVG, MIN, MAX fully implemented
+- **GROUP BY and HAVING**: Full support for grouping with aggregate filtering
+- **ORDER BY**: Multi-column sorting with ASC/DESC
+- **LIMIT/OFFSET**: Pagination support
+- **UPDATE expressions**: Arithmetic operations (e.g., `price * 0.9`)
+- **WHERE clause**: Full filtering with comparison operators
+- **Column projections**: Select specific columns with table.column notation
+- **Time-travel queries**: `AS OF` for querying historical states
 
 ### Core Database Engine
 - **Event sourcing**: Every change is an immutable event with full history

@@ -150,9 +150,12 @@ fn main() -> Result<()> {
 
             for query_str in queries {
                 // Try SQL first, fall back to DriftQL
-                let result = if query_str.trim().to_uppercase().starts_with("SELECT")
-                    || (query_str.trim().to_uppercase().starts_with("INSERT") && query_str.contains("VALUES"))
-                    || (query_str.trim().to_uppercase().starts_with("CREATE TABLE") && query_str.contains("(")) {
+                let upper_query = query_str.trim().to_uppercase();
+                let result = if upper_query.starts_with("SELECT")
+                    || upper_query.starts_with("INSERT")
+                    || upper_query.starts_with("UPDATE")
+                    || upper_query.starts_with("DELETE")
+                    || upper_query.starts_with("CREATE TABLE") {
                     // Use SQL bridge for SQL queries
                     driftdb_core::sql_bridge::execute_sql(&mut engine, &query_str)
                         .context("Failed to execute SQL query")?
