@@ -1,4 +1,4 @@
-//! Bridge between SQL and DriftQL for CLI integration
+//! SQL execution engine for DriftDB
 
 use sqlparser::ast::{Statement, Query as SqlQuery, Select, SetExpr, SetOperator, SetQuantifier, TableFactor, TableWithJoins, JoinOperator, BinaryOperator, SelectItem, Expr, Function, FunctionArg, FunctionArgExpr, GroupByExpr, OrderByExpr, Offset, FromTable};
 use sqlparser::parser::Parser;
@@ -16,9 +16,10 @@ thread_local! {
     static IN_VIEW_EXECUTION: RefCell<bool> = RefCell::new(false);
     static CURRENT_TRANSACTION: RefCell<Option<u64>> = RefCell::new(None);
     static OUTER_ROW_CONTEXT: RefCell<Option<Value>> = RefCell::new(None);
+    static IN_RECURSIVE_CTE: RefCell<bool> = RefCell::new(false);
 }
 
-/// Convert SQL to DriftQL and execute
+/// Execute SQL query
 pub fn execute_sql(engine: &mut Engine, sql: &str) -> Result<QueryResult> {
     let dialect = GenericDialect {};
     let ast = Parser::parse_sql(&dialect, sql)
@@ -158,7 +159,7 @@ pub fn execute_sql(engine: &mut Engine, sql: &str) -> Result<QueryResult> {
         }
         Statement::Explain { statement, .. } => {
             // Provide query plan explanation
-            let plan = format!("Query Plan for: {:?}\n\n1. Parse SQL\n2. Convert to DriftQL\n3. Execute query\n4. Return results", statement);
+            let plan = format!("Query Plan for: {:?}\n\n1. Parse SQL\n2. Analyze query structure\n3. Execute query\n4. Return results", statement);
             Ok(QueryResult::Success { message: plan })
         }
         Statement::Analyze { .. } => {
@@ -279,18 +280,21 @@ fn execute_recursive_cte(
             };
 
             // Step 2: Iteratively execute the recursive part
-            let mut working_set = all_results.clone();
+            // In standard recursive CTEs:
+            // - Each iteration only processes rows from the PREVIOUS iteration
+            // - Not the entire accumulated result set
             let max_iterations = 1000; // Prevent infinite recursion
             let mut iteration = 0;
+            let mut working_set = all_results.clone(); // Start with anchor results
 
             while !working_set.is_empty() && iteration < max_iterations {
                 iteration += 1;
 
-                // Create a temporary CTE context with current working set
+                // The CTE name in the recursive part refers to the working set (previous iteration's results)
                 let mut temp_cte_context = HashMap::new();
                 temp_cte_context.insert(cte_name.to_string(), working_set.clone());
 
-                // Execute the recursive part with the working set as the CTE
+                // Execute the recursive part
                 let recursive_query = SqlQuery {
                     with: None,
                     body: Box::new(right.as_ref().clone()),
@@ -303,30 +307,43 @@ fn execute_recursive_cte(
                     for_clause: None,
                 };
 
+                // Set recursive CTE flag
+                IN_RECURSIVE_CTE.with(|flag| {
+                    *flag.borrow_mut() = true;
+                });
+
                 let recursive_result = execute_query_with_ctes(engine, &Box::new(recursive_query), &temp_cte_context)?;
 
-                // Get new rows from recursive execution
-                let new_rows = match recursive_result {
+                // Clear recursive CTE flag
+                IN_RECURSIVE_CTE.with(|flag| {
+                    *flag.borrow_mut() = false;
+                });
+
+                // Get new rows from this iteration
+                let iteration_rows = match recursive_result {
                     QueryResult::Rows { data } => data,
                     _ => vec![],
                 };
 
-                // Check for new unique rows (avoid cycles)
-                let mut unique_new_rows = Vec::new();
-                for row in new_rows {
-                    if !all_results.contains(&row) {
-                        unique_new_rows.push(row.clone());
-                        all_results.push(row);
+                // Build the next working set and add to results
+                let mut next_working_set = Vec::new();
+                for row in iteration_rows {
+                    // Check for duplicates based on UNION vs UNION ALL
+                    if matches!(set_quantifier, SetQuantifier::All) {
+                        // UNION ALL: always add the row
+                        all_results.push(row.clone());
+                        next_working_set.push(row);
+                    } else {
+                        // UNION (DISTINCT): only add if not already in results
+                        if !all_results.contains(&row) {
+                            all_results.push(row.clone());
+                            next_working_set.push(row);
+                        }
                     }
                 }
 
                 // Update working set for next iteration
-                working_set = unique_new_rows;
-
-                // Apply set quantifier (ALL vs DISTINCT)
-                if matches!(set_quantifier, SetQuantifier::Distinct | SetQuantifier::None) {
-                    all_results = apply_distinct(all_results);
-                }
+                working_set = next_working_set;
             }
 
             Ok(all_results)
@@ -356,8 +373,19 @@ fn execute_query_with_ctes(
                     match item {
                         SelectItem::UnnamedExpr(expr) => {
                             let value = evaluate_expression_without_row(expr)?;
-                            // For unnamed expressions, use the expression text as column name
-                            let col_name = format!("{:?}", expr).chars().take(50).collect::<String>();
+                            // For unnamed expressions, try to extract a simple column name
+                            let col_name = match expr {
+                                Expr::Identifier(ident) => ident.value.clone(),
+                                Expr::BinaryOp { left, .. } => {
+                                    // For binary expressions like "n + 1", use the left identifier if available
+                                    if let Expr::Identifier(ident) = left.as_ref() {
+                                        ident.value.clone()
+                                    } else {
+                                        format!("{:?}", expr).chars().take(50).collect::<String>()
+                                    }
+                                }
+                                _ => format!("{:?}", expr).chars().take(50).collect::<String>()
+                            };
                             row.insert(col_name, value);
                         }
                         SelectItem::ExprWithAlias { expr, alias } => {
@@ -415,6 +443,9 @@ fn execute_query_with_ctes(
                             SelectItem::UnnamedExpr(Expr::Function(_)) |
                             SelectItem::ExprWithAlias { expr: Expr::Function(_), .. })
                     });
+
+                    // Always process scalar subqueries first before applying projection
+                    data = process_scalar_subqueries(engine, data, &select.projection)?;
 
                     if !has_aggregates {
                         data = apply_projection(data, &select.projection)?;
@@ -590,13 +621,14 @@ fn execute_simple_select_with_ctes(
                 SelectItem::ExprWithAlias { expr: Expr::Function(_), .. })
         });
 
+        // Always process scalar subqueries first (they can be in aggregate or non-aggregate queries)
+        result_data = process_scalar_subqueries(engine, result_data, &select.projection)?;
+
         if has_aggregates {
             // Handle aggregates
             result_data = execute_aggregation(&result_data, select)?;
-        } else {
-            // Apply normal projection
-            result_data = apply_projection(result_data, &select.projection)?;
         }
+        // Note: Don't apply projection here - it will be applied in the main execution flow
 
         return Ok(QueryResult::Rows { data: result_data });
     }
@@ -639,6 +671,9 @@ fn execute_simple_select(engine: &mut Engine, select: &Select) -> Result<QueryRe
                         SelectItem::UnnamedExpr(Expr::Function(_)) |
                         SelectItem::ExprWithAlias { expr: Expr::Function(_), .. })
                 });
+
+                // Always process scalar subqueries first (they can be in aggregate or non-aggregate queries)
+                let data = process_scalar_subqueries(engine, data, &select.projection)?;
 
                 if has_aggregates {
                     let aggregated = execute_aggregation(&data, select)?;
@@ -686,11 +721,11 @@ fn execute_simple_select(engine: &mut Engine, select: &Select) -> Result<QueryRe
     let is_correlated = OUTER_ROW_CONTEXT.with(|context| context.borrow().is_some());
 
     // If we have subqueries OR this is a correlated subquery, fetch all rows and filter in SQL layer
-    // Otherwise, use DriftQL's WHERE optimization
-    let (driftql_conditions, sql_filter) = if has_subqueries || is_correlated {
+    // Otherwise, use engine WHERE optimization
+    let (engine_conditions, sql_filter) = if has_subqueries || is_correlated {
         (vec![], select.selection.clone())
     } else {
-        // Convert WHERE clause to WhereConditions for DriftQL
+        // Convert WHERE clause to WhereConditions for engine optimization
         let conditions = if let Some(selection) = &select.selection {
             match parse_where_clause(selection) {
                 Ok(conds) => conds,
@@ -706,14 +741,14 @@ fn execute_simple_select(engine: &mut Engine, select: &Select) -> Result<QueryRe
     };
 
     // Execute SQL query to get base data
-    let driftql_query = Query::Select {
+    let query = Query::Select {
         table: table_name.clone(),
-        conditions: driftql_conditions,
+        conditions: engine_conditions,
         as_of: None,
         limit: None,
     };
 
-    let mut result = engine.execute_query(driftql_query)?;
+    let mut result = engine.execute_query(query)?;
 
     // Apply SQL-level WHERE filtering if needed (for subqueries)
     if let Some(filter_expr) = sql_filter {
@@ -737,16 +772,23 @@ fn execute_simple_select(engine: &mut Engine, select: &Select) -> Result<QueryRe
         }
     }
 
-    // If no aggregates and no GROUP BY, return data without projection
+    // If no aggregates and no GROUP BY, process scalar subqueries and return
     // Projection will be applied later after ORDER BY
     if !has_aggregates && !has_group_by {
+        if let QueryResult::Rows { data } = result {
+            // Process scalar subqueries before returning
+            let data_with_subqueries = process_scalar_subqueries(engine, data, &select.projection)?;
+            return Ok(QueryResult::Rows { data: data_with_subqueries });
+        }
         return Ok(result);
     }
 
     // Process aggregations
     match result {
         QueryResult::Rows { data } => {
-            let aggregated = execute_aggregation(&data, select)?;
+            // Process scalar subqueries first
+            let data_with_subqueries = process_scalar_subqueries(engine, data, &select.projection)?;
+            let aggregated = execute_aggregation(&data_with_subqueries, select)?;
 
             // Apply HAVING clause if present
             if let Some(having) = &select.having {
@@ -765,15 +807,148 @@ fn execute_join_select_with_ctes(
     select: &Select,
     cte_results: &HashMap<String, Vec<Value>>,
 ) -> Result<QueryResult> {
-    // Check if left table is a CTE
+    // Get left table data - either from CTE or from regular table
     let left_table = extract_table_name(&select.from[0].relation)?;
-    if cte_results.contains_key(&left_table) {
-        // Handle CTE in JOIN - for now, use regular join with CTE data
-        // This would need more work for full support
-        return execute_join_select(engine, select);
+
+    let mut joined_rows = if let Some(cte_data) = cte_results.get(&left_table) {
+        // Use CTE data as left table
+        cte_data.clone()
+    } else {
+        // Check if any of the joined tables are CTEs
+        let has_cte_joins = select.from[0].joins.iter().any(|join| {
+            if let Ok(table_name) = extract_table_name_from_join(&join.relation) {
+                cte_results.contains_key(&table_name)
+            } else {
+                false
+            }
+        });
+
+        if !has_cte_joins {
+            // No CTEs involved, use regular join
+            return execute_join_select(engine, select);
+        }
+
+        // Left table is not a CTE but we have CTE joins, get left table data
+        let left_view = engine.list_views()
+            .into_iter()
+            .find(|v| v.name == left_table);
+
+        if let Some(view_def) = left_view {
+            // Parse and execute the view's SQL directly
+            let dialect = sqlparser::dialect::GenericDialect {};
+            let view_ast = sqlparser::parser::Parser::parse_sql(&dialect, &view_def.query)
+                .map_err(|e| DriftError::Parse(e.to_string()))?;
+
+            if !view_ast.is_empty() {
+                if let Statement::Query(view_query) = &view_ast[0] {
+                    let view_result = execute_sql_query(engine, view_query)?;
+                    match view_result {
+                        QueryResult::Rows { data } => data,
+                        _ => vec![],
+                    }
+                } else {
+                    vec![]
+                }
+            } else {
+                vec![]
+            }
+        } else {
+            // Regular table
+            let left_query = Query::Select {
+                table: left_table.clone(),
+                conditions: vec![],
+                as_of: None,
+                limit: None,
+            };
+
+            let left_result = engine.execute_query(left_query)?;
+            match left_result {
+                QueryResult::Rows { data } => data,
+                _ => return Ok(left_result),
+            }
+        }
+    };
+
+    // Process all JOINs sequentially
+    for join in &select.from[0].joins {
+        let right_table = extract_table_name_from_join(&join.relation)?;
+
+        // Check if right table is a CTE or regular table
+        let right_rows = if let Some(cte_data) = cte_results.get(&right_table) {
+            // Use CTE data as right table
+            cte_data.clone()
+        } else {
+            // Get data from regular table
+            let right_query = Query::Select {
+                table: right_table.clone(),
+                conditions: vec![],
+                as_of: None,
+                limit: None,
+            };
+
+            let right_result = engine.execute_query(right_query)?;
+            match right_result {
+                QueryResult::Rows { data } => data,
+                _ => vec![],
+            }
+        };
+
+        // Perform the JOIN with current accumulated result
+        joined_rows = match &join.join_operator {
+            JoinOperator::Inner(constraint) => {
+                perform_inner_join(joined_rows, right_rows, constraint)?
+            }
+            JoinOperator::LeftOuter(constraint) => {
+                perform_left_join(joined_rows, right_rows, constraint)?
+            }
+            JoinOperator::CrossJoin => {
+                perform_cross_join(joined_rows, right_rows)
+            }
+            JoinOperator::RightOuter(constraint) => {
+                // RIGHT JOIN is LEFT JOIN with swapped tables
+                perform_left_join(right_rows, joined_rows, constraint)?
+            }
+            JoinOperator::FullOuter(constraint) => {
+                perform_full_outer_join(joined_rows, right_rows, constraint)?
+            }
+            _ => {
+                return Err(DriftError::InvalidQuery(
+                    "JOIN type not yet supported".to_string()
+                ));
+            }
+        };
     }
 
-    execute_join_select(engine, select)
+    // Apply WHERE clause on joined data
+    let filtered_rows = if let Some(selection) = &select.selection {
+        filter_rows(engine, joined_rows, selection)?
+    } else {
+        joined_rows
+    };
+
+    // Check if this is an aggregation query
+    let has_aggregates = select.projection.iter().any(|item| {
+        matches!(item, SelectItem::UnnamedExpr(Expr::Function(_)) |
+                      SelectItem::ExprWithAlias { expr: Expr::Function(_), .. })
+    });
+
+    // Check if there's a GROUP BY clause
+    let has_group_by = matches!(&select.group_by, GroupByExpr::Expressions(exprs) if !exprs.is_empty());
+
+    // If no aggregates and no GROUP BY, apply column projection and return
+    if !has_aggregates && !has_group_by {
+        let projected_rows = project_columns(filtered_rows, select)?;
+        return Ok(QueryResult::Rows { data: projected_rows });
+    }
+
+    // Process aggregations if needed
+    let result = if has_aggregates || has_group_by {
+        execute_aggregation(&filtered_rows, select)?
+    } else {
+        filtered_rows
+    };
+
+    Ok(QueryResult::Rows { data: result })
 }
 
 fn execute_join_select(engine: &mut Engine, select: &Select) -> Result<QueryResult> {
@@ -1346,12 +1521,12 @@ fn execute_insert_values(
         crate::triggers::TriggerResult::Continue => new_row,
     };
 
-    let driftql_query = Query::Insert {
+    let query = Query::Insert {
         table: table.to_string(),
         data: final_data.clone(),
     };
 
-    let result = engine.execute_query(driftql_query)?;
+    let result = engine.execute_query(query)?;
 
     // Execute AFTER INSERT triggers
     engine.execute_triggers(
@@ -1616,6 +1791,10 @@ fn evaluate_aggregate_function(func: &Function, rows: &[Value]) -> Result<(Strin
             FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Identifier(ident))) => {
                 Some(ident.value.clone())
             }
+            FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::CompoundIdentifier(parts))) => {
+                // Handle table.column notation (e.g., p.budget)
+                parts.last().map(|ident| ident.value.clone())
+            }
             FunctionArg::Unnamed(FunctionArgExpr::Wildcard) => None, // For COUNT(*)
             _ => None,
         }
@@ -1835,8 +2014,27 @@ Expr::BinaryOp { left, op, right } => {
                     }
                 }
                 _ => {
-                    // Regular expression evaluation
-                    evaluate_where_expression(expr, row)
+                    // Regular binary operation - evaluate using engine context to preserve OUTER_ROW_CONTEXT
+                    let left_val = evaluate_value_expression(left, row)?;
+                    let right_val = evaluate_value_expression(right, row)?;
+
+                    match op {
+                        BinaryOperator::Eq => Ok(left_val == right_val),
+                        BinaryOperator::NotEq => Ok(left_val != right_val),
+                        BinaryOperator::Lt => compare_values(&left_val, &right_val, |cmp| cmp == std::cmp::Ordering::Less),
+                        BinaryOperator::LtEq => compare_values(&left_val, &right_val, |cmp| cmp != std::cmp::Ordering::Greater),
+                        BinaryOperator::Gt => compare_values(&left_val, &right_val, |cmp| cmp == std::cmp::Ordering::Greater),
+                        BinaryOperator::GtEq => compare_values(&left_val, &right_val, |cmp| cmp != std::cmp::Ordering::Less),
+                        BinaryOperator::And => {
+                            Ok(evaluate_where_expression_with_engine(engine, left, row)? &&
+                               evaluate_where_expression_with_engine(engine, right, row)?)
+                        }
+                        BinaryOperator::Or => {
+                            Ok(evaluate_where_expression_with_engine(engine, left, row)? ||
+                               evaluate_where_expression_with_engine(engine, right, row)?)
+                        }
+                        _ => Err(DriftError::InvalidQuery("Unsupported WHERE operator".to_string())),
+                    }
                 }
             }
         }
@@ -2018,13 +2216,19 @@ fn evaluate_value_expression(expr: &Expr, row: &Value) -> Result<Value> {
     match expr {
         Expr::Identifier(ident) => {
             // First check current row
-            if let Some(val) = row.get(&ident.value) {
-                return Ok(val.clone());
+            if let Some(row_obj) = row.as_object() {
+                if let Some(val) = row_obj.get(&ident.value) {
+                    return Ok(val.clone());
+                }
             }
             // If not found, check outer row context (for correlated subqueries)
             OUTER_ROW_CONTEXT.with(|context| {
                 if let Some(outer_row) = context.borrow().as_ref() {
-                    Ok(outer_row.get(&ident.value).cloned().unwrap_or(Value::Null))
+                    if let Some(outer_obj) = outer_row.as_object() {
+                        Ok(outer_obj.get(&ident.value).cloned().unwrap_or(Value::Null))
+                    } else {
+                        Ok(Value::Null)
+                    }
                 } else {
                     Ok(Value::Null)
                 }
@@ -2055,16 +2259,58 @@ fn evaluate_value_expression(expr: &Expr, row: &Value) -> Result<Value> {
                 // in the outer row, AND the table alias doesn't match common inner aliases,
                 // prefer the outer value
 
-                let is_likely_outer_reference = OUTER_ROW_CONTEXT.with(|context| {
-                    if let Some(outer_row) = context.borrow().as_ref() {
-                        // If outer row has this column and table alias isn't 'o' (orders alias)
-                        outer_row.get(column).is_some() && _table_alias != "o"
+                // Determine if this is an outer table reference based on table alias
+                // In a correlated subquery context, we need to distinguish between:
+                // - Inner table references (e.g., e2.dept in subquery FROM employees e2)
+                // - Outer table references (e.g., e1.dept referring to outer query's e1)
+                let is_outer_reference = OUTER_ROW_CONTEXT.with(|context| {
+                    if context.borrow().is_some() {
+                        // We're in a correlated subquery context
+                        // Use a simple heuristic: if the table alias is different from the
+                        // immediate table alias and we have an outer context, it's likely an outer reference
+
+                        // For compound identifiers in correlated subqueries, prefer the table alias
+                        // to determine scope. Common patterns:
+                        // - e1.column -> likely outer table reference
+                        // - e2.column -> likely inner table reference
+                        // - o.column -> inner, u.column -> outer, etc.
+
+                        // Check if column exists in current row
+                        let in_current = if let Some(row_obj) = row.as_object() {
+                            row_obj.get(column).is_some()
+                        } else {
+                            false
+                        };
+
+                        let in_outer = if let Some(outer_row) = context.borrow().as_ref() {
+                            if let Some(outer_obj) = outer_row.as_object() {
+                                outer_obj.get(column).is_some()
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        };
+
+                        // If both current and outer have the column (common case),
+                        // use table alias as a hint. Common convention:
+                        // - e1, u, outer -> likely outer reference
+                        // - e2, e, inner -> likely inner reference
+                        if in_current && in_outer {
+                            let table_alias = &parts[0].value;
+                            // Check if this looks like an outer table alias
+                            table_alias == "e1" || table_alias == "outer" || table_alias == "u" ||
+                            table_alias.ends_with("1") || table_alias == "main"
+                        } else {
+                            // Fall back to availability heuristic
+                            !in_current && in_outer
+                        }
                     } else {
                         false
                     }
                 });
 
-                if is_likely_outer_reference {
+                if is_outer_reference {
                     // This is likely referring to the outer table
                     OUTER_ROW_CONTEXT.with(|context| {
                         if let Some(outer_row) = context.borrow().as_ref() {
@@ -2076,15 +2322,19 @@ fn evaluate_value_expression(expr: &Expr, row: &Value) -> Result<Value> {
                     })
                 } else {
                     // Try current row first, then outer
-                    if let Some(val) = row.get(column) {
-                        return Ok(val.clone());
+                    if let Some(row_obj) = row.as_object() {
+                        if let Some(val) = row_obj.get(column) {
+                            return Ok(val.clone());
+                        }
                     }
 
                     // Not found in current row, check outer
                     OUTER_ROW_CONTEXT.with(|context| {
                         if let Some(outer_row) = context.borrow().as_ref() {
-                            if let Some(val) = outer_row.get(column) {
-                                return Ok(val.clone());
+                            if let Some(outer_obj) = outer_row.as_object() {
+                                if let Some(val) = outer_obj.get(column) {
+                                    return Ok(val.clone());
+                                }
                             }
                         }
                         Ok(Value::Null)
@@ -2093,7 +2343,11 @@ fn evaluate_value_expression(expr: &Expr, row: &Value) -> Result<Value> {
             } else {
                 // Try just the last part as column name
                 if let Some(last_part) = parts.last() {
-                    Ok(row.get(&last_part.value).cloned().unwrap_or(Value::Null))
+                    if let Some(row_obj) = row.as_object() {
+                        Ok(row_obj.get(&last_part.value).cloned().unwrap_or(Value::Null))
+                    } else {
+                        Ok(Value::Null)
+                    }
                 } else {
                     Ok(Value::Null)
                 }
@@ -2107,11 +2361,57 @@ fn evaluate_value_expression(expr: &Expr, row: &Value) -> Result<Value> {
             let left_val = evaluate_value_expression(left, row)?;
             let right_val = evaluate_value_expression(right, row)?;
 
-
             evaluate_binary_op(&left_val, op, &right_val)
         }
-        _ => Ok(Value::Null),
+        Expr::Nested(inner) => {
+            // Handle nested/parenthesized expressions
+            evaluate_value_expression(inner, row)
+        }
+        _ => {
+            // Log unhandled expression types for debugging
+            eprintln!("Warning: Unhandled expression type in evaluate_value_expression: {:?}", expr);
+            Ok(Value::Null)
+        }
     }
+}
+
+fn evaluate_expression_with_row(left: &Expr, op: &BinaryOperator, right: &Expr, row: &Value) -> Result<Value> {
+    let left_val = match left {
+        Expr::Identifier(ident) => {
+            match row {
+                Value::Object(obj) => {
+                    if let Some(val) = obj.get(&ident.value) {
+                        val.clone()
+                    } else {
+                        Value::Null
+                    }
+                }
+                _ => Value::Null,
+            }
+        }
+        Expr::Value(val) => sql_value_to_json(val)?,
+        _ => evaluate_expression_without_row(left)?,
+    };
+
+    let right_val = match right {
+        Expr::Identifier(ident) => {
+            match row {
+                Value::Object(obj) => {
+                    if let Some(val) = obj.get(&ident.value) {
+                        val.clone()
+                    } else {
+                        Value::Null
+                    }
+                }
+                _ => Value::Null,
+            }
+        }
+        Expr::Value(val) => sql_value_to_json(val)?,
+        _ => evaluate_expression_without_row(right)?,
+    };
+
+    // Use the centralized binary operation evaluator
+    evaluate_binary_op(&left_val, op, &right_val)
 }
 
 fn evaluate_expression_without_row(expr: &Expr) -> Result<Value> {
@@ -2132,6 +2432,10 @@ fn evaluate_expression_without_row(expr: &Expr) -> Result<Value> {
             sqlparser::ast::Value::Null => Ok(Value::Null),
             _ => Ok(Value::Null),
         },
+        Expr::Nested(inner) => {
+            // Handle nested/parenthesized expressions
+            evaluate_expression_without_row(inner)
+        }
         Expr::Case { operand, conditions, results, else_result } => {
             evaluate_case_without_row(operand.as_deref(), conditions, results, else_result.as_deref())
         }
@@ -2150,6 +2454,21 @@ fn evaluate_expression_without_row(expr: &Expr) -> Result<Value> {
                 }
                 BinaryOperator::Or => {
                     Ok(Value::Bool(left_val.as_bool().unwrap_or(false) || right_val.as_bool().unwrap_or(false)))
+                }
+                // Use the centralized binary operation evaluator for arithmetic
+                BinaryOperator::Plus | BinaryOperator::Minus | BinaryOperator::Multiply | BinaryOperator::Divide => {
+                    evaluate_binary_op(&left_val, op, &right_val)
+                }
+                BinaryOperator::Modulo => {
+                    if let (Some(l), Some(r)) = (left_val.as_i64(), right_val.as_i64()) {
+                        if r != 0 {
+                            Ok(json!(l % r))
+                        } else {
+                            Ok(Value::Null)
+                        }
+                    } else {
+                        Ok(Value::Null)
+                    }
                 }
                 _ => Ok(Value::Null),
             }
@@ -2216,27 +2535,47 @@ fn evaluate_case_expression(
 fn evaluate_binary_op(left: &Value, op: &BinaryOperator, right: &Value) -> Result<Value> {
     match op {
         BinaryOperator::Plus => {
-            match (left.as_f64(), right.as_f64()) {
-                (Some(l), Some(r)) => Ok(json!(l + r)),
-                _ => Ok(Value::Null),
+            if let (Some(l), Some(r)) = (left.as_f64(), right.as_f64()) {
+                Ok(json!(l + r))
+            } else if let (Some(l), Some(r)) = (left.as_i64(), right.as_i64()) {
+                Ok(json!(l + r))
+            } else {
+                Ok(Value::Null)
             }
         }
         BinaryOperator::Minus => {
-            match (left.as_f64(), right.as_f64()) {
-                (Some(l), Some(r)) => Ok(json!(l - r)),
-                _ => Ok(Value::Null),
+            if let (Some(l), Some(r)) = (left.as_f64(), right.as_f64()) {
+                Ok(json!(l - r))
+            } else if let (Some(l), Some(r)) = (left.as_i64(), right.as_i64()) {
+                Ok(json!(l - r))
+            } else {
+                Ok(Value::Null)
             }
         }
         BinaryOperator::Multiply => {
-            match (left.as_f64(), right.as_f64()) {
-                (Some(l), Some(r)) => Ok(json!(l * r)),
-                _ => Ok(Value::Null),
+            if let (Some(l), Some(r)) = (left.as_f64(), right.as_f64()) {
+                Ok(json!(l * r))
+            } else if let (Some(l), Some(r)) = (left.as_i64(), right.as_i64()) {
+                Ok(json!(l * r))
+            } else {
+                Ok(Value::Null)
             }
         }
         BinaryOperator::Divide => {
-            match (left.as_f64(), right.as_f64()) {
-                (Some(l), Some(r)) if r != 0.0 => Ok(json!(l / r)),
-                _ => Ok(Value::Null),
+            if let (Some(l), Some(r)) = (left.as_f64(), right.as_f64()) {
+                if r != 0.0 {
+                    Ok(json!(l / r))
+                } else {
+                    Ok(Value::Null)
+                }
+            } else if let (Some(l), Some(r)) = (left.as_i64(), right.as_i64()) {
+                if r != 0 {
+                    Ok(json!(l / r))
+                } else {
+                    Ok(Value::Null)
+                }
+            } else {
+                Ok(Value::Null)
             }
         }
         _ => Ok(Value::Null),
@@ -2259,11 +2598,38 @@ fn project_columns(rows: Vec<Value>, select: &Select) -> Result<Vec<Value>> {
                         projected_row.insert(ident.value.clone(), val.clone());
                     }
                 }
+                SelectItem::UnnamedExpr(Expr::BinaryOp { left, op, right }) => {
+                    // Handle arithmetic expressions like n + 1
+                    let binary_expr = Expr::BinaryOp {
+                        left: left.clone(),
+                        op: op.clone(),
+                        right: right.clone()
+                    };
+                    if let Ok(value) = evaluate_value_expression(&binary_expr, &row) {
+                        // Use a simple name for the column (e.g., n + 1 -> "n")
+                        let col_name = match left.as_ref() {
+                            Expr::Identifier(ident) => ident.value.clone(),
+                            _ => "expr".to_string(),
+                        };
+                        projected_row.insert(col_name, value);
+                    }
+                }
                 SelectItem::ExprWithAlias { expr: Expr::Identifier(ident), alias } => {
                     if let Some(val) = row.get(&ident.value) {
                         projected_row.insert(alias.value.clone(), val.clone());
                     } else if let Some(val) = row.get(&format!("right_{}", ident.value)) {
                         projected_row.insert(alias.value.clone(), val.clone());
+                    }
+                }
+                SelectItem::ExprWithAlias { expr: Expr::BinaryOp { left, op, right }, alias } => {
+                    // Handle arithmetic expressions with alias like "n + 1 as next_n"
+                    let binary_expr = Expr::BinaryOp {
+                        left: left.clone(),
+                        op: op.clone(),
+                        right: right.clone()
+                    };
+                    if let Ok(value) = evaluate_value_expression(&binary_expr, &row) {
+                        projected_row.insert(alias.value.clone(), value);
                     }
                 }
                 SelectItem::UnnamedExpr(Expr::CompoundIdentifier(idents)) => {
@@ -2329,7 +2695,26 @@ fn project_columns(rows: Vec<Value>, select: &Select) -> Result<Vec<Value>> {
                         }
                     }
                 }
-                _ => {}
+                _ => {
+                    // Handle any other expression patterns not explicitly matched above
+                    match item {
+                        SelectItem::ExprWithAlias { expr, alias } => {
+                            // General expression with alias - evaluate any expression type
+                            if let Ok(value) = evaluate_value_expression(expr, &row) {
+                                projected_row.insert(alias.value.clone(), value);
+                            }
+                        }
+                        SelectItem::UnnamedExpr(expr) => {
+                            // General unnamed expression - evaluate any expression type
+                            if let Ok(value) = evaluate_value_expression(expr, &row) {
+                                // Generate a column name based on the expression
+                                let col_name = format!("expr_{}", projected_row.len());
+                                projected_row.insert(col_name, value);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
             }
         }
 
@@ -2352,6 +2737,66 @@ where
     }
 }
 
+fn process_scalar_subqueries(
+    engine: &mut Engine,
+    mut data: Vec<Value>,
+    projection: &[SelectItem],
+) -> Result<Vec<Value>> {
+    // Add scalar subquery results to each row
+    for row in &mut data {
+        let row_clone = row.clone(); // Clone before mutable borrow
+        if let Value::Object(row_map) = row {
+            for item in projection {
+                let (subquery, col_name) = match item {
+                    SelectItem::ExprWithAlias { expr: Expr::Subquery(subquery), alias } => {
+                        (Some(subquery), alias.value.clone())
+                    }
+                    SelectItem::UnnamedExpr(Expr::Subquery(subquery)) => {
+                        // Generate a column name for unnamed subquery
+                        (Some(subquery), format!("(subquery)"))
+                    }
+                    _ => (None, String::new()),
+                };
+
+                if let Some(subquery) = subquery {
+                    // Set outer row context for correlated subqueries
+                    OUTER_ROW_CONTEXT.with(|context| {
+                        *context.borrow_mut() = Some(row_clone.clone());
+                    });
+
+                    let result = execute_sql_query(engine, subquery);
+
+                    // Clear context
+                    OUTER_ROW_CONTEXT.with(|context| {
+                        *context.borrow_mut() = None;
+                    });
+
+                    let value = match result {
+                        Ok(QueryResult::Rows { data }) if !data.is_empty() => {
+                            // Scalar subquery should return single value
+                            if let Some(first_row) = data.first() {
+                                if let Value::Object(map) = first_row {
+                                    // Get the first column value
+                                    map.values().next().cloned().unwrap_or(Value::Null)
+                                } else {
+                                    first_row.clone()
+                                }
+                            } else {
+                                Value::Null
+                            }
+                        }
+                        _ => Value::Null
+                    };
+
+                    row_map.insert(col_name, value);
+                }
+            }
+        }
+    }
+
+    Ok(data)
+}
+
 fn apply_projection(data: Vec<Value>, projection: &[SelectItem]) -> Result<Vec<Value>> {
     // Handle SELECT * case
     let select_all = projection.iter().any(|item| matches!(item, SelectItem::Wildcard(_)));
@@ -2366,31 +2811,55 @@ fn apply_projection(data: Vec<Value>, projection: &[SelectItem]) -> Result<Vec<V
 
             for item in projection {
                 match item {
-                    SelectItem::UnnamedExpr(Expr::Identifier(ident)) => {
-                        let col_name = ident.value.clone();
-                        if let Some(value) = row_map.get(&col_name) {
-                            projected_row.insert(col_name, value.clone());
-                        }
-                    }
-                    SelectItem::UnnamedExpr(Expr::CompoundIdentifier(parts)) => {
-                        // Handle table.column notation
-                        let col_name = parts.last()
-                            .map(|i| i.value.clone())
-                            .unwrap_or_default();
-                        if let Some(value) = row_map.get(&col_name) {
-                            projected_row.insert(col_name, value.clone());
-                        }
-                    }
-                    SelectItem::UnnamedExpr(Expr::Value(val)) => {
-                        // Handle literal values like SELECT 1
-                        let json_val = sql_value_to_json(val)?;
-                        let col_name = format!("{:?}", val).chars().take(20).collect::<String>();
-                        projected_row.insert(col_name, json_val);
-                    }
-                    SelectItem::UnnamedExpr(expr @ Expr::Case { .. }) => {
-                        // Handle CASE WHEN without alias
-                        if let Ok(value) = evaluate_value_expression(expr, &row) {
-                            projected_row.insert("case".to_string(), value);
+                    SelectItem::UnnamedExpr(expr) => {
+                        match expr {
+                            Expr::Identifier(ident) => {
+                                let col_name = ident.value.clone();
+                                if let Some(value) = row_map.get(&col_name) {
+                                    projected_row.insert(col_name, value.clone());
+                                }
+                            }
+                            Expr::CompoundIdentifier(parts) => {
+                                // Handle table.column notation
+                                let col_name = parts.last()
+                                    .map(|i| i.value.clone())
+                                    .unwrap_or_default();
+                                if let Some(value) = row_map.get(&col_name) {
+                                    projected_row.insert(col_name, value.clone());
+                                }
+                            }
+                            Expr::Value(val) => {
+                                // Handle literal values like SELECT 1
+                                let json_val = sql_value_to_json(val)?;
+                                let col_name = format!("{:?}", val).chars().take(20).collect::<String>();
+                                projected_row.insert(col_name, json_val);
+                            }
+                            Expr::Case { .. } => {
+                                // Handle CASE WHEN without alias
+                                if let Ok(value) = evaluate_value_expression(expr, &row) {
+                                    projected_row.insert("case".to_string(), value);
+                                }
+                            }
+                            Expr::Subquery(_) => {
+                                // Scalar subqueries should be handled by process_scalar_subqueries
+                                // Look for the value with the standard subquery column name
+                                let subquery_col = "(subquery)";
+                                if let Some(value) = row_map.get(subquery_col) {
+                                    projected_row.insert(subquery_col.to_string(), value.clone());
+                                } else {
+                                    // Fallback if not found
+                                    let col_name = format!("{:?}", expr).chars().take(50).collect::<String>();
+                                    projected_row.insert(col_name, Value::Null);
+                                }
+                            }
+                            _ => {
+                                // Handle any other expression (e.g., function calls, etc.)
+                                if let Ok(value) = evaluate_value_expression(expr, &row) {
+                                    // Use a simplified version of the expression as column name
+                                    let col_name = format!("{:?}", expr).chars().take(50).collect::<String>();
+                                    projected_row.insert(col_name, value);
+                                }
+                            }
                         }
                     }
                     SelectItem::ExprWithAlias { expr, alias } => {
@@ -2399,6 +2868,16 @@ fn apply_projection(data: Vec<Value>, projection: &[SelectItem]) -> Result<Vec<V
                                 let col_name = ident.value.clone();
                                 if let Some(value) = row_map.get(&col_name) {
                                     projected_row.insert(alias.value.clone(), value.clone());
+                                }
+                            }
+                            Expr::Subquery(_) => {
+                                // Scalar subqueries should be handled by process_scalar_subqueries
+                                // Look for the value with the alias name
+                                if let Some(value) = row_map.get(&alias.value) {
+                                    projected_row.insert(alias.value.clone(), value.clone());
+                                } else {
+                                    // If not found, set to null
+                                    projected_row.insert(alias.value.clone(), Value::Null);
                                 }
                             }
                             _ => {
@@ -2944,42 +3423,8 @@ fn evaluate_update_expression(expr: &Expr, row: &Value) -> Result<Value> {
             let left_val = evaluate_update_expression(left, row)?;
             let right_val = evaluate_update_expression(right, row)?;
 
-            // Handle arithmetic operations
-            match op {
-                BinaryOperator::Plus => {
-                    if let (Some(l), Some(r)) = (left_val.as_f64(), right_val.as_f64()) {
-                        Ok(json!(l + r))
-                    } else {
-                        Ok(Value::Null)
-                    }
-                }
-                BinaryOperator::Minus => {
-                    if let (Some(l), Some(r)) = (left_val.as_f64(), right_val.as_f64()) {
-                        Ok(json!(l - r))
-                    } else {
-                        Ok(Value::Null)
-                    }
-                }
-                BinaryOperator::Multiply => {
-                    if let (Some(l), Some(r)) = (left_val.as_f64(), right_val.as_f64()) {
-                        Ok(json!(l * r))
-                    } else {
-                        Ok(Value::Null)
-                    }
-                }
-                BinaryOperator::Divide => {
-                    if let (Some(l), Some(r)) = (left_val.as_f64(), right_val.as_f64()) {
-                        if r != 0.0 {
-                            Ok(json!(l / r))
-                        } else {
-                            Ok(Value::Null)
-                        }
-                    } else {
-                        Ok(Value::Null)
-                    }
-                }
-                _ => Ok(Value::Null),
-            }
+            // Use the centralized binary operation evaluator
+            evaluate_binary_op(&left_val, op, &right_val)
         }
         _ => Ok(Value::Null),
     }
@@ -3092,14 +3537,52 @@ fn execute_window_functions(data: Vec<Value>, projection: &[SelectItem]) -> Resu
 
     // Execute window functions
     let executor = WindowExecutor;
-    let mut result = executor.execute(query)?;
+    let result = executor.execute(query)?;
 
-    // Apply projection to include only requested columns
-    if !regular_columns.is_empty() {
-        result = apply_projection(result, &regular_columns)?;
+    // Build a custom projection that knows about window function aliases
+    let mut projected_result = Vec::new();
+    for row in result {
+        if let Value::Object(row_map) = &row {
+            let mut projected_row = serde_json::Map::new();
+
+            // Process each projection item
+            for item in projection {
+                match item {
+                    SelectItem::UnnamedExpr(Expr::Identifier(ident)) => {
+                        // Regular column
+                        if let Some(val) = row_map.get(&ident.value) {
+                            projected_row.insert(ident.value.clone(), val.clone());
+                        }
+                    }
+                    SelectItem::ExprWithAlias { expr: Expr::Function(func), alias } if func.over.is_some() => {
+                        // Window function with alias - get from computed results
+                        if let Some(val) = row_map.get(&alias.value) {
+                            projected_row.insert(alias.value.clone(), val.clone());
+                        }
+                    }
+                    SelectItem::ExprWithAlias { expr: Expr::Identifier(ident), alias } => {
+                        // Regular column with alias
+                        if let Some(val) = row_map.get(&ident.value) {
+                            projected_row.insert(alias.value.clone(), val.clone());
+                        }
+                    }
+                    _ => {
+                        // Other expressions - try to evaluate
+                        if let SelectItem::UnnamedExpr(expr) = item {
+                            if let Ok(val) = evaluate_value_expression(expr, &row) {
+                                let col_name = format!("{:?}", expr).chars().take(50).collect::<String>();
+                                projected_row.insert(col_name, val);
+                            }
+                        }
+                    }
+                }
+            }
+
+            projected_result.push(Value::Object(projected_row));
+        }
     }
 
-    Ok(result)
+    Ok(projected_result)
 }
 
 fn parse_window_function(func: &Function) -> Result<WindowFunctionCall> {

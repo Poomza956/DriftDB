@@ -281,39 +281,6 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_driftql_parser() -> Result<()> {
-        use crate::query::{parse_driftql, Query};
-
-        let create_query = parse_driftql("CREATE TABLE users (pk=id, INDEX(email, status))")?;
-        if let Query::CreateTable { name, primary_key, indexed_columns } = create_query {
-            assert_eq!(name, "users");
-            assert_eq!(primary_key, "id");
-            assert_eq!(indexed_columns, vec!["email", "status"]);
-        } else {
-            panic!("Expected CreateTable query");
-        }
-
-        let insert_query = parse_driftql(r#"INSERT INTO users {"id": "user1", "email": "test@example.com"}"#)?;
-        if let Query::Insert { table, data } = insert_query {
-            assert_eq!(table, "users");
-            assert_eq!(data["id"], "user1");
-        } else {
-            panic!("Expected Insert query");
-        }
-
-        let select_query = parse_driftql("SELECT * FROM users WHERE status=\"active\" LIMIT 10")?;
-        if let Query::Select { table, conditions, limit, .. } = select_query {
-            assert_eq!(table, "users");
-            assert_eq!(conditions.len(), 1);
-            assert_eq!(conditions[0].column, "status");
-            assert_eq!(limit, Some(10));
-        } else {
-            panic!("Expected Select query");
-        }
-
-        Ok(())
-    }
 
     #[test]
     fn test_engine_end_to_end() -> Result<()> {

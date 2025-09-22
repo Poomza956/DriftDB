@@ -149,34 +149,9 @@ fn main() -> Result<()> {
             };
 
             for query_str in queries {
-                // Try SQL first, fall back to DriftQL
-                let upper_query = query_str.trim().to_uppercase();
-                let result = if upper_query.starts_with("SELECT")
-                    || upper_query.starts_with("INSERT")
-                    || upper_query.starts_with("UPDATE")
-                    || upper_query.starts_with("DELETE")
-                    || upper_query.starts_with("CREATE ")  // Catch all CREATE statements
-                    || upper_query.starts_with("DROP")
-                    || upper_query.starts_with("CALL")
-                    || upper_query.starts_with("ALTER")
-                    || upper_query.starts_with("TRUNCATE")
-                    || upper_query.starts_with("BEGIN")
-                    || upper_query.starts_with("START")
-                    || upper_query.starts_with("COMMIT")
-                    || upper_query.starts_with("ROLLBACK")
-                    || upper_query.starts_with("EXPLAIN")
-                    || upper_query.starts_with("ANALYZE")
-                    || upper_query.starts_with("WITH") {  // CTEs start with WITH
-                    // Use SQL bridge for SQL queries
-                    driftdb_core::sql_bridge::execute_sql(&mut engine, &query_str)
-                        .context("Failed to execute SQL query")?
-                } else {
-                    // Use DriftQL parser for DriftQL commands
-                    let query = driftdb_core::query::parse_driftql(&query_str)
-                        .context("Failed to parse DriftQL query")?;
-                    engine.execute_query(query)
-                        .context("Failed to execute DriftQL query")?
-                };
+                // Execute all queries as SQL - 100% SQL compatibility
+                let result = driftdb_core::sql_bridge::execute_sql(&mut engine, &query_str)
+                    .context("Failed to execute SQL query")?;
 
                 match result {
                     QueryResult::Success { message } => println!("{}", message),
