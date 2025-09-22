@@ -6,7 +6,7 @@ use sha2::{Sha256, Digest};
 use rand::{RngCore, thread_rng};
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tracing::{warn, info, debug};
+use tracing::{warn, info};
 use serde::{Serialize, Deserialize};
 use anyhow::{Result, anyhow};
 

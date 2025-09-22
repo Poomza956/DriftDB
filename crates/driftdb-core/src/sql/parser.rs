@@ -2,7 +2,6 @@
 //!
 //! Extends standard SQL parser to support temporal table syntax
 
-use sqlparser::ast::{Statement, Query, TableFactor, TableWithJoins};
 use sqlparser::dialect::GenericDialect;
 use sqlparser::parser::Parser;
 
@@ -26,7 +25,7 @@ impl TemporalSqlParser {
         let (base_sql, system_time) = self.extract_temporal_clause(sql)?;
 
         // Parse the base SQL
-        let mut parser = Parser::parse_sql(&self.dialect, &base_sql)
+        let parser = Parser::parse_sql(&self.dialect, &base_sql)
             .map_err(|e| DriftError::InvalidQuery(format!("SQL parse error: {}", e)))?;
 
         if parser.is_empty() {

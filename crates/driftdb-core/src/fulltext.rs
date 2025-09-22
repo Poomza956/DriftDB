@@ -9,14 +9,13 @@
 //! - Stemming and stop word filtering
 //! - Search result ranking and highlighting
 
-use std::collections::{HashMap, HashSet, BTreeMap};
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::SystemTime;
 
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, info, trace};
 
 use crate::errors::{DriftError, Result};
 

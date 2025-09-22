@@ -1,8 +1,7 @@
-use std::collections::HashMap;
 use tempfile::TempDir;
 use serde_json::json;
 
-use driftdb_core::{Engine, Query, QueryResult, Event, EventType};
+use driftdb_core::{Engine, Query, QueryResult};
 
 #[test]
 fn test_query_execution_returns_data() {

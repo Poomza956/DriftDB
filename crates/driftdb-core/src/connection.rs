@@ -21,7 +21,7 @@ use tracing::{debug, info, instrument};
 use crate::errors::{DriftError, Result};
 use crate::observability::Metrics;
 use crate::transaction::{TransactionManager, IsolationLevel};
-use crate::Engine;
+use crate::engine::Engine;
 
 /// Connection pool configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]

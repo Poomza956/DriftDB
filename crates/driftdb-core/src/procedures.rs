@@ -10,7 +10,7 @@
 //! - Transaction control within procedures
 //! - Dynamic SQL execution
 
-use std::collections::{HashMap, BTreeMap};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, Duration};
 
@@ -20,7 +20,6 @@ use serde_json::{Value, json};
 use tracing::{debug, info, warn, error, trace};
 
 use crate::errors::{DriftError, Result};
-use crate::query::{Query, QueryResult};
 
 /// Stored procedure definition
 #[derive(Debug, Clone, Serialize, Deserialize)]

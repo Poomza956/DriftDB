@@ -399,7 +399,7 @@ fn execute_query_with_ctes(
             }
 
             // Execute the base query (with or without JOINs)
-            let mut result = if select.from[0].joins.is_empty() {
+            let result = if select.from[0].joins.is_empty() {
                 execute_simple_select_with_ctes(engine, select, cte_results)?
             } else {
                 execute_join_select_with_ctes(engine, select, cte_results)?
@@ -3162,7 +3162,7 @@ fn execute_create_table(
     for column in columns {
         let col_name = column.name.value.clone();
         let col_type = column.data_type.to_string();
-        let mut is_index = false;
+        let is_index = false;
 
         // Check for PRIMARY KEY in column options
         for option in &column.options {
@@ -3242,7 +3242,7 @@ fn execute_create_table(
     }
 
     // Extract indexed columns from constraints
-    let mut indexed_cols = extract_indexes_from_constraints(constraints);
+    let indexed_cols = extract_indexes_from_constraints(constraints);
 
     // Mark indexed columns in drift_columns
     for col in drift_columns.iter_mut() {

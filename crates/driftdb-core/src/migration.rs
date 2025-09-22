@@ -283,7 +283,7 @@ impl MigrationManager {
 
     /// Apply a migration with Engine
     #[instrument(skip(self, engine))]
-    pub fn apply_migration_with_engine(&mut self, version: &Version, engine: &mut crate::Engine, dry_run: bool) -> Result<()> {
+    pub fn apply_migration_with_engine(&mut self, version: &Version, engine: &mut crate::engine::Engine, dry_run: bool) -> Result<()> {
         // Check if already applied
         if self.history.contains_key(version) {
             info!("Migration {} already applied, skipping", version);
@@ -388,7 +388,7 @@ impl MigrationManager {
     }
 
     /// Execute the actual migration using the Engine
-    pub fn execute_migration_with_engine(&self, migration: &Migration, engine: &mut crate::Engine) -> Result<()> {
+    pub fn execute_migration_with_engine(&self, migration: &Migration, engine: &mut crate::engine::Engine) -> Result<()> {
         // Begin a transaction for the migration
         let txn_id = engine.begin_migration_transaction()?;
 

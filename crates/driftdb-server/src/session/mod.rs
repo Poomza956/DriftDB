@@ -8,11 +8,10 @@ use anyhow::{Result, anyhow};
 use bytes::BytesMut;
 use tokio::net::TcpStream;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 use serde_json::Value;
 
-use driftdb_core::{Engine, EnginePool, EngineGuard, RateLimitManager};
+use driftdb_core::{EnginePool, EngineGuard, RateLimitManager};
 use crate::protocol::{self, Message, TransactionStatus};
 use crate::executor::QueryExecutor;
 
@@ -445,11 +444,12 @@ impl Session {
 
         // Find password
         let password_pos = parts.iter().position(|&x| x.to_uppercase() == "PASSWORD");
-        if password_pos.is_none() || password_pos.unwrap() + 1 >= parts.len() {
-            return Err(anyhow!("Password required for CREATE USER"));
-        }
+        let password_idx = match password_pos {
+            Some(idx) if idx + 1 < parts.len() => idx + 1,
+            _ => return Err(anyhow!("Password required for CREATE USER")),
+        };
 
-        let password = parts[password_pos.unwrap() + 1].trim_matches('\'').trim_matches('"');
+        let password = parts[password_idx].trim_matches('\'').trim_matches('"');
 
         // Check for SUPERUSER flag
         let is_superuser = sql.to_uppercase().contains("SUPERUSER");
@@ -506,11 +506,12 @@ impl Session {
         }
 
         let password_pos = parts.iter().position(|&x| x.to_uppercase() == "PASSWORD");
-        if password_pos.is_none() || password_pos.unwrap() + 1 >= parts.len() {
-            return Err(anyhow!("Password required"));
-        }
+        let password_idx = match password_pos {
+            Some(idx) if idx + 1 < parts.len() => idx + 1,
+            _ => return Err(anyhow!("Password required")),
+        };
 
-        let new_password = parts[password_pos.unwrap() + 1].trim_matches('\'').trim_matches('"');
+        let new_password = parts[password_idx].trim_matches('\'').trim_matches('"');
         protocol::auth::validate_password(new_password)?;
 
         self.auth_db.change_password(target_username, new_password)?;

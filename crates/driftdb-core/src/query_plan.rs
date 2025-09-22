@@ -1,4 +1,4 @@
-use crate::{DriftError, Result};
+use crate::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fmt;

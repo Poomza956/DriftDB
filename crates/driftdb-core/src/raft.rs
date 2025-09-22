@@ -8,13 +8,13 @@
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot};
-use tokio::time::{interval, timeout};
-use tracing::{debug, error, info, warn, instrument};
+use tokio::time::interval;
+use tracing::{debug, info, instrument};
 use rand::Rng;
 
 use crate::errors::{DriftError, Result};
@@ -726,7 +726,7 @@ impl RaftNodeInner {
         }
 
         // Update follower progress if we're leader
-        if let Some(mut leader) = self.leader_state.write().as_mut() {
+        if let Some(leader) = self.leader_state.write().as_mut() {
             if success {
                 // Update match and next index
                 leader.match_index.insert(from.clone(), match_index);

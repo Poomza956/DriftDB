@@ -17,7 +17,7 @@ use std::fs;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use crate::errors::{DriftError, Result};
 
@@ -170,7 +170,7 @@ impl BPlusTreeIndex {
         }
     }
 
-    fn split_root(&self, mut root_guard: parking_lot::lock_api::RwLockWriteGuard<parking_lot::RawRwLock, Option<BPlusNode>>) {
+    fn split_root(&self, root_guard: parking_lot::lock_api::RwLockWriteGuard<parking_lot::RawRwLock, Option<BPlusNode>>) {
         // Implementation would split the root and create new internal node
         // This is simplified for brevity
         debug!("Splitting B+ tree root");

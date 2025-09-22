@@ -8,14 +8,14 @@
 //! - PERCENT_RANK(), CUME_DIST(), NTILE()
 //! - Custom window frame specifications (ROWS/RANGE)
 
-use std::collections::{HashMap, BTreeMap};
+use std::collections::HashMap;
 use std::cmp::Ordering;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, Number};
 use tracing::{debug, trace};
 
-use crate::errors::{DriftError, Result};
+use crate::errors::Result;
 
 /// A serializable wrapper for partition keys that can be used in HashMap
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

@@ -162,7 +162,7 @@ impl BackupManager {
 
         // Track what we're backing up
         let mut table_infos = Vec::new();
-        let mut global_start_seq = since_sequence + 1;
+        let global_start_seq = since_sequence + 1;
         let mut global_end_seq = since_sequence;
 
         // For each table, find segments that have sequences > since_sequence

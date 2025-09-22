@@ -8,20 +8,20 @@
 //! - Estimate query costs and resource usage
 //! - Adaptive query execution with runtime feedback
 
-use std::collections::{HashMap, HashSet, BTreeMap};
+use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{SystemTime, Duration};
+use std::time::SystemTime;
 
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, info, trace};
 
 use crate::errors::{DriftError, Result};
 use crate::optimizer::{TableStatistics, ColumnStatistics, IndexStatistics};
-use crate::stats::{DatabaseStatistics, QueryExecution};
+use crate::stats::QueryExecution;
 use crate::query::{WhereCondition, AsOf};
-use crate::parallel::{JoinType, ParallelConfig};
+use crate::parallel::JoinType;
 
 /// Query optimization configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]

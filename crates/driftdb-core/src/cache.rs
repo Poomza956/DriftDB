@@ -7,7 +7,6 @@
 //! - Query fingerprinting for cache keys
 //! - Cache statistics and monitoring
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use std::hash::{Hash, Hasher};

@@ -8,16 +8,16 @@
 //! - System resource utilization
 //! - Automatic statistics maintenance
 
-use std::collections::{HashMap, BTreeMap};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, Duration};
 
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, info, trace};
 
-use crate::errors::{DriftError, Result};
+use crate::errors::Result;
 use crate::optimizer::{TableStatistics, ColumnStatistics, IndexStatistics, Histogram, HistogramBucket};
 
 /// Statistics collection configuration

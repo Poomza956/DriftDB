@@ -17,7 +17,7 @@ use crate::constraints::ConstraintManager;
 use crate::sequences::SequenceManager;
 use crate::views::{ViewManager, ViewDefinition, ViewBuilder};
 use crate::fulltext::{SearchManager, SearchConfig, SearchQuery, SearchResults};
-use crate::triggers::{TriggerManager, TriggerDefinition, TriggerBuilder};
+use crate::triggers::{TriggerManager, TriggerDefinition};
 use crate::procedures::{ProcedureManager, ProcedureDefinition, ProcedureResult};
 use crate::stats::{StatisticsManager, StatsConfig, DatabaseStatistics, QueryExecution};
 
@@ -57,7 +57,7 @@ impl Engine {
             tables: HashMap::new(),
             indexes: HashMap::new(),
             snapshots: HashMap::new(),
-            transaction_manager: Arc::new(RwLock::new(TransactionManager::new())),
+            transaction_manager: Arc::new(RwLock::new(TransactionManager::new()?)),
             constraint_manager: Arc::new(RwLock::new(ConstraintManager::new())),
             view_manager: Arc::new(ViewManager::new()),
             search_manager: Arc::new(SearchManager::new()),
@@ -97,7 +97,7 @@ impl Engine {
             tables: HashMap::new(),
             indexes: HashMap::new(),
             snapshots: HashMap::new(),
-            transaction_manager: Arc::new(RwLock::new(TransactionManager::new())),
+            transaction_manager: Arc::new(RwLock::new(TransactionManager::new()?)),
             constraint_manager: Arc::new(RwLock::new(ConstraintManager::new())),
             sequence_manager: Arc::new(SequenceManager::new()),
             view_manager: Arc::new(ViewManager::new()),
@@ -957,7 +957,7 @@ impl Engine {
 
         // Validate constraints and apply defaults
         {
-            let mut constraint_mgr = self.constraint_manager.write();
+            let constraint_mgr = self.constraint_manager.write();
             constraint_mgr.validate_insert(schema, &mut record, self)
                 .map_err(|e| DriftError::Other(format!("Constraint violation: {}", e)))?;
         }

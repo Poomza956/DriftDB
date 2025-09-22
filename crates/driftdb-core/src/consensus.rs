@@ -1,12 +1,11 @@
 use crate::{DriftError, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
-use async_trait::async_trait;
-use tokio::time::{interval, sleep};
-use tracing::{debug, error, info, warn, instrument};
+use tokio::sync::Mutex;
+use tokio::time::sleep;
+use tracing::{info, warn};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConsensusConfig {

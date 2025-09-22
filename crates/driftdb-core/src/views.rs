@@ -17,12 +17,11 @@ use std::time::{SystemTime, Duration};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tracing::{debug, info, warn, trace};
+use tracing::{debug, info};
 
 use crate::errors::{DriftError, Result};
 use crate::query::{Query, QueryResult, AsOf};
 use crate::cache::{QueryCache, CacheConfig};
-use crate::sql::parser::TemporalSqlParser;
 
 /// View definition
 #[derive(Debug, Clone, Serialize, Deserialize)]

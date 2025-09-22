@@ -1,6 +1,6 @@
 //! PostgreSQL Wire Protocol Codec
 
-use bytes::{Buf, BufMut, BytesMut};
+use bytes::{Buf, BytesMut};
 use std::collections::HashMap;
 use std::io::{self, ErrorKind};
 

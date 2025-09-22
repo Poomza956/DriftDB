@@ -7,10 +7,9 @@
 //! - Optimistic concurrency control
 //! - Deadlock detection and resolution
 
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use parking_lot::{RwLock, Mutex};
 use serde::{Deserialize, Serialize};
@@ -468,7 +467,7 @@ impl MVCCManager {
 
     fn cleanup_old_versions(&self, version: &mut MVCCVersion, min_timestamp: VersionTimestamp) {
         let mut depth = 0;
-        let mut current = version;
+        let current = version;
 
         // Traverse to find the cutoff point
         loop {

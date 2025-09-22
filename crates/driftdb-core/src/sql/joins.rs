@@ -8,11 +8,11 @@
 //! - Self joins
 //! - Multi-table joins
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use serde_json::{Value, json};
-use tracing::{debug, trace};
+use tracing::debug;
 
 use crate::errors::{DriftError, Result};
 use crate::engine::Engine;
@@ -315,7 +315,7 @@ impl JoinExecutor {
         // Convert to Value and apply alias if needed
         let mut rows: Vec<Value> = state
             .into_iter()
-            .map(|(_, mut row)| {
+            .map(|(_, row)| {
                 // Add table prefix to columns if alias provided
                 if let Some(alias) = alias {
                     if let Value::Object(map) = row {

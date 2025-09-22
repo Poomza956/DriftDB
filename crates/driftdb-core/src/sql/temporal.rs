@@ -4,9 +4,8 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
-use crate::errors::{DriftError, Result};
+use crate::errors::Result;
 use super::{SystemTimeClause, TemporalPoint};
 
 /// SQL:2011 Temporal Table Definition

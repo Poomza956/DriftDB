@@ -10,7 +10,6 @@
 
 use std::sync::Arc;
 use std::collections::HashMap;
-use std::num::NonZeroUsize;
 
 use parking_lot::RwLock;
 use rayon::prelude::*;
@@ -18,9 +17,7 @@ use serde_json::Value;
 use tracing::{debug, trace, warn};
 
 use crate::errors::{DriftError, Result};
-use crate::query::{WhereCondition, AsOf};
-use crate::storage::TableStorage;
-use crate::events::Event;
+use crate::query::WhereCondition;
 
 /// Helper function to compare JSON values
 fn compare_json_values(a: &Value, b: &Value) -> std::cmp::Ordering {

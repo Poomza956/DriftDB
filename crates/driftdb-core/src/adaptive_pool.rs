@@ -14,8 +14,8 @@ use std::time::{SystemTime, Duration, Instant};
 
 use parking_lot::{RwLock, Mutex};
 use serde::{Deserialize, Serialize};
-use tokio::sync::{Semaphore, SemaphorePermit};
-use tracing::{debug, info, warn, error, trace};
+use tokio::sync::Semaphore;
+use tracing::{debug, info, trace};
 
 use crate::errors::{DriftError, Result};
 use crate::connection::{EngineGuard, PoolConfig, PoolStats};

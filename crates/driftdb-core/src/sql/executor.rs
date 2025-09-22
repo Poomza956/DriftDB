@@ -1,16 +1,14 @@
 //! SQL:2011 Temporal Query Executor
 
-use sqlparser::ast::{Statement, Query, Select, SelectItem, TableWithJoins, SetExpr};
-use chrono::{DateTime, Utc};
+use sqlparser::ast::{Statement, Query, TableWithJoins, SetExpr};
 use serde_json::json;
-use std::collections::HashMap;
 
 use crate::engine::Engine;
 use crate::errors::{DriftError, Result};
-use crate::events::{Event, EventType};
+use crate::events::Event;
 
 use super::{TemporalStatement, SystemTimeClause, TemporalQueryResult, TemporalMetadata, QueryResult};
-use super::temporal::{TemporalSemantics, TemporalFilter, DriftDbPoint};
+use super::temporal::{TemporalSemantics, DriftDbPoint};
 
 pub struct SqlExecutor<'a> {
     engine: &'a mut Engine,

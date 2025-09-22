@@ -7,12 +7,12 @@ use driftdb_core::{Engine, EngineGuard};
 use serde_json::Value;
 use std::sync::Arc;
 use std::collections::HashMap;
-use tokio::sync::{RwLock, Mutex};
+use tokio::sync::Mutex;
 use parking_lot::Mutex as ParkingMutex;
 use tracing::{debug, info, warn};
 use time;
 
-use crate::transaction::{TransactionManager, PendingWrite, WriteOperation, IsolationLevel};
+use crate::transaction::{TransactionManager, IsolationLevel};
 
 #[cfg(test)]
 mod executor_subquery_tests;
@@ -1475,6 +1475,9 @@ impl<'a> QueryExecutor<'a> {
         }
 
         // Validate that all requested columns exist in at least one record
+        if filtered_data.is_empty() {
+            return Ok(QueryResult::Select { columns: Vec::new(), rows: Vec::new() });
+        }
         let first = &filtered_data[0];
         if let Value::Object(map) = first {
             for col in selected_columns {
@@ -2039,7 +2042,7 @@ impl<'a> QueryExecutor<'a> {
 
         // Find all parameter placeholders ($1, $2, etc.)
         let mut param_positions = Vec::new();
-        let mut chars: Vec<char> = sql.chars().collect();
+        let chars: Vec<char> = sql.chars().collect();
         let mut i = 0;
 
         while i < chars.len() {
@@ -3890,7 +3893,7 @@ impl<'a> QueryExecutor<'a> {
             return table_data[0].clone();
         }
 
-        let mut result: Vec<Value> = Vec::new();
+        let result: Vec<Value> = Vec::new();
 
         // Start with first table
         let mut current_product = table_data[0].clone();

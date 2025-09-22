@@ -13,7 +13,7 @@ pub mod joins;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sqlparser::ast::{Expr, Statement};
+use sqlparser::ast::Statement;
 
 pub use parser::TemporalSqlParser;
 pub use parser::TemporalSqlParser as Parser;  // Alias for compatibility

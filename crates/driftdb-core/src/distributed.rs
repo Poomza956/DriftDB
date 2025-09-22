@@ -12,15 +12,13 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::net::SocketAddr;
 
-use async_trait::async_trait;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::sync::{mpsc, oneshot};
-use tracing::{debug, info, warn, instrument};
+use tracing::{debug, info, instrument};
 
 use crate::errors::{DriftError, Result};
-use crate::query::{Query, QueryResult, WhereCondition};
+use crate::query::{Query, QueryResult};
 use crate::engine::Engine;
 
 /// Distributed cluster configuration

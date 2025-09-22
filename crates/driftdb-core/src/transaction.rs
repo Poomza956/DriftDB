@@ -300,7 +300,7 @@ pub struct TransactionManager {
 }
 
 impl TransactionManager {
-    pub fn new() -> Self {
+    pub fn new() -> Result<Self> {
         // Get data path from environment or use a sensible default
         let data_path = std::env::var("DRIFTDB_DATA_PATH")
             .unwrap_or_else(|_| "./data".to_string());
@@ -325,20 +325,22 @@ impl TransactionManager {
                 match Wal::new(temp_path) {
                     Ok(w) => Arc::new(w),
                     Err(e2) => {
-                        panic!("FATAL: Cannot create WAL even in temp directory: {}", e2);
+                        return Err(DriftError::Other(
+                            format!("Cannot create WAL even in temp directory: {}", e2)
+                        ));
                     }
                 }
             }
         };
 
-        Self {
+        Ok(Self {
             next_txn_id: Arc::new(AtomicU64::new(1)),
             active_transactions: Arc::new(RwLock::new(HashMap::new())),
             lock_manager: Arc::new(LockManager::new()),
             wal,
             metrics: Arc::new(Metrics::new()),
             current_version: Arc::new(AtomicU64::new(1)),
-        }
+        })
     }
 
     pub fn new_with_deps(wal: Arc<Wal>, metrics: Arc<Metrics>) -> Self {

@@ -7,11 +7,8 @@ pub mod messages;
 pub mod codec;
 pub mod auth;
 
-use bytes::{Bytes, BytesMut};
-use std::collections::HashMap;
 
 pub use messages::Message;
-pub use codec::{PostgresCodec, encode_message, decode_message};
 
 /// PostgreSQL protocol version
 pub const PROTOCOL_VERSION: i32 = 196608; // 3.0

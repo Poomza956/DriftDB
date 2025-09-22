@@ -11,17 +11,16 @@
 //! - Trigger cascading and recursion control
 //! - Temporal triggers for audit trails
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::SystemTime;
 
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tracing::{debug, info, warn, error, trace};
+use tracing::{debug, info, error, trace};
 
 use crate::errors::{DriftError, Result};
-use crate::events::{Event, EventType};
 
 /// Trigger timing - when the trigger fires relative to the event
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]

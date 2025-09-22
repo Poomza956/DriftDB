@@ -41,9 +41,6 @@ pub mod sql_bridge;
 #[cfg(test)]
 mod tests;
 
-#[cfg(test)]
-// mod test_recursive_arithmetic; // Removed - test file was temporary
-
 pub use engine::Engine;
 pub use errors::{DriftError, Result};
 pub use events::{Event, EventType};
