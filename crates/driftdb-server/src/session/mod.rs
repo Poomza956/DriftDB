@@ -672,6 +672,27 @@ impl Session {
                 self.send_message(stream, &complete).await?;
             }
 
+            QueryResult::Begin => {
+                let complete = Message::CommandComplete {
+                    tag: "BEGIN".to_string(),
+                };
+                self.send_message(stream, &complete).await?;
+            }
+
+            QueryResult::Commit => {
+                let complete = Message::CommandComplete {
+                    tag: "COMMIT".to_string(),
+                };
+                self.send_message(stream, &complete).await?;
+            }
+
+            QueryResult::Rollback => {
+                let complete = Message::CommandComplete {
+                    tag: "ROLLBACK".to_string(),
+                };
+                self.send_message(stream, &complete).await?;
+            }
+
             QueryResult::Empty => {
                 self.send_message(stream, &Message::EmptyQueryResponse).await?;
             }

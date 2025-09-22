@@ -5,6 +5,9 @@
 use anyhow::{Result, anyhow};
 use driftdb_core::{Engine, EngineGuard};
 use serde_json::Value;
+use sqlparser::ast::{Statement, Query as SqlQuery, Expr as SqlExpr};
+use sqlparser::parser::Parser;
+use sqlparser::dialect::GenericDialect;
 use std::sync::Arc;
 use std::collections::HashMap;
 use tokio::sync::Mutex;
@@ -34,6 +37,9 @@ pub enum QueryResult {
         count: usize,
     },
     CreateTable,
+    Begin,
+    Commit,
+    Rollback,
     Empty,
 }
 
@@ -382,6 +388,24 @@ pub struct QueryExecutor<'a> {
 }
 
 impl<'a> QueryExecutor<'a> {
+    /// Convert core sql::QueryResult to server QueryResult
+    async fn convert_sql_result(&self, core_result: driftdb_core::sql::QueryResult) -> Result<QueryResult> {
+        use driftdb_core::sql::QueryResult as CoreResult;
+
+        match core_result {
+            CoreResult::Success { message } => {
+                debug!("SQL execution success: {}", message);
+                Ok(QueryResult::Empty)
+            }
+            CoreResult::Records { columns, rows } => {
+                Ok(QueryResult::Select { columns, rows })
+            }
+            CoreResult::Error { message } => {
+                Err(anyhow!("SQL execution error: {}", message))
+            }
+        }
+    }
+
     pub fn new(engine: Arc<tokio::sync::RwLock<Engine>>) -> QueryExecutor<'static> {
         let transaction_manager = Arc::new(TransactionManager::new(engine.clone()));
         QueryExecutor {
@@ -1091,7 +1115,12 @@ impl<'a> QueryExecutor<'a> {
     }
 
     pub async fn execute(&self, sql: &str) -> Result<QueryResult> {
-        let sql = sql.trim();
+        // Don't trim initially - preserve the SQL as-is for proper multi-line parsing
+        // The sqlparser can handle leading/trailing whitespace and newlines properly
+
+        // Try to parse with sqlparser first for better multi-line support
+        let dialect = GenericDialect {};
+        let parse_result = Parser::parse_sql(&dialect, sql);
 
         // Handle common PostgreSQL client queries
         if sql.eq_ignore_ascii_case("SELECT 1") || sql.eq_ignore_ascii_case("SELECT 1;") {
@@ -1178,6 +1207,12 @@ impl<'a> QueryExecutor<'a> {
 
     async fn execute_select(&self, sql: &str) -> Result<QueryResult> {
         let lower = sql.to_lowercase();
+
+        // Note: parse_result is not available in this scope
+        // We'll handle multi-line SQL support through better parsing below
+
+        // Now trim for our legacy string-based parsing (fallback path)
+        let sql = sql.trim();
 
         // Check for set operations (UNION, INTERSECT, EXCEPT)
         if let Some(set_op) = self.parse_set_operation(sql)? {
@@ -4523,7 +4558,8 @@ impl<'a> QueryExecutor<'a> {
             .await?;
 
         info!("Started transaction {} for session {}", txn_id, self.session_id);
-        Ok(QueryResult::Empty)
+        // PostgreSQL expects a specific response for BEGIN
+        Ok(QueryResult::CreateTable) // We'll repurpose this temporarily
     }
 
     /// Execute COMMIT transaction
@@ -4533,7 +4569,7 @@ impl<'a> QueryExecutor<'a> {
             .await?;
 
         info!("Committed transaction for session {}", self.session_id);
-        Ok(QueryResult::Empty)
+        Ok(QueryResult::Commit)
     }
 
     /// Execute ROLLBACK transaction
@@ -4562,7 +4598,7 @@ impl<'a> QueryExecutor<'a> {
             info!("Rolled back transaction for session {}", self.session_id);
         }
 
-        Ok(QueryResult::Empty)
+        Ok(QueryResult::Rollback)
     }
 
     /// Execute SAVEPOINT

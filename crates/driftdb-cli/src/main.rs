@@ -8,6 +8,8 @@ use std::path::PathBuf;
 use time::OffsetDateTime;
 use tracing_subscriber::EnvFilter;
 
+mod backup;
+
 #[derive(Parser)]
 #[command(name = "driftdb")]
 #[command(about = "DriftDB - Append-only database with time-travel queries")]
@@ -112,6 +114,11 @@ enum Commands {
         /// Table name (optional, analyzes all tables if not specified)
         #[arg(short, long)]
         table: Option<String>,
+    },
+    /// Backup and restore operations
+    Backup {
+        #[command(subcommand)]
+        command: backup::BackupCommands,
     },
 }
 
@@ -355,6 +362,9 @@ fn main() -> Result<()> {
 
                 println!("\n✓ Statistics updated for all tables");
             }
+        }
+        Commands::Backup { command } => {
+            backup::run(command)?;
         }
     }
 

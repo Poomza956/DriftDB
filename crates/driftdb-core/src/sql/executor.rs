@@ -65,20 +65,20 @@ impl<'a> SqlExecutor<'a> {
         match &stmt.statement {
             Statement::Query(query) => self.execute_query(query, &stmt.system_time),
 
-            Statement::Insert { table_name, columns, source, .. } => {
-                self.execute_insert(table_name, columns, source)
+            Statement::Insert(insert) => {
+                self.execute_insert(&insert.table_name, &insert.columns, &insert.source)
             }
 
             Statement::Update { table, assignments, selection, .. } => {
                 self.execute_update(table, assignments, selection)
             }
 
-            Statement::Delete { tables, selection, .. } => {
-                self.execute_delete(tables, selection)
+            Statement::Delete(delete) => {
+                self.execute_delete(&delete.tables, &delete.selection)
             }
 
-            Statement::CreateTable { name, columns, constraints, .. } => {
-                self.execute_create_table(name, columns, constraints)
+            Statement::CreateTable(create_table) => {
+                self.execute_create_table(&create_table.name, &create_table.columns, &create_table.constraints)
             }
 
             _ => Err(DriftError::InvalidQuery(
@@ -270,10 +270,17 @@ impl<'a> SqlExecutor<'a> {
         // Build update payload
         let mut updates = serde_json::Map::new();
         for assignment in assignments {
-            let column = assignment.id.iter()
-                .map(|i| i.value.clone())
-                .collect::<Vec<_>>()
-                .join(".");
+            let column = match &assignment.target {
+                sqlparser::ast::AssignmentTarget::ColumnName(name) => {
+                    name.0.iter()
+                        .map(|i| i.value.clone())
+                        .collect::<Vec<_>>()
+                        .join(".")
+                }
+                sqlparser::ast::AssignmentTarget::Tuple(_) => {
+                    return Err(DriftError::InvalidQuery("Tuple assignments not supported".to_string()));
+                }
+            };
 
             let value = self.expr_to_json(&assignment.value)?;
             updates.insert(column, value);
@@ -382,7 +389,7 @@ impl<'a> SqlExecutor<'a> {
         for constraint in constraints {
             // Check for primary key constraint
             match constraint {
-                sqlparser::ast::TableConstraint::Unique { columns, is_primary, .. } if *is_primary => {
+                sqlparser::ast::TableConstraint::PrimaryKey { columns, .. } => {
                     if !columns.is_empty() {
                         return Ok(columns[0].value.clone());
                     }

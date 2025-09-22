@@ -1,6 +1,6 @@
 //! SQL execution engine for DriftDB
 
-use sqlparser::ast::{Statement, Query as SqlQuery, Select, SetExpr, SetOperator, SetQuantifier, TableFactor, TableWithJoins, JoinOperator, BinaryOperator, SelectItem, Expr, Function, FunctionArg, FunctionArgExpr, GroupByExpr, OrderByExpr, Offset, FromTable};
+use sqlparser::ast::{Statement, Query as SqlQuery, Select, SetExpr, SetOperator, SetQuantifier, TableFactor, TableWithJoins, JoinOperator, BinaryOperator, SelectItem, Expr, Function, FunctionArg, FunctionArgExpr, FunctionArguments, GroupByExpr, OrderByExpr, Offset, FromTable};
 use sqlparser::parser::Parser;
 use sqlparser::dialect::GenericDialect;
 use serde_json::{json, Value};
@@ -31,14 +31,24 @@ pub fn execute_sql(engine: &mut Engine, sql: &str) -> Result<QueryResult> {
 
     match &ast[0] {
         Statement::Query(query) => execute_sql_query(engine, query),
-        Statement::CreateView { name, query, or_replace, materialized, .. } => {
-            execute_create_view(engine, name, query, *or_replace, *materialized)
+        Statement::CreateView { .. } => {
+            // Delegate to sql_views module for full view support
+            use crate::sql_views::SqlViewManager;
+            use crate::views::ViewManager;
+            use std::sync::Arc;
+
+            let view_mgr = Arc::new(ViewManager::new());
+            let sql_view_mgr = SqlViewManager::new(view_mgr);
+            sql_view_mgr.create_view_from_sql(engine, sql)?;
+            Ok(crate::query::QueryResult::Success {
+                message: "View created successfully".to_string()
+            })
         }
-        Statement::CreateTable { name, columns, constraints, .. } => {
-            execute_create_table(engine, name, columns, constraints)
+        Statement::CreateTable(create_table) => {
+            execute_create_table(engine, &create_table.name, &create_table.columns, &create_table.constraints)
         }
-        Statement::CreateIndex { name, table_name, columns, unique, .. } => {
-            execute_create_index(engine, name, table_name, columns, *unique)
+        Statement::CreateIndex(create_index) => {
+            execute_create_index(engine, &create_index.name, &create_index.table_name, &create_index.columns, create_index.unique)
         }
         Statement::Drop { object_type, names, cascade, .. } => {
             match object_type {
@@ -52,9 +62,9 @@ pub fn execute_sql(engine: &mut Engine, sql: &str) -> Result<QueryResult> {
                 _ => Err(DriftError::InvalidQuery(format!("DROP {} not yet supported", object_type)))
             }
         }
-        Statement::Insert { table_name, columns, source, .. } => {
-            if let Some(src) = source {
-                execute_sql_insert(engine, table_name, columns, src)
+        Statement::Insert(insert) => {
+            if let Some(src) = &insert.source {
+                execute_sql_insert(engine, &insert.table_name, &insert.columns, src)
             } else {
                 Err(DriftError::InvalidQuery("INSERT requires VALUES or SELECT".to_string()))
             }
@@ -62,13 +72,13 @@ pub fn execute_sql(engine: &mut Engine, sql: &str) -> Result<QueryResult> {
         Statement::Update { table, assignments, from: _, selection, .. } => {
             execute_sql_update(engine, table, assignments, selection)
         }
-        Statement::Delete { tables, from, using: _, selection, .. } => {
-            // Use 'from' if tables is empty (standard DELETE FROM syntax)
-            if !tables.is_empty() {
-                execute_sql_delete(engine, tables, selection)
+        Statement::Delete(delete) => {
+            // Use 'tables' if not empty (MySQL multi-table delete)
+            if !delete.tables.is_empty() {
+                execute_sql_delete(engine, &delete.tables, &delete.selection)
             } else {
                 // Extract tables from the FromTable enum
-                let from_tables = match from {
+                let from_tables = match &delete.from {
                     FromTable::WithFromKeyword(tables) | FromTable::WithoutKeyword(tables) => tables,
                 };
 
@@ -83,7 +93,7 @@ pub fn execute_sql(engine: &mut Engine, sql: &str) -> Result<QueryResult> {
                             }
                         })
                         .collect();
-                    execute_sql_delete(engine, &table_names, selection)
+                    execute_sql_delete(engine, &table_names, &delete.selection)
                 } else {
                     Err(DriftError::InvalidQuery("DELETE requires FROM clause".to_string()))
                 }
@@ -171,8 +181,11 @@ pub fn execute_sql(engine: &mut Engine, sql: &str) -> Result<QueryResult> {
                 message: "Statistics updated for all tables".to_string()
             })
         }
-        Statement::Truncate { table_name, .. } => {
-            let table_name = table_name.to_string();
+        Statement::Truncate { table_names, .. } => {
+            if table_names.is_empty() {
+                return Err(DriftError::InvalidQuery("TRUNCATE requires at least one table".to_string()));
+            }
+            let table_name = table_names[0].name.to_string();
 
             // TRUNCATE is essentially DELETE without WHERE
             let select_query = Query::Select {
@@ -271,6 +284,8 @@ fn execute_recursive_cte(
                 locks: vec![],
                 limit_by: vec![],
                 for_clause: None,
+                format_clause: None,
+                settings: None,
             };
 
             let anchor_result = execute_sql_query(engine, &Box::new(anchor_query))?;
@@ -305,6 +320,8 @@ fn execute_recursive_cte(
                     locks: vec![],
                     limit_by: vec![],
                     for_clause: None,
+                format_clause: None,
+                settings: None,
                 };
 
                 // Set recursive CTE flag
@@ -415,8 +432,8 @@ fn execute_query_with_ctes(
                 }
 
                 // Apply ORDER BY
-                if !query.order_by.is_empty() {
-                    data = apply_order_by(data, &query.order_by)?;
+                if let Some(order_by) = &query.order_by {
+                    data = apply_order_by(data, &order_by.exprs)?;
                 }
 
                 // Apply LIMIT and OFFSET
@@ -482,6 +499,8 @@ fn execute_set_operation(
         locks: vec![],
         limit_by: vec![],
         for_clause: None,
+                format_clause: None,
+                settings: None,
     });
 
     let right_query = Box::new(SqlQuery {
@@ -494,6 +513,8 @@ fn execute_set_operation(
         locks: vec![],
         limit_by: vec![],
         for_clause: None,
+                format_clause: None,
+                settings: None,
     });
 
     let left_result = execute_sql_query(engine, &left_query)?;
@@ -759,7 +780,7 @@ fn execute_simple_select(engine: &mut Engine, select: &Select) -> Result<QueryRe
     }
 
     // Check if there's a GROUP BY clause
-    let has_group_by = matches!(&select.group_by, GroupByExpr::Expressions(exprs) if !exprs.is_empty());
+    let has_group_by = matches!(&select.group_by, GroupByExpr::Expressions(exprs, _) if !exprs.is_empty());
 
     // Handle window functions first (they operate on ungrouped data)
     if has_window_functions {
@@ -933,7 +954,7 @@ fn execute_join_select_with_ctes(
     });
 
     // Check if there's a GROUP BY clause
-    let has_group_by = matches!(&select.group_by, GroupByExpr::Expressions(exprs) if !exprs.is_empty());
+    let has_group_by = matches!(&select.group_by, GroupByExpr::Expressions(exprs, _) if !exprs.is_empty());
 
     // If no aggregates and no GROUP BY, apply column projection and return
     if !has_aggregates && !has_group_by {
@@ -1077,7 +1098,7 @@ fn execute_join_select(engine: &mut Engine, select: &Select) -> Result<QueryResu
     });
 
     // Check if there's a GROUP BY clause
-    let has_group_by = matches!(&select.group_by, GroupByExpr::Expressions(exprs) if !exprs.is_empty());
+    let has_group_by = matches!(&select.group_by, GroupByExpr::Expressions(exprs, _) if !exprs.is_empty());
 
     // If no aggregates and no GROUP BY, apply column projection and return
     if !has_aggregates && !has_group_by {
@@ -1385,6 +1406,8 @@ fn execute_insert_select(
         locks: vec![],
         limit_by: vec![],
         for_clause: None,
+                format_clause: None,
+                settings: None,
     });
 
     let result = execute_sql_query(engine, &query)?;
@@ -1612,7 +1635,7 @@ fn sql_value_to_json(val: &sqlparser::ast::Value) -> Result<Value> {
 fn execute_aggregation(rows: &[Value], select: &Select) -> Result<Vec<Value>> {
     // Handle GROUP BY
     match &select.group_by {
-        GroupByExpr::Expressions(exprs) if !exprs.is_empty() => {
+        GroupByExpr::Expressions(exprs, _) if !exprs.is_empty() => {
             execute_group_by_aggregation(rows, select, exprs)
         }
         _ => {
@@ -1786,20 +1809,21 @@ fn evaluate_aggregate_function(func: &Function, rows: &[Value]) -> Result<(Strin
     let func_name = func.name.to_string().to_uppercase();
 
     // Extract the column name from function arguments
-    let column = if func.args.len() == 1 {
-        match &func.args[0] {
-            FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Identifier(ident))) => {
-                Some(ident.value.clone())
+    let column = match &func.args {
+        FunctionArguments::List(list) if list.args.len() == 1 => {
+            match &list.args[0] {
+                FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Identifier(ident))) => {
+                    Some(ident.value.clone())
             }
             FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::CompoundIdentifier(parts))) => {
                 // Handle table.column notation (e.g., p.budget)
                 parts.last().map(|ident| ident.value.clone())
             }
             FunctionArg::Unnamed(FunctionArgExpr::Wildcard) => None, // For COUNT(*)
-            _ => None,
+                _ => None,
+            }
         }
-    } else {
-        None
+        _ => None,
     };
 
     // Generate result column name based on the function
@@ -2169,15 +2193,16 @@ fn evaluate_having_expression(expr: &Expr, row: &Value) -> Result<bool> {
                 Expr::Function(func) => {
                     // For HAVING, we need to look up the aggregate result column
                     let func_name = func.name.to_string().to_uppercase();
-                    let column = if func.args.len() == 1 {
-                        match &func.args[0] {
-                            FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Identifier(ident))) => {
-                                Some(ident.value.clone())
+                    let column = match &func.args {
+                        FunctionArguments::List(list) if list.args.len() == 1 => {
+                            match &list.args[0] {
+                                FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Identifier(ident))) => {
+                                    Some(ident.value.clone())
                             }
-                            _ => None,
+                                _ => None,
+                            }
                         }
-                    } else {
-                        None
+                        _ => None,
                     };
 
                     // Match the actual column naming from evaluate_aggregate_function
@@ -3607,25 +3632,33 @@ fn parse_window_function(func: &Function) -> Result<WindowFunctionCall> {
         }
         "LAG" | "LEAD" => {
             // Extract column and optional offset/default
-            let column = extract_column_from_function_args(&func.args)?;
-            let offset = if func.args.len() > 1 {
-                // Parse offset
-                if let FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Value(sqlparser::ast::Value::Number(n, _)))) = &func.args[1] {
-                    Some(n.parse::<u32>().unwrap_or(1))
-                } else {
-                    Some(1)
+            let (column, offset, default) = match &func.args {
+                FunctionArguments::List(list) => {
+                    let column = extract_column_from_function_args(&func.args)?;
+                    let offset = if list.args.len() > 1 {
+                        // Parse offset
+                        if let FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Value(sqlparser::ast::Value::Number(n, _)))) = &list.args[1] {
+                            Some(n.parse::<u32>().unwrap_or(1))
+                        } else {
+                            Some(1)
+                        }
+                    } else {
+                        Some(1)
+                    };
+                    let default = if list.args.len() > 2 {
+                        // Parse default value
+                        Some(expr_to_json_value(match &list.args[2] {
+                            FunctionArg::Unnamed(FunctionArgExpr::Expr(expr)) => expr,
+                            _ => return Err(DriftError::InvalidQuery("Invalid default value".to_string())),
+                        })?)
+                    } else {
+                        None
+                    };
+                    (column, offset, default)
                 }
-            } else {
-                Some(1)
-            };
-            let default = if func.args.len() > 2 {
-                // Parse default value
-                Some(expr_to_json_value(match &func.args[2] {
-                    FunctionArg::Unnamed(FunctionArgExpr::Expr(expr)) => expr,
-                    _ => return Err(DriftError::InvalidQuery("Invalid default value".to_string())),
-                })?)
-            } else {
-                None
+                _ => {
+                    return Err(DriftError::InvalidQuery("LAG/LEAD requires arguments".to_string()));
+                }
             };
 
             if func_name == "LAG" {
@@ -3653,11 +3686,20 @@ fn parse_window_function(func: &Function) -> Result<WindowFunctionCall> {
             }
         }
         "COUNT" => {
-            let column = if func.args.is_empty() ||
-                matches!(&func.args[0], FunctionArg::Unnamed(FunctionArgExpr::Wildcard)) {
-                None
-            } else {
-                Some(extract_column_from_function_args(&func.args)?)
+            let column = match &func.args {
+                None => None,
+                Some(args) => match args {
+                    FunctionArguments::None => None,
+                    FunctionArguments::List(list) if list.args.is_empty() => None,
+                    FunctionArguments::List(list) => {
+                        if matches!(&list.args[0], FunctionArg::Unnamed(FunctionArgExpr::Wildcard)) {
+                            None
+                        } else {
+                            Some(extract_column_from_function_args(&func.args)?)
+                        }
+                    }
+                    _ => None,
+                }
             };
             WindowFunction::Count(column)
         }
@@ -3734,15 +3776,20 @@ fn parse_window_spec(window_type: &sqlparser::ast::WindowType) -> Result<WindowS
     }
 }
 
-fn extract_column_from_function_args(args: &[FunctionArg]) -> Result<String> {
-    if args.is_empty() {
-        return Err(DriftError::InvalidQuery("Function requires at least one argument".to_string()));
-    }
+fn extract_column_from_function_args(args: &FunctionArguments) -> Result<String> {
+    match args {
+        FunctionArguments::List(list) => {
+            if list.args.is_empty() {
+                return Err(DriftError::InvalidQuery("Function requires at least one argument".to_string()));
+            }
 
-    match &args[0] {
-        FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Identifier(ident))) => {
-            Ok(ident.value.clone())
+            match &list.args[0] {
+                FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Identifier(ident))) => {
+                    Ok(ident.value.clone())
+                }
+                _ => Err(DriftError::InvalidQuery("Complex function arguments not yet supported".to_string())),
+            }
         }
-        _ => Err(DriftError::InvalidQuery("Complex function arguments not yet supported".to_string())),
+        _ => Err(DriftError::InvalidQuery("Function arguments required".to_string())),
     }
 }

@@ -47,6 +47,18 @@ pub enum DriftError {
     #[error("Timeout")]
     Timeout,
 
+    #[error("Validation error: {0}")]
+    Validation(String),
+
+    #[error("Conflict error: {0}")]
+    Conflict(String),
+
+    #[error("Not found: {0}")]
+    NotFound(String),
+
+    #[error("Unauthorized: {0}")]
+    Unauthorized(String),
+
     #[error("Other error: {0}")]
     Other(String),
 }

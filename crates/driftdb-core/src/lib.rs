@@ -1,6 +1,8 @@
 pub mod errors;
 pub mod events;
 pub mod schema;
+pub mod auth;
+pub mod compression;
 pub mod storage;
 pub mod index;
 pub mod snapshot;
@@ -37,6 +39,14 @@ pub mod query_plan;
 pub mod consensus;
 pub mod columnar;
 pub mod sql_bridge;
+pub mod transaction_snapshot;
+pub mod lockfree;
+pub mod sql_views;
+pub mod stored_procedures;
+pub mod streaming;
+pub mod vector_search;
+pub mod mvcc_engine;
+pub mod cost_optimizer;
 
 #[cfg(test)]
 mod tests;
@@ -48,3 +58,4 @@ pub use query::{Query, QueryResult};
 pub use schema::Schema;
 pub use connection::{EnginePool, EngineGuard, PoolConfig, PoolStats, EnginePoolStats};
 pub use rate_limit::{RateLimitConfig, RateLimitManager, RateLimitStats, QueryCost};
+pub use auth::{AuthManager, AuthConfig, User, Role, Permission, Session, AuthContext};

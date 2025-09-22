@@ -37,17 +37,24 @@ lru = "0.12"
 rustls = "0.21"
 tokio-rustls = "0.24"
 rustls-pemfile = "1.0"
-sqlparser = "0.44"
+sqlparser = "0.51"
 chrono = { version = "0.4", features = ["serde"] }
 rayon = "1.10"
 regex = "1.10"
 fastrand = "2.0"
+ordered-float = "4.0"
+tokio-tungstenite = "0.21"
+futures-util = "0.3"
+crossbeam-epoch = "0.9"
+argon2 = "0.5"
+lz4 = "1.24"
+flate2 = "1.0"
+brotli = "3.3"
 
 [dev-dependencies]
 tempfile = { workspace = true }
 proptest = { workspace = true }
 criterion = { workspace = true }
-rand = "0.8"
 
 [[bench]]
 name = "performance"

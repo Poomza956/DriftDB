@@ -210,6 +210,7 @@ impl ViewDependencyGraph {
 pub struct ViewStatistics {
     pub total_views: usize,
     pub materialized_views: usize,
+    pub materialized_views_refreshed: u64,
     pub total_queries: u64,
     pub cache_hits: u64,
     pub cache_misses: u64,
@@ -545,6 +546,35 @@ impl ViewManager {
         // TODO: Parse SQL to extract dependencies and columns
         // For now, return empty results
         Ok((HashSet::new(), vec![]))
+    }
+
+    /// Cache materialized view data
+    pub fn cache_materialized_data(&self, view_name: &str, data: Vec<Value>) -> Result<()> {
+        let size_bytes = data.iter()
+            .map(|v| v.to_string().len())
+            .sum();
+
+        let materialized = MaterializedViewData {
+            row_count: data.len(),
+            data,
+            refreshed_at: SystemTime::now(),
+            size_bytes,
+        };
+
+        self.materialized_data.write().insert(view_name.to_string(), materialized);
+
+        // Update statistics
+        let mut stats = self.stats.write();
+        stats.materialized_views_refreshed += 1;
+
+        Ok(())
+    }
+
+    /// Get cached data for a materialized view
+    pub fn get_cached_data(&self, view_name: &str) -> Option<Vec<Value>> {
+        self.materialized_data.read()
+            .get(view_name)
+            .map(|data| data.data.clone())
     }
 }
 
