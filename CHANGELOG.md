@@ -2,10 +2,10 @@
 
 All notable changes to DriftDB will be documented in this file.
 
-## [1.0.0] - 2025-01-21
+## [0.7.0-alpha] - 2025-01-21
 
 ### Added
-- 100% SQL compatibility achieved!
+- Complete SQL parsing and execution layer (100% SQL syntax support for implemented features)
 - Recursive Common Table Expressions (WITH RECURSIVE)
 - Support for parenthesized arithmetic expressions
 - Proper CTE table references in JOIN operations
@@ -16,11 +16,28 @@ All notable changes to DriftDB will be documented in this file.
 - Fixed CTE table references in recursive JOIN operations
 - Fixed parenthesized expressions returning null in simple SELECT
 - Fixed column name preservation in CTE results
+- Fixed compilation issue with missing test file
 - Consolidated arithmetic evaluation to single consistent function
 
 ### Removed
-- Removed all DriftQL references - now 100% SQL compatible
+- Removed all DriftQL references - now pure SQL
 - Removed duplicate arithmetic evaluation functions
+
+### Known Issues
+- **CRITICAL**: No fsync after WAL writes - data loss risk on crash
+- **CRITICAL**: WAL hardcoded to /tmp/wal path
+- **CRITICAL**: 152+ compiler warnings indicating incomplete implementations
+- Transaction isolation not properly implemented
+- No authentication for admin tools
+- Encryption key rotation is stubbed
+- Incremental backups not implemented
+- Many features partially implemented or mocked
+
+### Status
+- **Alpha Quality**: Not suitable for production use
+- Core SQL execution works well
+- Many database features incomplete or stubbed
+- Requires significant work for production readiness
 
 ## [0.4.0] - 2024-01-20
 

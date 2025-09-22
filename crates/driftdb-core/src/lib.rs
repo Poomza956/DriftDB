@@ -42,7 +42,7 @@ pub mod sql_bridge;
 mod tests;
 
 #[cfg(test)]
-mod test_recursive_arithmetic;
+// mod test_recursive_arithmetic; // Removed - test file was temporary
 
 pub use engine::Engine;
 pub use errors::{DriftError, Result};

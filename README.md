@@ -1,6 +1,8 @@
 # DriftDB
 
-**The PostgreSQL-compatible time-travel database with 100% SQL compliance** - Query your data at any point in history using standard SQL with any PostgreSQL client. Complete support for all JOIN types, recursive CTEs, correlated subqueries, transactions, and enterprise-grade SQL features!
+**An experimental PostgreSQL-compatible time-travel database (ALPHA)** - Query your data at any point in history using standard SQL. Features complete SQL parser with recursive CTEs, JOINs, and subqueries.
+
+⚠️ **WARNING: Alpha software - NOT for production use. Data loss risk. See KNOWN_ISSUES.md**
 
 ## 🚀 Quick Start
 
@@ -21,7 +23,7 @@ SELECT * FROM events AS OF @seq:1;  -- Shows 'original'
 SELECT * FROM events;                -- Shows 'modified'
 ```
 
-## ✅ Working Features (100% SQL Compliance)
+## ✅ Working Features
 
 ### Full SQL Support
 - **All 5 standard JOIN types**: INNER, LEFT, RIGHT, FULL OUTER, CROSS (including self-joins)
