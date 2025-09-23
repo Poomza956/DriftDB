@@ -1,8 +1,8 @@
 # DriftDB
 
-**Production-Ready PostgreSQL-Compatible Time-Travel Database v0.7.0** - Enterprise-grade temporal database with full ACID compliance, distributed consensus, and comprehensive security features. Query your data at any point in history using standard SQL.
+**Experimental PostgreSQL-Compatible Time-Travel Database (v0.7.0-alpha)** - An ambitious temporal database project with advanced architectural designs for enterprise features. Query your data at any point in history using standard SQL.
 
-✅ **Production Ready**: Complete with authentication, encryption, backup/restore, monitoring, and comprehensive testing.
+⚠️ **ALPHA SOFTWARE - NOT FOR PRODUCTION USE**: This version contains experimental implementations of enterprise features that are not yet functional. The codebase has compilation issues and requires significant work before being production-ready.
 
 ## 🚀 Quick Start
 
@@ -80,28 +80,31 @@ SELECT * FROM events;                -- Shows 'modified'
 - **Secondary indexes**: B-tree indexes for fast lookups
 - **Snapshots & compaction**: Optimized performance with compression
 
-### Production Infrastructure
-- **Authentication & Authorization**: Full RBAC with user management, sessions, and MFA support
-- **Encryption at Rest**: AES-256-GCM encryption with automatic key rotation
-- **Distributed Consensus**: Raft-based consensus with leader election and failover
-- **ACID Transactions**: Complete isolation levels from Read Uncommitted to Serializable
-- **Crash Recovery**: WAL-based recovery with point-in-time restore capabilities
-- **Enterprise Backup**: Full/incremental/differential backups with compression and encryption
-- **Security Monitoring**: Real-time threat detection, compliance monitoring (GDPR/SOX/HIPAA)
-- **Connection pooling**: Thread-safe connection pool with RAII guards
-- **Health checks**: Prometheus-compatible metrics at /metrics endpoint
-- **Rate limiting**: Token bucket algorithm with adaptive controls
+### Planned Enterprise Features (Not Yet Functional)
+The following features have been architecturally designed but are not yet operational:
+- **Authentication & Authorization**: Planned RBAC with user management (code incomplete)
+- **Encryption at Rest**: Designed AES-256-GCM encryption (not functional)
+- **Distributed Consensus**: Raft protocol structure (requires debugging)
+- **Advanced Transactions**: MVCC design for isolation levels (partial implementation)
+- **Enterprise Backup**: Backup system architecture (compilation errors)
+- **Security Monitoring**: Monitoring framework (not integrated)
 
-### Query Optimization
-- **Advanced Query Optimizer**: Cost-based optimization with adaptive learning
-- **Join Strategies**: Star schema and bushy tree join optimization
-- **Subquery Optimization**: Flattening, decorrelation, and magic sets transformation
-- **Materialized Views**: Automatic view matching and maintenance
-- **Plan Caching**: Parameterized plan caching with cache invalidation
-- **Parallel Execution**: Automatic parallelization for large scans
-- **B-tree indexes**: Secondary indexes on any column for fast lookups
-- **Query planner**: EXPLAIN PLAN shows index usage and execution strategy
-- **Prepared statements**: Statement caching reduces parsing overhead
+### Working Infrastructure
+- **Connection pooling**: Thread-safe connection pool with RAII guards
+- **Health checks**: Basic metrics endpoint
+- **Rate limiting**: Token bucket algorithm for connection limits
+
+### Query Features (Partially Working)
+- **B-tree indexes**: Secondary indexes for fast lookups (functional)
+- **Basic query planner**: Simple execution plans (working)
+- **Prepared statements**: Statement caching (functional)
+
+### Planned Query Optimization (Design Phase)
+- **Advanced Query Optimizer**: Cost-based optimization design (not implemented)
+- **Join Strategies**: Theoretical star schema optimization (code incomplete)
+- **Subquery Optimization**: Flattening algorithms designed (not functional)
+- **Materialized Views**: Architecture planned (not implemented)
+- **Parallel Execution**: Threading design (not operational)
 
 ## Quick Start
 
