@@ -18,7 +18,7 @@ use tracing::{debug, info, instrument};
 use rand::Rng;
 
 use crate::errors::{DriftError, Result};
-use crate::wal::{WalEntry, WalOperation};
+use crate::wal::WalEntry;
 
 /// Raft node state
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -153,6 +153,7 @@ struct VolatileState {
 struct LeaderState {
     next_index: HashMap<String, u64>,
     match_index: HashMap<String, u64>,
+    #[allow(dead_code)]
     replication_progress: HashMap<String, Instant>,
 }
 

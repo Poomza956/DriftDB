@@ -481,14 +481,14 @@ impl StatisticsManager {
         // Calculate statistics
         let distinct_count = distinct_values.len();
         let total_count = data.len() as u64;
-        let selectivity = if total_count > 0 {
+        let _selectivity = if total_count > 0 {
             distinct_count as f64 / total_count as f64
         } else {
             0.0
         };
 
         // Calculate numeric statistics
-        let (min_value, max_value, avg_value) = if !numeric_values.is_empty() {
+        let (min_value, max_value, _avg_value) = if !numeric_values.is_empty() {
             let min = numeric_values.iter().fold(f64::INFINITY, |a, &b| a.min(b));
             let max = numeric_values.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
             let avg = numeric_values.iter().sum::<f64>() / numeric_values.len() as f64;
@@ -505,7 +505,7 @@ impl StatisticsManager {
         };
 
         // Calculate average string length
-        let avg_length = if !string_lengths.is_empty() {
+        let _avg_length = if !string_lengths.is_empty() {
             Some(string_lengths.iter().sum::<usize>() as f64 / string_lengths.len() as f64)
         } else {
             None
@@ -713,6 +713,7 @@ impl StatisticsManager {
     }
 
     /// Infer data type from sample values
+    #[allow(dead_code)]
     fn infer_data_type(&self, data: &[Value], column_name: &str) -> String {
         let mut has_number = false;
         let mut has_string = false;

@@ -36,10 +36,14 @@ impl Default for IsolationLevel {
 #[derive(Debug, Clone)]
 pub struct TransactionState {
     pub txn_id: u64,
+    #[allow(dead_code)]
     pub isolation_level: IsolationLevel,
+    #[allow(dead_code)]
     pub start_time: u64,
+    #[allow(dead_code)]
     pub start_sequence: u64,
     pub is_active: bool,
+    #[allow(dead_code)]
     pub is_read_only: bool,
 
     /// Pending operations (not yet committed)
@@ -70,6 +74,7 @@ impl TransactionState {
     }
 
     /// Add a pending write operation
+    #[allow(dead_code)]
     pub fn add_write(&mut self, write: PendingWrite) -> Result<()> {
         if self.is_read_only {
             return Err(anyhow!("Cannot write in read-only transaction"));
@@ -118,6 +123,7 @@ pub struct PendingWrite {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum WriteOperation {
     Insert,
     Update { id: Value },
@@ -202,12 +208,12 @@ impl TransactionManager {
                         engine.insert_record(&write.table, write.data)
                             .map_err(|e| anyhow!("Failed to insert: {}", e))?;
                     }
-                    WriteOperation::Update { id } => {
+                    WriteOperation::Update { id: _ } => {
                         // For DriftDB, updates are typically done as patches
                         // This is a simplified implementation
                         warn!("UPDATE operations not fully implemented in transaction");
                     }
-                    WriteOperation::Delete { id } => {
+                    WriteOperation::Delete { id: _ } => {
                         // DriftDB uses soft deletes
                         warn!("DELETE operations not fully implemented in transaction");
                     }
@@ -240,6 +246,7 @@ impl TransactionManager {
     }
 
     /// Get transaction state for a session
+    #[allow(dead_code)]
     pub fn get_transaction(&self, session_id: &str) -> Option<TransactionState> {
         self.transactions.read().get(session_id).cloned()
     }
@@ -250,6 +257,7 @@ impl TransactionManager {
     }
 
     /// Add a pending write to the transaction
+    #[allow(dead_code)]
     pub fn add_pending_write(&self, session_id: &str, write: PendingWrite) -> Result<()> {
         let mut transactions = self.transactions.write();
 

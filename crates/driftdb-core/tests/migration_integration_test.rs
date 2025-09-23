@@ -3,7 +3,7 @@ use serde_json::json;
 
 use driftdb_core::{Engine, Query, QueryResult};
 use driftdb_core::migration::{MigrationManager, Migration, MigrationType, Version};
-use driftdb_core::schema::{Schema, ColumnDef};
+use driftdb_core::schema::ColumnDef;
 
 #[test]
 fn test_add_column_migration() {

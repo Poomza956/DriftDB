@@ -1,10 +1,9 @@
 use crate::errors::{DriftError, Result};
 use serde::{Serialize, Deserialize};
-use std::collections::{HashMap, HashSet, BTreeMap};
+use std::collections::{HashMap, BTreeMap};
 use std::sync::Arc;
-use std::ops::RangeInclusive;
 use parking_lot::RwLock;
-use chrono::{DateTime, Utc, Datelike};
+use chrono::{DateTime, Utc};
 
 /// Advanced partitioning and partition pruning system
 pub struct PartitionManager {
@@ -585,7 +584,7 @@ impl PartitionManager {
         };
 
         // Calculate split point based on partition statistics
-        let split_point = self.calculate_range_split_point(partition, range_def)?;
+        let _split_point = self.calculate_range_split_point(partition, range_def)?;
 
         // Create two new partition keys
         let left_key = PartitionKey::Range(format!("{}_left", partition.name));
@@ -602,7 +601,7 @@ impl PartitionManager {
 
         // Double the number of hash buckets by splitting this partition
         let current_bucket = self.extract_bucket_number(&partition.name)?;
-        let new_bucket_count = hash.num_buckets * 2;
+        let _new_bucket_count = hash.num_buckets * 2;
 
         // Create new partition keys for the split buckets
         let new_bucket1 = current_bucket;
@@ -617,7 +616,7 @@ impl PartitionManager {
         Ok(vec![key1, key2])
     }
 
-    fn calculate_range_split_point(&self, partition: &Partition, range_def: &PartitionRange) -> Result<PartitionValue> {
+    fn calculate_range_split_point(&self, _partition: &Partition, range_def: &PartitionRange) -> Result<PartitionValue> {
         // Calculate optimal split point for a range partition
         // For simplicity, split at the midpoint between lower and upper bounds
 
@@ -666,7 +665,7 @@ impl PartitionManager {
 
         let mut total_rows = 0u64;
         let mut total_size = 0u64;
-        let mut partition_count = table_partitions.partitions.len();
+        let partition_count = table_partitions.partitions.len();
 
         for partition in table_partitions.partitions.values() {
             total_rows += partition.statistics.row_count;
@@ -697,7 +696,7 @@ impl PartitionManager {
         // Check for unbalanced partitions
         if stats.partition_count > 10 {
             let avg_size = stats.average_partition_size;
-            let threshold = avg_size as f64 * 0.2; // 20% deviation
+            let _threshold = avg_size as f64 * 0.2; // 20% deviation
 
             // Would check individual partition sizes
             suggestions.push("Consider rebalancing partitions for better distribution".to_string());

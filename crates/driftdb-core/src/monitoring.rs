@@ -17,6 +17,7 @@ pub struct MonitoringSystem {
     exporters: Arc<RwLock<Vec<Box<dyn MetricExporter>>>>,
     alert_manager: Arc<AlertManager>,
     history: Arc<RwLock<MetricsHistory>>,
+    #[allow(dead_code)]
     dashboard: Arc<RwLock<Dashboard>>,
     engine: Option<Arc<RwLock<Engine>>>,
 }
@@ -219,8 +220,11 @@ pub trait NotificationChannel: Send + Sync {
 
 /// Dashboard for real-time monitoring
 pub struct Dashboard {
+    #[allow(dead_code)]
     widgets: Vec<Widget>,
+    #[allow(dead_code)]
     layout: DashboardLayout,
+    #[allow(dead_code)]
     refresh_interval: Duration,
 }
 
@@ -645,10 +649,10 @@ impl AlertManager {
         *self.active_alerts.write() = new_alerts;
     }
 
-    fn evaluate_rule(&self, rule: &AlertRule, snapshot: &MetricSnapshot) -> Option<Alert> {
+    fn evaluate_rule(&self, rule: &AlertRule, _snapshot: &MetricSnapshot) -> Option<Alert> {
         // Simplified evaluation - would be more complex in production
         match &rule.condition {
-            AlertCondition::ThresholdExceeded { metric, threshold } => {
+            AlertCondition::ThresholdExceeded { metric: _metric, threshold: _threshold } => {
                 // Check if metric exceeds threshold
                 // This is simplified - would need to extract actual metric value
                 None
@@ -678,7 +682,9 @@ impl Default for Dashboard {
 
 /// Prometheus exporter implementation
 pub struct PrometheusExporter {
+    #[allow(dead_code)]
     endpoint: String,
+    #[allow(dead_code)]
     port: u16,
 }
 

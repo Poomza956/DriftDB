@@ -20,7 +20,7 @@ use serde_json::Value;
 use tracing::{debug, info};
 
 use crate::errors::{DriftError, Result};
-use crate::query::{Query, QueryResult, AsOf, WhereCondition};
+use crate::query::{Query, QueryResult, AsOf};
 use crate::cache::{QueryCache, CacheConfig};
 use crate::engine::Engine;
 use crate::sql_bridge;
@@ -384,7 +384,7 @@ impl ViewManager {
         &self,
         view: &ViewDefinition,
         conditions: Vec<crate::query::WhereCondition>,
-        as_of: Option<AsOf>,
+        _as_of: Option<AsOf>,
         limit: Option<usize>,
     ) -> Result<Vec<Value>> {
         // Generate cache key
@@ -612,7 +612,7 @@ impl ViewManager {
     pub fn validate_view_sql(sql: &str) -> Result<(HashSet<String>, Vec<ColumnDefinition>)> {
         use sqlparser::parser::Parser;
         use sqlparser::dialect::GenericDialect;
-        use sqlparser::ast::{Statement, TableFactor, TableWithJoins, Expr, SelectItem};
+        use sqlparser::ast::{Statement, SelectItem};
 
         let dialect = GenericDialect {};
         let ast = Parser::parse_sql(&dialect, sql)
@@ -641,7 +641,7 @@ impl ViewManager {
                         // Extract column information from SELECT items
                         for (i, select_item) in select.projection.iter().enumerate() {
                             match select_item {
-                                SelectItem::UnnamedExpr(expr) => {
+                                SelectItem::UnnamedExpr(_expr) => {
                                     columns.push(ColumnDefinition {
                                         name: format!("column_{}", i),
                                         data_type: "UNKNOWN".to_string(),

@@ -8,15 +8,12 @@
 //! - Subquery optimization
 //! - Materialized view matching
 
-use std::collections::{HashMap, HashSet, BinaryHeap};
-use std::cmp::Ordering;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use parking_lot::RwLock;
-use serde::{Serialize, Deserialize};
-use ordered_float::OrderedFloat;
 
 use crate::errors::{DriftError, Result};
-use crate::optimizer::{TableStatistics, ColumnStatistics};
+use crate::optimizer::TableStatistics;
 use crate::index_strategies::IndexType;
 
 /// Query plan node
@@ -206,6 +203,7 @@ pub struct CostOptimizer {
     /// Available indexes
     indexes: Arc<RwLock<HashMap<String, Vec<IndexInfo>>>>,
     /// Materialized views
+    #[allow(dead_code)]
     materialized_views: Arc<RwLock<Vec<MaterializedViewInfo>>>,
     /// Cost parameters
     params: CostParameters,
@@ -215,10 +213,12 @@ pub struct CostOptimizer {
 
 /// Index information
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct IndexInfo {
     name: String,
     table: String,
     columns: Vec<String>,
+    #[allow(dead_code)]
     index_type: IndexType,
     unique: bool,
     size_pages: usize,
@@ -226,6 +226,7 @@ struct IndexInfo {
 
 /// Materialized view information
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct MaterializedViewInfo {
     name: String,
     query: String,
@@ -236,10 +237,14 @@ struct MaterializedViewInfo {
 /// Cost calculation parameters
 #[derive(Debug, Clone)]
 struct CostParameters {
+    #[allow(dead_code)]
     seq_page_cost: f64,
+    #[allow(dead_code)]
     random_page_cost: f64,
+    #[allow(dead_code)]
     cpu_tuple_cost: f64,
     cpu_operator_cost: f64,
+    #[allow(dead_code)]
     parallel_workers: usize,
     work_mem: usize, // KB
 }
@@ -260,9 +265,12 @@ impl Default for CostParameters {
 /// Optimizer statistics
 #[derive(Debug, Default)]
 struct OptimizerStats {
+    #[allow(dead_code)]
     plans_considered: u64,
+    #[allow(dead_code)]
     plans_pruned: u64,
     optimization_time_ms: u64,
+    #[allow(dead_code)]
     joins_reordered: u64,
     indexes_used: u64,
 }
@@ -284,6 +292,7 @@ impl CostOptimizer {
     }
 
     /// Register an index
+    #[allow(dead_code)]
     pub fn register_index(&self, info: IndexInfo) {
         self.indexes.write()
             .entry(info.table.clone())
@@ -730,6 +739,7 @@ impl CostOptimizer {
 
 /// Join information
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct JoinInfo {
     left_table: String,
     right_table: String,

@@ -10,21 +10,19 @@
 //! - Backup catalog and metadata management
 
 use std::collections::HashMap;
-use std::fs::{self, File, OpenOptions};
-use std::io::{BufReader, BufWriter, Read, Write, Seek, SeekFrom};
+use std::fs::{self, File};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Sha256, Digest};
-use tracing::{debug, error, info, warn, instrument};
-use tokio::task;
+use tracing::{info, warn, instrument};
 
 use crate::errors::{DriftError, Result};
-use crate::wal::{WalManager, WalEntry};
-use crate::monitoring::SystemMetrics;
+use crate::wal::WalManager;
 use crate::encryption::EncryptionService;
 
 /// Enhanced backup metadata with comprehensive information
@@ -649,7 +647,7 @@ impl EnhancedBackupManager {
         info!("Deleting backup: {}", backup_id);
 
         // Remove from catalog first
-        let metadata = self.catalog.remove_backup(backup_id)?
+        let _metadata = self.catalog.remove_backup(backup_id)?
             .ok_or_else(|| DriftError::Other(format!("Backup not found in catalog: {}", backup_id)))?;
 
         // Remove local backup directory
@@ -811,13 +809,13 @@ impl EnhancedBackupManager {
         Ok(results)
     }
 
-    async fn backup_changed_tables(&self, backup_path: &Path, since_sequence: u64) -> Result<Vec<TableBackupResult>> {
+    async fn backup_changed_tables(&self, _backup_path: &Path, _since_sequence: u64) -> Result<Vec<TableBackupResult>> {
         // Implementation would check which tables have changes since the sequence
         // For now, return empty as this requires integration with table metadata
         Ok(Vec::new())
     }
 
-    async fn backup_table_full(&self, table_name: &str, backup_path: &Path) -> Result<TableBackupResult> {
+    async fn backup_table_full(&self, table_name: &str, _backup_path: &Path) -> Result<TableBackupResult> {
         // Implementation would backup table schema, data, and indexes
         // This is a placeholder for the actual table backup logic
         Ok(TableBackupResult {
@@ -885,17 +883,17 @@ impl EnhancedBackupManager {
         Ok(table_info.total_size_bytes)
     }
 
-    async fn restore_wal_to_sequence(&self, backup_path: &Path, target_dir: &Path, target_sequence: u64) -> Result<u64> {
+    async fn restore_wal_to_sequence(&self, _backup_path: &Path, _target_dir: &Path, target_sequence: u64) -> Result<u64> {
         // Implementation would restore WAL up to a specific sequence
         Ok(target_sequence)
     }
 
-    async fn restore_wal_to_time(&self, backup_path: &Path, target_dir: &Path, target_time: SystemTime) -> Result<u64> {
+    async fn restore_wal_to_time(&self, _backup_path: &Path, _target_dir: &Path, _target_time: SystemTime) -> Result<u64> {
         // Implementation would restore WAL up to a specific time
         Ok(0)
     }
 
-    async fn upload_backup(&self, backup_path: &Path, backup_id: &str) -> Result<()> {
+    async fn upload_backup(&self, _backup_path: &Path, backup_id: &str) -> Result<()> {
         match &self.config.storage_type {
             StorageType::Local => Ok(()),
             StorageType::S3 { .. } => {
@@ -916,7 +914,7 @@ impl EnhancedBackupManager {
         }
     }
 
-    async fn download_backup(&self, backup_id: &str, backup_path: &Path) -> Result<()> {
+    async fn download_backup(&self, backup_id: &str, _backup_path: &Path) -> Result<()> {
         info!("Downloading backup {} from cloud storage", backup_id);
         // Implementation would download from configured cloud storage
         Ok(())

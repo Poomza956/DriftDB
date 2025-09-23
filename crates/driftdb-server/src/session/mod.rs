@@ -32,6 +32,7 @@ impl SessionManager {
         }
     }
 
+    #[allow(dead_code)]
     pub fn auth_db(&self) -> &Arc<protocol::auth::UserDb> {
         &self.auth_db
     }

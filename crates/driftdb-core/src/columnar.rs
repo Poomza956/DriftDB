@@ -204,8 +204,11 @@ pub struct ColumnFile {
 
 #[derive(Debug, Clone)]
 struct ColumnFileMetadata {
+    #[allow(dead_code)]
     column_name: String,
+    #[allow(dead_code)]
     data_type: DataType,
+    #[allow(dead_code)]
     row_groups: Vec<RowGroupMetadata>,
     total_rows: u64,
     file_size: u64,
@@ -579,7 +582,7 @@ impl ColumnarStorage {
                 let mut file = column_file.file.write().unwrap();
 
                 file.seek(SeekFrom::End(0))?;
-                let offset = file.stream_position()?;
+                let _offset = file.stream_position()?;
 
                 file.write_all(&chunk.data)?;
 
@@ -596,7 +599,7 @@ impl ColumnarStorage {
         let mut results = HashMap::new();
 
         for column_name in columns {
-            if let Some(column_file) = self.column_files.get(&column_name) {
+            if let Some(_column_file) = self.column_files.get(&column_name) {
                 let column_data = self.read_column(&column_name, predicate.as_ref())?;
                 results.insert(column_name, column_data);
             }
@@ -610,7 +613,7 @@ impl ColumnarStorage {
     }
 
     fn read_column(&self, column_name: &str, predicate: Option<&Predicate>) -> Result<Vec<Option<Value>>> {
-        let column_file = self.column_files.get(column_name)
+        let _column_file = self.column_files.get(column_name)
             .ok_or_else(|| DriftError::Other(format!("Column {} not found", column_name)))?;
 
         let mut all_values = Vec::new();
@@ -770,7 +773,7 @@ impl ColumnarStorage {
         }
     }
 
-    fn evaluate_predicate_on_stats(&self, predicate: &Predicate, stats: Option<&ColumnStatistics>) -> bool {
+    fn evaluate_predicate_on_stats(&self, _predicate: &Predicate, _stats: Option<&ColumnStatistics>) -> bool {
         true
     }
 }

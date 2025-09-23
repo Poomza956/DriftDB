@@ -2,7 +2,7 @@ use crate::errors::{DriftError, Result};
 use crate::query::{Query, QueryResult, WhereCondition};
 use crate::engine::Engine;
 use serde::{Serialize, Deserialize};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use parking_lot::RwLock;
 
@@ -76,6 +76,7 @@ struct ReferenceIndex {
     // child_table -> parent_tables it references
     child_to_parents: HashMap<String, HashSet<String>>,
     // (parent_table, parent_key) -> list of (child_table, child_keys)
+    #[allow(dead_code)]
     reference_map: HashMap<(String, Vec<serde_json::Value>), Vec<(String, Vec<serde_json::Value>)>>,
 }
 
@@ -89,8 +90,11 @@ struct ValidationCache {
 
 #[derive(Debug, Clone)]
 struct ValidationResult {
+    #[allow(dead_code)]
     pub valid: bool,
+    #[allow(dead_code)]
     pub violations: Vec<ConstraintViolation>,
+    #[allow(dead_code)]
     pub timestamp: std::time::Instant,
 }
 

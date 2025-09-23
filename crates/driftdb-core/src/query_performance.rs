@@ -1,6 +1,5 @@
 use crate::errors::Result;
-use crate::query::{Query, QueryResult};
-use std::collections::HashMap;
+use crate::query::Query;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use parking_lot::RwLock;

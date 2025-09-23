@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use sha2::{Sha256, Digest};
+use sha2::Sha256;
 use tracing::{debug, error, info, instrument};
 
 use crate::errors::{DriftError, Result};
@@ -562,6 +562,7 @@ impl BackupManager {
         Ok(())
     }
 
+    #[allow(dead_code)]
     fn backup_wal(&self, backup_path: &Path) -> Result<()> {
         debug!("Backing up WAL");
 
@@ -743,6 +744,7 @@ impl BackupManager {
         Ok(())
     }
 
+    #[allow(dead_code)]
     fn get_current_wal_sequence(&self) -> Result<u64> {
         // In production, would query the WAL for the current sequence
         Ok(0)

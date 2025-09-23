@@ -74,6 +74,7 @@ impl Default for IndexConfig {
 
 /// B+ Tree implementation for range queries
 pub struct BPlusTreeIndex {
+    #[allow(dead_code)]
     config: IndexConfig,
     root: Arc<RwLock<Option<BPlusNode>>>,
     order: usize,
@@ -82,6 +83,7 @@ pub struct BPlusTreeIndex {
 
 #[derive(Debug, Clone)]
 enum BPlusNode {
+    #[allow(dead_code)]
     Internal {
         keys: Vec<Value>,
         children: Vec<Arc<RwLock<BPlusNode>>>,
@@ -170,13 +172,13 @@ impl BPlusTreeIndex {
         }
     }
 
-    fn split_root(&self, root_guard: parking_lot::lock_api::RwLockWriteGuard<parking_lot::RawRwLock, Option<BPlusNode>>) {
+    fn split_root(&self, _root_guard: parking_lot::lock_api::RwLockWriteGuard<parking_lot::RawRwLock, Option<BPlusNode>>) {
         // Implementation would split the root and create new internal node
         // This is simplified for brevity
         debug!("Splitting B+ tree root");
     }
 
-    fn handle_child_split(&self, keys: &mut Vec<Value>, children: &mut Vec<Arc<RwLock<BPlusNode>>>, child_idx: usize) {
+    fn handle_child_split(&self, _keys: &mut Vec<Value>, _children: &mut Vec<Arc<RwLock<BPlusNode>>>, child_idx: usize) {
         // Implementation would handle splitting of child nodes
         debug!("Handling child split at index {}", child_idx);
     }
@@ -298,6 +300,7 @@ impl BPlusTreeIndex {
 
 /// Hash index for fast point lookups
 pub struct HashIndex {
+    #[allow(dead_code)]
     config: IndexConfig,
     data: Arc<RwLock<HashMap<String, HashSet<u64>>>>,
     stats: Arc<RwLock<IndexStats>>,
@@ -349,6 +352,7 @@ impl HashIndex {
 
 /// Bitmap index for low-cardinality columns
 pub struct BitmapIndex {
+    #[allow(dead_code)]
     config: IndexConfig,
     bitmaps: Arc<RwLock<HashMap<Value, Bitmap>>>,
     stats: Arc<RwLock<IndexStats>>,
@@ -360,6 +364,7 @@ struct Bitmap {
     size: usize,
 }
 
+#[allow(dead_code)]
 impl Bitmap {
     fn new() -> Self {
         Self {
@@ -581,15 +586,19 @@ impl From<Value> for OrderedValue {
 
 /// LSM Tree for write-optimized workloads
 pub struct LSMTree {
+    #[allow(dead_code)]
     config: IndexConfig,
     memtable: Arc<RwLock<BTreeMap<OrderedValue, Vec<u64>>>>,
     immutable_memtables: Arc<RwLock<Vec<BTreeMap<OrderedValue, Vec<u64>>>>>,
+    #[allow(dead_code)]
     sstables: Arc<RwLock<Vec<SSTable>>>,
+    #[allow(dead_code)]
     wal_path: PathBuf,
     stats: Arc<RwLock<IndexStats>>,
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct SSTable {
     path: PathBuf,
     min_key: Value,
@@ -791,8 +800,8 @@ impl AdvancedIndexManager {
         Ok(())
     }
 
-    pub fn get_index(&self, name: &str) -> Option<Arc<dyn IndexOperations>> {
-        let indexes = self.indexes.read();
+    pub fn get_index(&self, _name: &str) -> Option<Arc<dyn IndexOperations>> {
+        let _indexes = self.indexes.read();
         // This would need proper Arc wrapping in real implementation
         None
     }

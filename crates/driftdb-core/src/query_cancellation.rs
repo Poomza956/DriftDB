@@ -98,7 +98,9 @@ pub struct CancellationStats {
 struct ResourceMonitor {
     memory_limit: usize,
     cpu_limit: f64,
+    #[allow(dead_code)]
     current_memory: Arc<AtomicU64>,
+    #[allow(dead_code)]
     current_cpu: Arc<Mutex<f64>>,
 }
 
@@ -194,7 +196,7 @@ impl QueryCancellationManager {
     pub fn cancel_query(&self, query_id: Uuid) -> Result<()> {
         let mut queries = self.active_queries.write();
 
-        if let Some(mut handle) = queries.get_mut(&query_id) {
+        if let Some(handle) = queries.get_mut(&query_id) {
             let mut state = handle.state.write();
 
             match *state {
@@ -326,7 +328,7 @@ impl QueryCancellationManager {
             loop {
                 interval.tick().await;
 
-                let now = Instant::now();
+                let _now = Instant::now();
                 let mut timed_out = Vec::new();
 
                 {
@@ -344,7 +346,7 @@ impl QueryCancellationManager {
                 // Handle timed out queries
                 for id in timed_out {
                     let mut queries_write = queries.write();
-                    if let Some(mut handle) = queries_write.get_mut(&id) {
+                    if let Some(handle) = queries_write.get_mut(&id) {
                         *handle.state.write() = QueryState::TimedOut;
                         handle.cancel_flag.store(true, Ordering::SeqCst);
 
@@ -370,7 +372,7 @@ impl QueryCancellationManager {
         let queries = self.active_queries.clone();
         let config = self.config.clone();
         let stats = self.stats.clone();
-        let monitor = self.resource_monitor.clone();
+        let _monitor = self.resource_monitor.clone();
 
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(5));
@@ -403,7 +405,7 @@ impl QueryCancellationManager {
                 // Handle resource-exceeded queries
                 for (id, resource) in exceeded {
                     let mut queries_write = queries.write();
-                    if let Some(mut handle) = queries_write.get_mut(&id) {
+                    if let Some(handle) = queries_write.get_mut(&id) {
                         *handle.state.write() = QueryState::ResourceExceeded;
                         handle.cancel_flag.store(true, Ordering::SeqCst);
 
@@ -571,10 +573,12 @@ impl ResourceMonitor {
         }
     }
 
+    #[allow(dead_code)]
     fn check_memory(&self, bytes: u64) -> bool {
         bytes <= (self.memory_limit as u64 * 1024 * 1024)
     }
 
+    #[allow(dead_code)]
     fn check_cpu(&self, percent: f64) -> bool {
         percent <= self.cpu_limit
     }

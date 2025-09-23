@@ -187,9 +187,9 @@ impl<'a> SqlExecutor<'a> {
     fn query_between(
         &mut self,
         table: &str,
-        start: DriftDbPoint,
-        end: DriftDbPoint,
-        inclusive: bool,
+        _start: DriftDbPoint,
+        _end: DriftDbPoint,
+        _inclusive: bool,
     ) -> Result<Vec<serde_json::Value>> {
         let storage = self.engine.tables.get(table)
             .ok_or_else(|| DriftError::TableNotFound(table.to_string()))?;
@@ -199,7 +199,7 @@ impl<'a> SqlExecutor<'a> {
 
         // Filter by time range
         let filtered: Vec<_> = events.into_iter()
-            .filter(|event| {
+            .filter(|_event| {
                 // Check if event is in temporal range
                 // This is simplified - production would be more sophisticated
                 true
@@ -232,14 +232,14 @@ impl<'a> SqlExecutor<'a> {
     fn execute_insert(
         &mut self,
         table_name: &sqlparser::ast::ObjectName,
-        columns: &Vec<sqlparser::ast::Ident>,
-        source: &Option<Box<Query>>,
+        _columns: &Vec<sqlparser::ast::Ident>,
+        _source: &Option<Box<Query>>,
     ) -> Result<TemporalQueryResult> {
         let table = table_name.to_string();
 
         // For simplicity, assume VALUES clause
         // In production, would handle all source types
-        let values = self.extract_insert_values(source)?;
+        let values = self.extract_insert_values(_source)?;
 
         // Create insert event
         let primary_key = json!("generated_id"); // Would extract from schema
@@ -262,7 +262,7 @@ impl<'a> SqlExecutor<'a> {
         &mut self,
         table: &sqlparser::ast::TableWithJoins,
         assignments: &Vec<sqlparser::ast::Assignment>,
-        selection: &Option<sqlparser::ast::Expr>,
+        _selection: &Option<sqlparser::ast::Expr>,
     ) -> Result<TemporalQueryResult> {
         // Extract table name
         let table_name = self.extract_table_name(table)?;
@@ -305,7 +305,7 @@ impl<'a> SqlExecutor<'a> {
     fn execute_delete(
         &mut self,
         tables: &Vec<sqlparser::ast::ObjectName>,
-        selection: &Option<sqlparser::ast::Expr>,
+        _selection: &Option<sqlparser::ast::Expr>,
     ) -> Result<TemporalQueryResult> {
         if tables.is_empty() {
             return Err(DriftError::InvalidQuery("No table specified".to_string()));
@@ -332,7 +332,7 @@ impl<'a> SqlExecutor<'a> {
     fn execute_create_table(
         &mut self,
         name: &sqlparser::ast::ObjectName,
-        columns: &Vec<sqlparser::ast::ColumnDef>,
+        _columns: &Vec<sqlparser::ast::ColumnDef>,
         constraints: &Vec<sqlparser::ast::TableConstraint>,
     ) -> Result<TemporalQueryResult> {
         let table_name = name.to_string();
@@ -400,13 +400,13 @@ impl<'a> SqlExecutor<'a> {
         Err(DriftError::InvalidQuery("No primary key defined".to_string()))
     }
 
-    fn extract_indexes(&self, constraints: &Vec<sqlparser::ast::TableConstraint>) -> Vec<String> {
+    fn extract_indexes(&self, _constraints: &Vec<sqlparser::ast::TableConstraint>) -> Vec<String> {
         // Extract indexed columns from constraints
         // In production would handle all constraint types
         vec![]
     }
 
-    fn extract_insert_values(&self, source: &Option<Box<Query>>) -> Result<serde_json::Value> {
+    fn extract_insert_values(&self, _source: &Option<Box<Query>>) -> Result<serde_json::Value> {
         // Extract VALUES from INSERT
         // This is simplified - production would handle all source types
         Ok(json!({}))

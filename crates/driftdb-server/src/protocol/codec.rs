@@ -7,11 +7,13 @@ use std::io::{self, ErrorKind};
 use super::messages::Message;
 
 /// PostgreSQL protocol codec for tokio
+#[allow(dead_code)]
 pub struct PostgresCodec {
     startup_done: bool,
 }
 
 impl PostgresCodec {
+    #[allow(dead_code)]
     pub fn new() -> Self {
         Self {
             startup_done: false,

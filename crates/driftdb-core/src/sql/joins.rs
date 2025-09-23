@@ -390,7 +390,7 @@ impl JoinExecutor {
                             projected_row[output_name] = value.clone();
                         }
                     }
-                    SelectColumn::Expression { expr, alias } => {
+                    SelectColumn::Expression { expr: _expr, alias } => {
                         // TODO: Implement expression evaluation
                         // For now, just return null
                         projected_row[alias] = Value::Null;

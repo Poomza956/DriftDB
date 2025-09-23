@@ -333,7 +333,7 @@ async fn start_http_server(
     addr: SocketAddr,
     engine: Arc<tokio::sync::RwLock<Engine>>,
     session_manager: Arc<SessionManager>,
-    engine_pool: EnginePool,
+    _engine_pool: EnginePool,
     enable_metrics: bool,
 ) -> Result<()> {
     use axum::Router;

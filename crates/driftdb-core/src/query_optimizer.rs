@@ -268,6 +268,7 @@ pub struct QueryOptimizer {
     /// Plan cache for reuse
     plan_cache: Arc<RwLock<HashMap<String, CachedPlan>>>,
     /// Optimization history for adaptive learning
+    #[allow(dead_code)]
     optimization_history: Arc<RwLock<Vec<OptimizationResult>>>,
 }
 

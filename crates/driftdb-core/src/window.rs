@@ -148,6 +148,7 @@ pub struct WindowExecutor;
 #[derive(Debug)]
 struct Partition {
     /// Partition key values
+    #[allow(dead_code)]
     key: Vec<Value>,
     /// Rows in this partition
     rows: Vec<(usize, Value)>, // (original_index, row_data)

@@ -1,12 +1,12 @@
 use crate::errors::{DriftError, Result};
-use crate::audit::{AuditEvent, AuditAction, AuditEventType, RiskLevel, UserInfo};
+use crate::audit::{AuditEvent, AuditAction, AuditEventType, RiskLevel};
 use serde::{Serialize, Deserialize};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, Instant};
+use std::time::{Duration, SystemTime};
 use parking_lot::{RwLock, Mutex};
 use uuid::Uuid;
-use tracing::{warn, error, info, debug};
+use tracing::{warn, info, debug};
 use chrono::Timelike;
 
 /// Advanced security monitoring and intrusion detection system
@@ -54,8 +54,10 @@ impl Default for SecurityConfig {
 /// Real-time threat detection engine
 struct ThreatDetector {
     login_attempts: HashMap<String, VecDeque<SystemTime>>, // IP -> attempts
+    #[allow(dead_code)]
     failed_queries: HashMap<String, VecDeque<SystemTime>>, // User -> failed queries
     blocked_ips: HashMap<String, SystemTime>, // IP -> block time
+    #[allow(dead_code)]
     suspicious_patterns: Vec<ThreatPattern>,
     active_threats: HashMap<Uuid, ThreatEvent>,
 }
@@ -63,24 +65,33 @@ struct ThreatDetector {
 /// Session tracking and analysis
 struct SessionTracker {
     active_sessions: HashMap<String, SessionInfo>,
+    #[allow(dead_code)]
     session_history: VecDeque<SessionInfo>,
+    #[allow(dead_code)]
     user_sessions: HashMap<String, Vec<String>>, // User -> Session IDs
+    #[allow(dead_code)]
     suspicious_sessions: HashMap<String, SuspiciousActivity>,
 }
 
 /// Behavioral anomaly detection
 struct AnomalyDetector {
     user_baselines: HashMap<String, UserBehaviorBaseline>,
+    #[allow(dead_code)]
     query_patterns: HashMap<String, QueryPattern>,
+    #[allow(dead_code)]
     access_patterns: HashMap<String, AccessPattern>,
     anomalies: VecDeque<AnomalyEvent>,
 }
 
 /// Compliance monitoring for various standards
 struct ComplianceMonitor {
+    #[allow(dead_code)]
     gdpr_compliance: GDPRCompliance,
+    #[allow(dead_code)]
     sox_compliance: SOXCompliance,
+    #[allow(dead_code)]
     hipaa_compliance: HIPAACompliance,
+    #[allow(dead_code)]
     pci_compliance: PCICompliance,
     violations: VecDeque<ComplianceViolation>,
 }
@@ -89,7 +100,9 @@ struct ComplianceMonitor {
 struct AlertManager {
     active_alerts: HashMap<Uuid, SecurityAlert>,
     alert_history: VecDeque<SecurityAlert>,
+    #[allow(dead_code)]
     escalation_rules: Vec<EscalationRule>,
+    #[allow(dead_code)]
     notification_channels: Vec<NotificationChannel>,
 }
 
@@ -840,7 +853,7 @@ impl ThreatDetector {
         }
     }
 
-    fn is_brute_force_attack(&self, ip: &str, threshold: u32, window: Duration) -> bool {
+    fn is_brute_force_attack(&self, ip: &str, threshold: u32, _window: Duration) -> bool {
         if let Some(attempts) = self.login_attempts.get(ip) {
             attempts.len() >= threshold as usize
         } else {
@@ -942,6 +955,7 @@ impl SessionTracker {
         risk.min(1.0)
     }
 
+    #[allow(dead_code)]
     fn calculate_session_risk(&self, session: &SessionInfo) -> f64 {
         Self::calculate_session_risk_static(session)
     }
@@ -1067,19 +1081,19 @@ impl ComplianceMonitor {
         }
     }
 
-    fn record_personal_data_access(&mut self, event: &AuditEvent) -> Result<()> {
+    fn record_personal_data_access(&mut self, _event: &AuditEvent) -> Result<()> {
         // GDPR compliance logging
         // Implementation would track personal data access
         Ok(())
     }
 
-    fn record_schema_change(&mut self, event: &AuditEvent) -> Result<()> {
+    fn record_schema_change(&mut self, _event: &AuditEvent) -> Result<()> {
         // SOX compliance logging
         // Implementation would track schema changes
         Ok(())
     }
 
-    fn record_phi_access(&mut self, event: &AuditEvent) -> Result<()> {
+    fn record_phi_access(&mut self, _event: &AuditEvent) -> Result<()> {
         // HIPAA compliance logging
         // Implementation would track PHI access
         Ok(())

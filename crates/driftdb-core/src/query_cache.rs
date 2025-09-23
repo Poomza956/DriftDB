@@ -82,9 +82,11 @@ struct CacheKey {
 
 #[derive(Debug, Clone)]
 struct CacheEntry {
+    #[allow(dead_code)]
     key: CacheKey,
     result: QueryResult,
     metadata: CacheMetadata,
+    #[allow(dead_code)]
     compressed: bool,
     size_bytes: usize,
 }
@@ -95,6 +97,7 @@ struct CacheMetadata {
     last_accessed: Instant,
     access_count: u64,
     computation_time_ms: u64,
+    #[allow(dead_code)]
     source_tables: Vec<String>,
     is_stale: bool,
     ttl: Duration,
@@ -110,6 +113,7 @@ pub struct QueryResult {
 
 /// Manages cache invalidation
 struct InvalidationManager {
+    #[allow(dead_code)]
     strategy: InvalidationStrategy,
     table_dependencies: Arc<RwLock<HashMap<String, HashSet<CacheKey>>>>,
     staleness_tracker: Arc<RwLock<HashMap<CacheKey, bool>>>,
@@ -117,6 +121,7 @@ struct InvalidationManager {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct InvalidationEvent {
     timestamp: SystemTime,
     event_type: InvalidationType,
@@ -125,6 +130,7 @@ struct InvalidationEvent {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 enum InvalidationType {
     TableUpdate(String),
     TableDrop(String),
@@ -148,12 +154,14 @@ pub struct CacheStats {
 }
 
 /// Adaptive caching predictor
+#[allow(dead_code)]
 struct AdaptiveCachePredictor {
     query_patterns: HashMap<String, QueryPattern>,
     benefit_scores: HashMap<CacheKey, f64>,
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct QueryPattern {
     frequency: u64,
     avg_execution_time: u64,
@@ -197,7 +205,7 @@ impl QueryCacheManager {
 
         stats.total_requests += 1;
 
-        if let Some(mut entry) = cache.get(&key) {
+        if let Some(entry) = cache.get(&key) {
             // Check TTL
             if entry.metadata.created_at.elapsed() > entry.metadata.ttl {
                 cache.remove(&key);
@@ -326,7 +334,7 @@ impl QueryCacheManager {
                 let mut cache = self.cache.write();
 
                 for key in keys {
-                    if let Some(mut entry) = cache.get(&key) {
+                    if let Some(entry) = cache.get(&key) {
                         entry.metadata.is_stale = true;
                     }
                 }
@@ -421,7 +429,7 @@ impl QueryCacheManager {
     }
 
     /// Warm up cache with common queries
-    pub async fn warm_up(&self, queries: Vec<(String, Vec<String>)>) -> Result<()> {
+    pub async fn warm_up(&self, _queries: Vec<(String, Vec<String>)>) -> Result<()> {
         // Would execute queries and cache results
         // This is a placeholder for the actual implementation
         Ok(())

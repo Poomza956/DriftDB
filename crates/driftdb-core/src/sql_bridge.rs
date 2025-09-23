@@ -257,7 +257,7 @@ pub fn execute_sql(engine: &mut Engine, sql: &str) -> Result<QueryResult> {
                     }
 
                     Ok(QueryResult::Success {
-                        message: format!("Table '{}' truncated", table_name),
+                        message: format!("Table '{}' truncated - {} rows deleted", table_name, delete_count),
                     })
                 }
                 _ => Ok(QueryResult::Success {
@@ -2115,6 +2115,7 @@ fn contains_subquery(expr: &Expr) -> bool {
     }
 }
 
+#[allow(dead_code)]
 fn substitute_outer_refs(expr: Expr, outer_row: &Value) -> Result<Expr> {
     match expr {
         Expr::BinaryOp { left, op, right } => {
@@ -2140,6 +2141,7 @@ fn substitute_outer_refs(expr: Expr, outer_row: &Value) -> Result<Expr> {
     }
 }
 
+#[allow(dead_code)]
 fn json_value_to_sql_expr(val: &Value) -> Result<Expr> {
     Ok(match val {
         Value::Number(n) => {
@@ -2438,6 +2440,7 @@ fn evaluate_value_expression(expr: &Expr, row: &Value) -> Result<Value> {
     }
 }
 
+#[allow(dead_code)]
 fn evaluate_expression_with_row(left: &Expr, op: &BinaryOperator, right: &Expr, row: &Value) -> Result<Value> {
     let left_val = match left {
         Expr::Identifier(ident) => {
@@ -3176,6 +3179,7 @@ fn execute_sql_update(
     })
 }
 
+#[allow(dead_code)]
 fn execute_create_view(
     engine: &Engine,
     name: &sqlparser::ast::ObjectName,
@@ -3254,7 +3258,7 @@ fn execute_create_table(
     let mut foreign_keys = Vec::new();
     for constraint in constraints {
         match constraint {
-            sqlparser::ast::TableConstraint::Unique { columns, .. } => {
+            sqlparser::ast::TableConstraint::Unique {  .. } => {
                 // Unique constraint - could track these for future use
             }
             sqlparser::ast::TableConstraint::PrimaryKey { columns, .. } => {
@@ -3370,8 +3374,9 @@ fn extract_indexes_from_constraints(constraints: &Vec<sqlparser::ast::TableConst
 //     ...
 // }
 
+#[allow(dead_code)]
 fn execute_create_index(
-    engine: &mut Engine,
+    _engine: &mut Engine,
     name: &Option<sqlparser::ast::ObjectName>,
     table_name: &sqlparser::ast::ObjectName,
     columns: &[sqlparser::ast::OrderByExpr],
@@ -3501,7 +3506,7 @@ fn evaluate_update_expression(expr: &Expr, row: &Value) -> Result<Value> {
 }
 
 fn execute_alter_table(
-    engine: &mut Engine,
+    _engine: &mut Engine,
     table_name: &sqlparser::ast::ObjectName,
     operation: &sqlparser::ast::AlterTableOperation,
 ) -> Result<QueryResult> {

@@ -89,6 +89,7 @@ pub struct Constraint {
 /// Constraint Manager handles all constraint validation and enforcement
 pub struct ConstraintManager {
     constraints: HashMap<String, Vec<Constraint>>, // table_name -> constraints
+    #[allow(dead_code)]
     unique_indexes: HashMap<String, HashSet<String>>, // table_name.column -> unique values
     foreign_key_graph: ForeignKeyGraph,
 }

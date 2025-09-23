@@ -4,7 +4,7 @@ use parking_lot::RwLock;
 use tracing::{info, warn, debug, instrument};
 
 use crate::errors::{DriftError, Result};
-use crate::transaction::{TransactionManager, IsolationLevel as TxnIsolationLevel};
+use crate::transaction::IsolationLevel as TxnIsolationLevel;
 use crate::mvcc::{MVCCManager, MVCCTransaction, IsolationLevel, MVCCConfig, RecordId};
 use crate::events::Event;
 use crate::wal::{WalManager, WalOperation};

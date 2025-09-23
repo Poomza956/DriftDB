@@ -125,11 +125,14 @@ pub struct NodeLoad {
 /// Distributed query coordinator
 pub struct QueryCoordinator {
     config: ClusterConfig,
+    #[allow(dead_code)]
     local_engine: Arc<Engine>,
     cluster_state: Arc<RwLock<ClusterState>>,
     partition_manager: Arc<PartitionManager>,
     router: Arc<QueryRouter>,
+    #[allow(dead_code)]
     replication_manager: Arc<ReplicationManager>,
+    #[allow(dead_code)]
     transaction_coordinator: Arc<DistributedTransactionCoordinator>,
 }
 
@@ -145,16 +148,19 @@ struct ClusterState {
 struct ClusterTopology {
     ring: ConsistentHashRing,
     data_centers: HashMap<String, Vec<String>>,
+    #[allow(dead_code)]
     rack_awareness: bool,
 }
 
 /// Consistent hash ring for data distribution
 struct ConsistentHashRing {
     tokens: Vec<(u64, String)>,
+    #[allow(dead_code)]
     replication_strategy: ReplicationStrategy,
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 enum ReplicationStrategy {
     SimpleStrategy { replication_factor: usize },
     NetworkTopologyStrategy { dc_replication: HashMap<String, usize> },
@@ -163,10 +169,12 @@ enum ReplicationStrategy {
 /// Partition management
 pub struct PartitionManager {
     partitions: Arc<RwLock<HashMap<String, PartitionInfo>>>,
+    #[allow(dead_code)]
     ownership: Arc<RwLock<HashMap<String, Vec<String>>>>,
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct PartitionInfo {
     id: String,
     range: (u64, u64),
@@ -176,6 +184,7 @@ struct PartitionInfo {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)]
 enum PartitionStatus {
     Active,
     Migrating,
@@ -255,12 +264,14 @@ pub struct DistributedQuery {
 }
 
 /// Replication management
+#[allow(dead_code)]
 struct ReplicationManager {
     config: ClusterConfig,
     replication_log: Arc<RwLock<Vec<ReplicationEntry>>>,
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct ReplicationEntry {
     id: String,
     operation: ReplicationOp,
@@ -269,6 +280,7 @@ struct ReplicationEntry {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 enum ReplicationOp {
     Write { table: String, key: Value, data: Value },
     Delete { table: String, key: Value },
@@ -276,6 +288,7 @@ enum ReplicationOp {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 enum ReplicationStatus {
     Pending,
     InProgress,
@@ -292,12 +305,14 @@ struct SchemaChange {
 }
 
 /// Distributed transaction coordination
+#[allow(dead_code)]
 struct DistributedTransactionCoordinator {
     transactions: Arc<RwLock<HashMap<String, DistributedTransaction>>>,
     two_phase_commit: bool,
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct DistributedTransaction {
     id: String,
     participants: Vec<String>,
@@ -307,6 +322,7 @@ struct DistributedTransaction {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)]
 enum TransactionState {
     Preparing,
     Prepared,
@@ -317,6 +333,7 @@ enum TransactionState {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct TransactionOp {
     node: String,
     operation: String,
@@ -325,6 +342,7 @@ struct TransactionOp {
 
 /// Pending cluster operations
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct PendingOperation {
     id: String,
     operation: ClusterOp,
@@ -333,6 +351,7 @@ struct PendingOperation {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 enum ClusterOp {
     AddNode { node: NodeInfo },
     RemoveNode { node_id: String },
@@ -427,7 +446,7 @@ impl QueryCoordinator {
 
     async fn execute_on_nodes(
         &self,
-        query: DistributedQuery,
+        _query: DistributedQuery,
         nodes: Vec<String>,
     ) -> Result<Vec<QueryResult>> {
         let mut results = Vec::new();
@@ -491,7 +510,7 @@ impl QueryCoordinator {
 
         let mut state = self.cluster_state.write();
 
-        if let Some(node) = state.nodes.remove(node_id) {
+        if let Some(_node) = state.nodes.remove(node_id) {
             // Update topology
             self.update_topology(&mut state)?;
 

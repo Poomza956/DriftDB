@@ -388,7 +388,7 @@ impl TableStorage {
 
     /// Count total number of records in the table
     pub fn count_records(&self) -> Result<usize> {
-        let events = self.read_all_events()?;
+        let _events = self.read_all_events()?;
 
         // Count non-deleted records by reconstructing the current state
         let state = self.reconstruct_state_at(None)?;

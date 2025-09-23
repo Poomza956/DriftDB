@@ -5,7 +5,6 @@
 use anyhow::{Result, anyhow};
 use driftdb_core::{Engine, EngineGuard};
 use serde_json::Value;
-use sqlparser::ast::{Statement, Query as SqlQuery, Expr as SqlExpr};
 use sqlparser::parser::Parser;
 use sqlparser::dialect::GenericDialect;
 use std::sync::Arc;
@@ -37,6 +36,7 @@ pub enum QueryResult {
         count: usize,
     },
     CreateTable,
+    #[allow(dead_code)]
     Begin,
     Commit,
     Rollback,
@@ -69,7 +69,7 @@ enum AggregationFunction {
 
 /// Aggregation specification
 #[derive(Debug, Clone)]
-struct Aggregation {
+pub struct Aggregation {
     function: AggregationFunction,
     column: Option<String>, // None for COUNT(*)
 }
@@ -99,7 +99,7 @@ enum SelectClause {
 
 /// JOIN types
 #[derive(Debug, Clone, PartialEq)]
-enum JoinType {
+pub enum JoinType {
     Inner,
     LeftOuter,
     RightOuter,
@@ -169,6 +169,7 @@ enum FromClause {
 pub struct Subquery {
     pub sql: String,
     pub is_correlated: bool,
+    #[allow(dead_code)]
     pub referenced_columns: Vec<String>, // Columns from outer query referenced in subquery
 }
 
@@ -201,6 +202,7 @@ pub enum SubqueryQuantifier {
 
 /// Scalar subquery in SELECT clause
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct ScalarSubquery {
     pub subquery: Subquery,
     pub alias: Option<String>,
@@ -208,6 +210,7 @@ pub struct ScalarSubquery {
 
 /// Extended SELECT clause to support scalar subqueries
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum ExtendedSelectItem {
     Column(String),
     Aggregation(Aggregation),
@@ -259,6 +262,7 @@ pub enum PlanNode {
         filter: Option<String>,
         estimated_rows: usize,
     },
+    #[allow(dead_code)]
     IndexScan {
         table: String,
         index: String,
@@ -272,6 +276,7 @@ pub enum PlanNode {
         condition: Option<String>,
         estimated_rows: usize,
     },
+    #[allow(dead_code)]
     HashJoin {
         left: Box<PlanNode>,
         right: Box<PlanNode>,
@@ -307,6 +312,7 @@ pub enum PlanNode {
         estimated_rows: usize,
     },
     Subquery {
+        #[allow(dead_code)]
         query: String,
         correlated: bool,
         estimated_rows: usize,
@@ -341,6 +347,7 @@ impl PlanNode {
 
 /// Prepared statement storage
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct PreparedStatement {
     pub name: String,
     pub sql: String,
@@ -351,6 +358,7 @@ pub struct PreparedStatement {
 
 /// Parsed query structure for prepared statements
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct ParsedQuery {
     pub query_type: QueryType,
     pub base_sql: String,
@@ -369,6 +377,7 @@ pub enum QueryType {
 
 /// Parameter type for prepared statements
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum ParamType {
     Integer,
     String,
@@ -387,6 +396,7 @@ pub struct QueryExecutor<'a> {
     session_id: String, // Session identifier for transaction tracking
 }
 
+#[allow(dead_code)]
 impl<'a> QueryExecutor<'a> {
     /// Convert core sql::QueryResult to server QueryResult
     async fn convert_sql_result(&self, core_result: driftdb_core::sql::QueryResult) -> Result<QueryResult> {
@@ -805,7 +815,7 @@ impl<'a> QueryExecutor<'a> {
         &self,
         groups: HashMap<Vec<Value>, Vec<Value>>,
         having: &Having,
-        aggregations: &[Aggregation]
+        _aggregations: &[Aggregation]
     ) -> Result<HashMap<Vec<Value>, Vec<Value>>> {
         let mut filtered_groups = HashMap::new();
 
@@ -1120,7 +1130,7 @@ impl<'a> QueryExecutor<'a> {
 
         // Try to parse with sqlparser first for better multi-line support
         let dialect = GenericDialect {};
-        let parse_result = Parser::parse_sql(&dialect, sql);
+        let _parse_result = Parser::parse_sql(&dialect, sql);
 
         // Handle common PostgreSQL client queries
         if sql.eq_ignore_ascii_case("SELECT 1") || sql.eq_ignore_ascii_case("SELECT 1;") {
@@ -1257,7 +1267,7 @@ impl<'a> QueryExecutor<'a> {
         debug!("JOIN execution produced {} rows with {} columns", joined_data.len(), all_columns.len());
 
         // Parse WHERE conditions if present (with subquery support)
-        let where_conditions = if let Some(where_pos) = after_from.to_lowercase().find(" where ") {
+        let _where_conditions = if let Some(where_pos) = after_from.to_lowercase().find(" where ") {
             let where_start = where_pos + 7;
             let where_clause = &after_from[where_start..];
 
@@ -2002,7 +2012,7 @@ impl<'a> QueryExecutor<'a> {
     /// Execute a prepared statement with parameters
     async fn execute_prepared(&self, sql: &str) -> Result<QueryResult> {
         // Parse: EXECUTE stmt_name (param1, param2, ...)
-        let lower = sql.to_lowercase();
+        let _lower = sql.to_lowercase();
         let parts: Vec<&str> = sql.split_whitespace().collect();
 
         if parts.len() < 2 {
@@ -3058,7 +3068,7 @@ impl<'a> QueryExecutor<'a> {
     }
 
     /// Extract potential correlation columns from subquery
-    fn extract_potential_correlation_columns(&self, sql: &str) -> Vec<String> {
+    fn extract_potential_correlation_columns(&self, _sql: &str) -> Vec<String> {
         // This is a simplified implementation
         // In practice, you'd want more sophisticated parsing to distinguish
         // between columns from subquery tables vs outer query references
@@ -3200,7 +3210,7 @@ impl<'a> QueryExecutor<'a> {
     }
 
     /// Execute a correlated subquery with outer row context
-    async fn execute_correlated_subquery(&self, subquery: &Subquery, outer_row: &Value) -> Result<QueryResult> {
+    async fn execute_correlated_subquery(&self, subquery: &Subquery, _outer_row: &Value) -> Result<QueryResult> {
         // For now, treat as regular subquery
         // In a full implementation, you'd substitute correlation variables
         // with values from the outer row before execution
@@ -3928,7 +3938,7 @@ impl<'a> QueryExecutor<'a> {
             return table_data[0].clone();
         }
 
-        let result: Vec<Value> = Vec::new();
+        let _result: Vec<Value> = Vec::new();
 
         // Start with first table
         let mut current_product = table_data[0].clone();
@@ -4058,13 +4068,13 @@ impl<'a> QueryExecutor<'a> {
     }
 
     /// Count columns for the right table in a join
-    fn count_right_columns(&self, join: &Join) -> Result<usize> {
+    fn count_right_columns(&self, _join: &Join) -> Result<usize> {
         // Simplified implementation - in reality we'd check the table schema
         Ok(5) // Assuming 5 columns per table for now
     }
 
     /// Get table columns
-    async fn get_table_columns(&self, engine: &Engine, table_name: &str) -> Result<Vec<String>> {
+    async fn get_table_columns(&self, _engine: &Engine, _table_name: &str) -> Result<Vec<String>> {
         // This is a placeholder - in reality we'd get the actual table schema
         // For now, return common column names
         Ok(vec![

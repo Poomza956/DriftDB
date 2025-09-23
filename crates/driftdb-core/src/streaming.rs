@@ -11,15 +11,13 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use parking_lot::RwLock;
-use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
+use tokio::sync::{broadcast, mpsc, Mutex};
 use serde::{Serialize, Deserialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::errors::{DriftError, Result};
-use crate::engine::Engine;
+use crate::errors::Result;
 use crate::events::{Event, EventType};
-use crate::query::Query;
 
 /// Stream subscription
 #[derive(Debug, Clone)]
@@ -159,20 +157,29 @@ pub struct StreamManager {
 
 /// Client connection state
 struct ClientConnection {
+    #[allow(dead_code)]
     id: String,
     sender: mpsc::Sender<StreamEvent>,
     subscriptions: HashSet<String>,
+    #[allow(dead_code)]
     connected_at: std::time::SystemTime,
+    #[allow(dead_code)]
     last_activity: std::time::SystemTime,
+    #[allow(dead_code)]
     bytes_sent: u64,
+    #[allow(dead_code)]
     events_sent: u64,
 }
 
 /// Stream processor for handling specific stream types
 struct StreamProcessor {
+    #[allow(dead_code)]
     subscription: StreamSubscription,
+    #[allow(dead_code)]
     state: ProcessorState,
+    #[allow(dead_code)]
     buffer: VecDeque<StreamEvent>,
+    #[allow(dead_code)]
     last_sequence: u64,
 }
 
@@ -188,9 +195,13 @@ enum ProcessorState {
 struct StreamStatistics {
     total_subscriptions: u64,
     active_subscriptions: u64,
+    #[allow(dead_code)]
     total_events_sent: u64,
+    #[allow(dead_code)]
     total_bytes_sent: u64,
+    #[allow(dead_code)]
     errors: u64,
+    #[allow(dead_code)]
     reconnections: u64,
 }
 
@@ -305,7 +316,7 @@ impl StreamManager {
     ) -> Result<()> {
         let subscriptions = self.subscriptions.clone();
         let clients = self.clients.clone();
-        let processors = self.processors.clone();
+        let _processors = self.processors.clone();
         let mut event_rx = self.event_broadcaster.subscribe();
         let mut shutdown_rx = self.shutdown.subscribe();
 
@@ -396,7 +407,7 @@ impl StreamManager {
     async fn start_live_query_processor(
         &self,
         subscription_id: String,
-        query: String,
+        _query: String,
         refresh_interval_ms: Option<u64>,
     ) -> Result<()> {
         let interval = refresh_interval_ms.unwrap_or(1000);
@@ -487,10 +498,10 @@ impl StreamManager {
     /// Start aggregation processor
     async fn start_aggregation_processor(
         &self,
-        subscription_id: String,
-        table: String,
-        aggregate_functions: Vec<AggregateFunction>,
-        window: TimeWindow,
+        _subscription_id: String,
+        _table: String,
+        _aggregate_functions: Vec<AggregateFunction>,
+        _window: TimeWindow,
     ) -> Result<()> {
         // TODO: Implement windowed aggregation processing
         Ok(())

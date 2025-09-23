@@ -849,6 +849,7 @@ impl ProcedureManager {
     }
 
     /// Evaluate an expression to a value
+    #[allow(unreachable_patterns)]
     fn evaluate_expression(&self, expression: &Expression, context: &ExecutionContext) -> Result<Value> {
         match expression {
             Expression::Literal(value) => Ok(value.clone()),
@@ -986,7 +987,7 @@ impl ProcedureManager {
                 let val = -n.as_f64().unwrap_or(0.0);
                 Ok(json!(val))
             }
-            (UnaryOperator::Plus, Value::Number(n)) => Ok(value.clone()),
+            (UnaryOperator::Plus, Value::Number(_n)) => Ok(value.clone()),
             _ => {
                 debug!("Unimplemented unary operator: {:?} {:?}", op, value);
                 Ok(Value::Null)

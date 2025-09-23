@@ -228,7 +228,7 @@ impl VectorIndex for FlatIndex {
             })
             .collect();
 
-        let elapsed = start.elapsed().as_millis() as f64;
+        let _elapsed = start.elapsed().as_millis() as f64;
         // Update stats (would need mutex for thread safety)
 
         Ok(search_results)
@@ -261,9 +261,11 @@ pub struct HNSWIndex {
     entry_point: Option<String>,
     m: usize,
     max_m: usize,
+    #[allow(dead_code)]
     ef_construction: usize,
     dimension: usize,
     metric: DistanceMetric,
+    #[allow(dead_code)]
     stats: IndexStatistics,
 }
 
@@ -639,9 +641,11 @@ pub struct VectorSearchManager {
 #[derive(Debug, Default)]
 struct VectorSearchStats {
     total_indices: usize,
+    #[allow(dead_code)]
     total_vectors: usize,
     total_searches: u64,
     total_adds: u64,
+    #[allow(dead_code)]
     total_removes: u64,
 }
 

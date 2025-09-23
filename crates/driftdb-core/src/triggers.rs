@@ -528,7 +528,7 @@ impl TriggerManager {
                     Ok(TriggerResult::Continue)
                 }
             },
-            TriggerAction::Notify { channel, payload } => {
+            TriggerAction::Notify { channel, payload: _payload } => {
                 // TODO: Send notification
                 debug!("Would notify channel '{}' with payload", channel);
                 Ok(TriggerResult::Continue)

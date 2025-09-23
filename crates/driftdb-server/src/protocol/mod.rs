@@ -11,6 +11,7 @@ pub mod auth;
 pub use messages::Message;
 
 /// PostgreSQL protocol version
+#[allow(dead_code)]
 pub const PROTOCOL_VERSION: i32 = 196608; // 3.0
 
 /// Transaction status for ReadyForQuery message
@@ -18,6 +19,7 @@ pub const PROTOCOL_VERSION: i32 = 196608; // 3.0
 pub enum TransactionStatus {
     Idle,           // 'I'
     InTransaction,  // 'T'
+    #[allow(dead_code)]
     Failed,         // 'E'
 }
 
@@ -34,6 +36,7 @@ impl TransactionStatus {
 /// PostgreSQL data type OIDs
 #[derive(Debug, Clone, Copy)]
 #[repr(i32)]
+#[allow(dead_code)]
 pub enum DataType {
     Bool = 16,
     Int2 = 21,
@@ -101,6 +104,7 @@ pub fn value_to_postgres_text(value: &serde_json::Value) -> Option<String> {
 }
 
 /// PostgreSQL error codes
+#[allow(dead_code)]
 pub mod error_codes {
     pub const SUCCESSFUL_COMPLETION: &str = "00000";
     pub const WARNING: &str = "01000";

@@ -19,7 +19,7 @@ use crate::errors::{DriftError, Result};
 use crate::wal::{WalManager, WalEntry, WalOperation};
 use crate::backup::BackupManager;
 use crate::storage::segment::Segment;
-use crate::monitoring::{MonitoringSystem, SystemMetrics};
+use crate::monitoring::MonitoringSystem;
 
 /// Recovery manager coordinates all error recovery operations
 pub struct RecoveryManager {
@@ -220,7 +220,7 @@ impl RecoveryManager {
     async fn recover_from_wal(&self) -> Result<(Option<RecoveryOperation>, Option<DataLossInfo>)> {
         info!("Starting WAL recovery...");
 
-        let start_time = SystemTime::now();
+        let _start_time = SystemTime::now();
         let timeout = Duration::from_secs(self.config.max_wal_recovery_time);
 
         // Find the last checkpoint
@@ -331,11 +331,11 @@ impl RecoveryManager {
     /// Replay a single WAL operation
     async fn replay_operation(&self, entry: &WalEntry) -> Result<()> {
         match &entry.operation {
-            WalOperation::Insert { table, row_id, data } => {
+            WalOperation::Insert { table, row_id, data: _ } => {
                 debug!("Replaying insert: {}.{}", table, row_id);
                 // TODO: Apply insert operation to storage
             }
-            WalOperation::Update { table, row_id, new_data, .. } => {
+            WalOperation::Update { table, row_id,  .. } => {
                 debug!("Replaying update: {}.{}", table, row_id);
                 // TODO: Apply update operation to storage
             }
@@ -343,7 +343,7 @@ impl RecoveryManager {
                 debug!("Replaying delete: {}.{}", table, row_id);
                 // TODO: Apply delete operation to storage
             }
-            WalOperation::CreateTable { table, schema } => {
+            WalOperation::CreateTable { table, schema: _ } => {
                 debug!("Replaying create table: {}", table);
                 // TODO: Recreate table with schema
             }
@@ -450,7 +450,7 @@ impl RecoveryManager {
     async fn verify_data_consistency(&self) -> Result<Vec<RecoveryOperation>> {
         info!("Verifying data consistency...");
 
-        let mut operations = Vec::new();
+        let operations = Vec::new();
 
         // TODO: Implement consistency checks:
         // - Verify referential integrity
@@ -465,7 +465,7 @@ impl RecoveryManager {
     async fn rebuild_damaged_indexes(&self) -> Result<Vec<RecoveryOperation>> {
         info!("Checking index integrity...");
 
-        let mut operations = Vec::new();
+        let operations = Vec::new();
 
         // TODO: Implement index verification and rebuilding:
         // - Check B-tree structure integrity
@@ -483,7 +483,7 @@ impl RecoveryManager {
             ));
         }
 
-        let backup_manager = self.backup_manager.as_ref().ok_or_else(|| {
+        let _backup_manager = self.backup_manager.as_ref().ok_or_else(|| {
             DriftError::Other("No backup manager available for recovery".to_string())
         })?;
 

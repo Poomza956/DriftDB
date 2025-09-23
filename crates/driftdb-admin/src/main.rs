@@ -303,7 +303,7 @@ async fn show_status(data_dir: &PathBuf, format: &str) -> Result<()> {
         let mut total_events = 0u64;
         for table_name in &tables {
             if let Ok(stats) = engine.get_table_stats(table_name) {
-                total_events += stats.sequence_count;
+                total_events += stats.row_count as u64;
             }
         }
 
@@ -350,7 +350,7 @@ async fn show_status(data_dir: &PathBuf, format: &str) -> Result<()> {
         let mut total_events = 0u64;
         for table_name in &tables {
             if let Ok(stats) = engine.get_table_stats(table_name) {
-                total_events += stats.sequence_count;
+                total_events += stats.row_count as u64;
             }
         }
         table.add_row(Row::new(vec![
@@ -373,7 +373,7 @@ async fn monitor_metrics(data_dir: &PathBuf, interval: u64) -> Result<()> {
     println!("{}", "Real-time Monitoring".bold().blue());
     println!("Press Ctrl+C to stop\n");
 
-    let engine = Engine::open(data_dir)?;
+    let _engine = Engine::open(data_dir)?;
 
     loop {
         // Clear screen
@@ -433,14 +433,14 @@ async fn monitor_metrics(data_dir: &PathBuf, interval: u64) -> Result<()> {
 }
 
 async fn handle_backup(command: BackupCommands, data_dir: &PathBuf) -> Result<()> {
-    let engine = Engine::open(data_dir)?;
+    let _engine = Engine::open(data_dir)?;
     let metrics = Arc::new(Metrics::new());
     let backup_manager = BackupManager::new(data_dir, metrics);
 
     match command {
         BackupCommands::Create {
             destination,
-            compress,
+            compress: _,
             incremental,
         } => {
             println!("{}", "Creating backup...".yellow());
@@ -614,7 +614,7 @@ async fn handle_backup(command: BackupCommands, data_dir: &PathBuf) -> Result<()
     Ok(())
 }
 
-async fn handle_replication(command: ReplicationCommands, data_dir: &PathBuf) -> Result<()> {
+async fn handle_replication(command: ReplicationCommands, _data_dir: &PathBuf) -> Result<()> {
     match command {
         ReplicationCommands::Status => {
             println!("{}", "Replication Status".bold());
@@ -680,7 +680,7 @@ async fn check_health(data_dir: &PathBuf, verbose: bool) -> Result<()> {
     println!("{}", "Health Check".bold().blue());
     println!("{}", "=".repeat(50));
 
-    let engine = Engine::open(data_dir)?;
+    let _engine = Engine::open(data_dir)?;
 
     let checks = vec![
         ("Database Connection", true, "Connected"),
@@ -721,7 +721,10 @@ async fn check_health(data_dir: &PathBuf, verbose: bool) -> Result<()> {
     Ok(())
 }
 
-async fn analyze_tables(data_dir: &PathBuf, table: Option<String>) -> Result<()> {
+async fn analyze_tables(
+    data_dir: &PathBuf,
+    table: Option<String>,
+) -> Result<()> {
     let engine = Engine::open(data_dir)?;
 
     println!("{}", "Analyzing tables...".yellow());
@@ -766,15 +769,15 @@ async fn analyze_tables(data_dir: &PathBuf, table: Option<String>) -> Result<()>
 }
 
 async fn compact_storage(
-    data_dir: &PathBuf,
-    table: Option<String>,
-    show_progress: bool,
+    _data_dir: &PathBuf,
+    _table: Option<String>,
+    _show_progress: bool,
 ) -> Result<()> {
-    let engine = Engine::open(data_dir)?;
+    let _engine = Engine::open(_data_dir)?;
 
     println!("{}", "Compacting storage...".yellow());
 
-    if show_progress {
+    if _show_progress {
         let pb = ProgressBar::new(100);
         pb.set_style(
             ProgressStyle::default_bar()
@@ -797,7 +800,7 @@ async fn compact_storage(
     Ok(())
 }
 
-async fn handle_migration(command: MigrateCommands, data_dir: &PathBuf) -> Result<()> {
+async fn handle_migration(command: MigrateCommands, _data_dir: &PathBuf) -> Result<()> {
     match command {
         MigrateCommands::Status => {
             println!("{}", "Migration Status".bold());
@@ -829,7 +832,7 @@ async fn handle_migration(command: MigrateCommands, data_dir: &PathBuf) -> Resul
 
             table.printstd();
         }
-        MigrateCommands::Up { dry_run, target } => {
+        MigrateCommands::Up { dry_run, target: _ } => {
             if dry_run {
                 println!("{}", "DRY RUN MODE".yellow().bold());
             }
@@ -845,7 +848,7 @@ async fn handle_migration(command: MigrateCommands, data_dir: &PathBuf) -> Resul
     Ok(())
 }
 
-async fn run_dashboard(data_dir: &PathBuf) -> Result<()> {
+async fn run_dashboard(_data_dir: &PathBuf) -> Result<()> {
     println!("{}", "Starting interactive dashboard...".yellow());
     println!("(TUI dashboard would launch here)");
     // Would implement full TUI using ratatui
@@ -853,7 +856,7 @@ async fn run_dashboard(data_dir: &PathBuf) -> Result<()> {
 }
 
 async fn show_tables(data_dir: &PathBuf, verbose: bool) -> Result<()> {
-    let engine = Engine::open(data_dir)?;
+    let _engine = Engine::open(data_dir)?;
 
     println!("{}", "Tables".bold());
 
@@ -894,7 +897,7 @@ async fn show_tables(data_dir: &PathBuf, verbose: bool) -> Result<()> {
     Ok(())
 }
 
-async fn show_indexes(data_dir: &PathBuf, table: Option<String>) -> Result<()> {
+async fn show_indexes(_data_dir: &PathBuf, _table: Option<String>) -> Result<()> {
     println!("{}", "Indexes".bold());
 
     let mut index_table = Table::new();
@@ -919,7 +922,7 @@ async fn show_indexes(data_dir: &PathBuf, table: Option<String>) -> Result<()> {
     Ok(())
 }
 
-async fn show_connections(data_dir: &PathBuf) -> Result<()> {
+async fn show_connections(_data_dir: &PathBuf) -> Result<()> {
     println!("{}", "Connection Pool Status".bold());
 
     println!("Active connections: 15 / 100");
@@ -929,7 +932,7 @@ async fn show_connections(data_dir: &PathBuf) -> Result<()> {
     Ok(())
 }
 
-async fn show_transactions(data_dir: &PathBuf, active_only: bool) -> Result<()> {
+async fn show_transactions(_data_dir: &PathBuf, active_only: bool) -> Result<()> {
     println!("{}", "Transactions".bold());
 
     let mut table = Table::new();
@@ -962,13 +965,13 @@ async fn show_transactions(data_dir: &PathBuf, active_only: bool) -> Result<()> 
 }
 
 async fn verify_integrity(
-    data_dir: &PathBuf,
-    table: Option<String>,
-    check_checksums: bool,
+    _data_dir: &PathBuf,
+    _table: Option<String>,
+    _check_checksums: bool,
 ) -> Result<()> {
     println!("{}", "Verifying data integrity...".yellow());
 
-    if check_checksums {
+    if _check_checksums {
         println!("Checking CRC32 checksums...");
     }
 

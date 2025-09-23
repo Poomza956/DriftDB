@@ -7,7 +7,7 @@
 //! - Recursive views with CTEs
 
 use sqlparser::ast::{
-    Statement, Query as SqlQuery, ViewColumnDef,
+    Statement, Query as SqlQuery,
     CreateTableOptions, ObjectName
 };
 use sqlparser::dialect::GenericDialect;

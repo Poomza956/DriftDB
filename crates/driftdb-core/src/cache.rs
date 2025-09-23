@@ -9,7 +9,7 @@
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use std::hash::{Hash, Hasher};
+use std::hash::Hash;
 
 use parking_lot::RwLock;
 use lru::LruCache;

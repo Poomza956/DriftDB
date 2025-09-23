@@ -5,9 +5,11 @@ use std::collections::HashMap;
 
 /// PostgreSQL protocol messages
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum Message {
     // Startup phase
     StartupMessage {
+        #[allow(dead_code)]
         version: i32,
         parameters: HashMap<String, String>,
     },
@@ -16,8 +18,14 @@ pub enum Message {
     // Authentication
     AuthenticationOk,
     AuthenticationCleartextPassword,
-    AuthenticationMD5Password { salt: [u8; 4] },
-    AuthenticationSASL { mechanisms: Vec<String> },
+    AuthenticationMD5Password {
+        #[allow(dead_code)]
+        salt: [u8; 4]
+    },
+    AuthenticationSASL {
+        #[allow(dead_code)]
+        mechanisms: Vec<String>
+    },
     AuthenticationSASLContinue { data: Vec<u8> },
     AuthenticationSASLFinal { data: Vec<u8> },
     PasswordMessage { password: String },
@@ -29,8 +37,11 @@ pub enum Message {
 
     // Extended Query
     Parse {
+        #[allow(dead_code)]
         statement_name: String,
+        #[allow(dead_code)]
         query: String,
+        #[allow(dead_code)]
         parameter_types: Vec<i32>,
     },
     Bind {
@@ -85,6 +96,7 @@ pub enum Message {
 
 impl Message {
     /// Get the message type byte
+    #[allow(dead_code)]
     pub fn type_byte(&self) -> Option<u8> {
         match self {
             Message::AuthenticationOk |
@@ -204,7 +216,7 @@ impl Message {
 
                 // Calculate length
                 let mut len = 4; // Length itself
-                for (code, value) in fields {
+                for (_code, value) in fields {
                     len += 1 + value.len() + 1; // Code + value + null
                 }
                 len += 1; // Final null
@@ -255,6 +267,7 @@ impl Message {
         Message::ErrorResponse { fields }
     }
 
+    #[allow(dead_code)]
     pub fn notice(message: &str) -> Self {
         let mut fields = HashMap::new();
         fields.insert(b'S', "NOTICE".to_string());

@@ -159,7 +159,7 @@ impl Engine {
 
     /// Open database with full async recovery support
     pub async fn open_async<P: AsRef<Path>>(base_path: P) -> Result<Self> {
-        let mut engine = Self::open(base_path)?;
+        let engine = Self::open(base_path)?;
 
         // Perform crash recovery if needed
         info!("Performing startup recovery check...");
@@ -242,7 +242,7 @@ impl Engine {
     }
 
     /// Enable encryption at rest with the specified master password
-    pub fn enable_encryption(&mut self, master_password: &str) -> Result<()> {
+    pub fn enable_encryption(&mut self, _master_password: &str) -> Result<()> {
         let config = EncryptionConfig::default();
         let encryption_service = Arc::new(EncryptionService::new(config)?);
 
@@ -270,7 +270,7 @@ impl Engine {
         info!("Enabling distributed consensus for node: {}", node_id);
 
         // Initialize distributed coordinator if not already present
-        let coordinator = self.distributed_coordinator.get_or_insert_with(|| {
+        let _coordinator = self.distributed_coordinator.get_or_insert_with(|| {
             Arc::new(DistributedCoordinator::new(node_id.clone()))
         });
 
@@ -311,7 +311,7 @@ impl Engine {
 
         // Initialize distributed coordinator if not already present
         let node_id = format!("node_{}", std::process::id());
-        let coordinator = self.distributed_coordinator.get_or_insert_with(|| {
+        let _coordinator = self.distributed_coordinator.get_or_insert_with(|| {
             Arc::new(DistributedCoordinator::new(node_id.clone()))
         });
 
@@ -1302,7 +1302,7 @@ impl Engine {
 
     /// Update a record in a table (for SQL UPDATE support)
     pub fn update_record(&mut self, table_name: &str, primary_key: serde_json::Value, record: serde_json::Value) -> Result<()> {
-        let storage = self.tables.get(table_name)
+        let _storage = self.tables.get(table_name)
             .ok_or_else(|| DriftError::TableNotFound(table_name.to_string()))?
             .clone();
 
@@ -1315,7 +1315,7 @@ impl Engine {
 
     /// Delete a record from a table (for SQL DELETE support)
     pub fn delete_record(&mut self, table_name: &str, primary_key: serde_json::Value) -> Result<()> {
-        let storage = self.tables.get(table_name)
+        let _storage = self.tables.get(table_name)
             .ok_or_else(|| DriftError::TableNotFound(table_name.to_string()))?
             .clone();
 

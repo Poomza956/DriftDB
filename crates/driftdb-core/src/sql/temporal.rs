@@ -120,7 +120,7 @@ impl TemporalSemantics {
     /// Apply temporal clause to query
     pub fn apply_temporal_filter(
         clause: &SystemTimeClause,
-        current_time: DateTime<Utc>,
+        _current_time: DateTime<Utc>,
     ) -> Result<TemporalFilter> {
         match clause {
             SystemTimeClause::AsOf(point) => {

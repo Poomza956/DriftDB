@@ -2,12 +2,12 @@
 //!
 //! Provides true ACID compliance with snapshot isolation
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 use parking_lot::RwLock;
 use serde_json::Value;
 
-use crate::errors::{DriftError, Result};
+use crate::errors::Result;
 use crate::events::{Event, EventType};
 use crate::storage::TableStorage;
 

@@ -16,8 +16,7 @@ use serde_json::Value;
 
 use crate::errors::{DriftError, Result};
 use crate::engine::Engine;
-use crate::query::{QueryResult, Query};
-use sqlparser::ast::{Statement, Expr};
+use crate::query::QueryResult;
 
 /// Wrapper for SQL data types that can be serialized
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -170,10 +169,12 @@ pub struct ExecutionContext {
     /// Open cursors
     cursors: HashMap<String, CursorState>,
     /// Call stack for nested procedures
+    #[allow(dead_code)]
     call_stack: Vec<CallFrame>,
     /// Current user for security checks
     current_user: String,
     /// Exception state
+    #[allow(dead_code)]
     exception: Option<ProcedureException>,
 }
 
@@ -186,6 +187,7 @@ struct CursorState {
 }
 
 /// Call frame for procedure calls
+#[allow(dead_code)]
 struct CallFrame {
     procedure: String,
     return_address: usize,
@@ -194,6 +196,7 @@ struct CallFrame {
 
 /// Procedure exception
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct ProcedureException {
     code: String,
     message: String,
@@ -211,6 +214,7 @@ pub struct ProcedureManager {
 }
 
 /// Compiled procedure for faster execution
+#[allow(dead_code)]
 struct CompiledProcedure {
     procedure: StoredProcedure,
     bytecode: Vec<BytecodeInstruction>,
@@ -219,6 +223,7 @@ struct CompiledProcedure {
 
 /// Bytecode instructions for procedure execution
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 enum BytecodeInstruction {
     LoadConstant(usize),
     LoadVariable(String),
@@ -236,9 +241,13 @@ enum BytecodeInstruction {
 struct ProcedureStatistics {
     total_executions: u64,
     successful_executions: u64,
+    #[allow(dead_code)]
     failed_executions: u64,
+    #[allow(dead_code)]
     total_execution_time_ms: u64,
+    #[allow(dead_code)]
     cache_hits: u64,
+    #[allow(dead_code)]
     cache_misses: u64,
 }
 
@@ -552,8 +561,8 @@ impl ProcedureManager {
 
     /// Compile procedure to bytecode
     fn compile_procedure(&self, procedure: &StoredProcedure) -> Result<CompiledProcedure> {
-        let mut bytecode = Vec::new();
-        let mut constant_pool = Vec::new();
+        let bytecode = Vec::new();
+        let constant_pool = Vec::new();
 
         // Simple compilation for now
         // TODO: Implement full bytecode compilation
@@ -585,7 +594,7 @@ impl ProcedureManager {
 }
 
 /// SQL Parser for CREATE PROCEDURE
-pub fn parse_create_procedure(sql: &str) -> Result<StoredProcedure> {
+pub fn parse_create_procedure(_sql: &str) -> Result<StoredProcedure> {
     // TODO: Implement full SQL parsing for CREATE PROCEDURE
     // For now, return a placeholder
     Ok(StoredProcedure {
@@ -620,12 +629,12 @@ mod tests {
             parameters: vec![
                 ProcedureParameter {
                     name: "input".to_string(),
-                    data_type: DataType::Integer(None),
+                    data_type: DataType::Int,
                     mode: ParameterMode::In,
                     default_value: None,
                 }
             ],
-            returns: Some(DataType::Integer(None)),
+            returns: Some(DataType::Int),
             body: ProcedureBody {
                 statements: vec![
                     ProcedureStatement::Return(Some("input * 2".to_string())),

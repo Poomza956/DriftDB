@@ -1,11 +1,10 @@
 use crate::errors::{DriftError, Result};
-use crate::audit::{AuditConfig, QueryCriteria, ExportFormat};
-use crate::security_monitor::{SecurityConfig, ComplianceFramework};
+use crate::audit::{AuditConfig, ExportFormat};
+use crate::security_monitor::SecurityConfig;
 use clap::{Parser, Subcommand};
 use serde_json;
 use std::path::PathBuf;
-use std::time::{Duration, SystemTime};
-use uuid::Uuid;
+use std::time::SystemTime;
 
 /// Security CLI for DriftDB - comprehensive security management and monitoring
 #[derive(Parser)]
@@ -668,10 +667,10 @@ impl SecurityCli {
                 println!("No audit events found matching criteria");
             }
 
-            AuditCommand::Export { output, format, start_time, end_time } => {
+            AuditCommand::Export { output, format, start_time: _start_time, end_time: _end_time } => {
                 println!("Exporting audit logs to {:?} in {} format...", output, format);
 
-                let export_format = match format.as_str() {
+                let _export_format = match format.as_str() {
                     "json" => ExportFormat::Json,
                     "csv" => ExportFormat::Csv,
                     "syslog" => ExportFormat::Syslog,
@@ -1148,7 +1147,7 @@ impl SecurityCli {
 
 /// Helper function to parse ISO 8601 timestamp strings
 pub fn parse_timestamp(timestamp_str: &str) -> Result<SystemTime> {
-    use chrono::{DateTime, Utc};
+    use chrono::DateTime;
     let dt = DateTime::parse_from_rfc3339(timestamp_str)
         .map_err(|e| DriftError::Other(format!("Invalid timestamp format: {}", e)))?;
     Ok(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(dt.timestamp() as u64))

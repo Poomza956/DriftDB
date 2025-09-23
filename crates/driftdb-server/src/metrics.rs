@@ -149,6 +149,7 @@ pub fn init_metrics() -> anyhow::Result<()> {
 #[derive(Clone)]
 pub struct MetricsState {
     pub engine: Arc<tokio::sync::RwLock<Engine>>,
+    #[allow(dead_code)]
     pub session_manager: Arc<SessionManager>,
     pub start_time: std::time::Instant,
 }
@@ -350,6 +351,7 @@ pub fn update_pool_size(total: usize, available: usize, active: usize) {
 }
 
 /// Record a connection acquisition wait time
+#[allow(dead_code)]
 pub fn record_pool_wait_time(duration_seconds: f64, success: bool) {
     let result = if success { "success" } else { "timeout" };
     POOL_WAIT_TIME
@@ -358,6 +360,7 @@ pub fn record_pool_wait_time(duration_seconds: f64, success: bool) {
 }
 
 /// Update the total connections created by the pool
+#[allow(dead_code)]
 pub fn update_pool_connections_created(total: u64) {
     POOL_CONNECTIONS_CREATED.set(total as f64);
 }

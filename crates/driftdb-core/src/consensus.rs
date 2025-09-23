@@ -97,29 +97,41 @@ pub struct ConsensusEngine {
     voted_for: Arc<RwLock<Option<String>>>,
     log: Arc<RwLock<Vec<LogEntry>>>,
     commit_index: Arc<RwLock<u64>>,
+    #[allow(dead_code)]
     last_applied: Arc<RwLock<u64>>,
 
+    #[allow(dead_code)]
     leader_state: Arc<Mutex<Option<LeaderState>>>,
+    #[allow(dead_code)]
     election_timer: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
 
     state_machine: Arc<dyn StateMachine>,
     transport: Arc<dyn Transport>,
 
     metrics: Arc<ConsensusMetrics>,
+    #[allow(dead_code)]
     snapshot_manager: Arc<SnapshotManager>,
 }
 
 struct LeaderState {
+    #[allow(dead_code)]
     next_index: HashMap<String, u64>,
+    #[allow(dead_code)]
     match_index: HashMap<String, u64>,
+    #[allow(dead_code)]
     in_flight: HashMap<String, Vec<InflightRequest>>,
+    #[allow(dead_code)]
     pipeline_depth: HashMap<String, usize>,
 }
 
 struct InflightRequest {
+    #[allow(dead_code)]
     index: u64,
+    #[allow(dead_code)]
     term: u64,
+    #[allow(dead_code)]
     sent_at: SystemTime,
+    #[allow(dead_code)]
     entries: Vec<LogEntry>,
 }
 
@@ -717,10 +729,15 @@ pub struct SnapshotManager {
 
 #[derive(Debug, Clone)]
 struct SnapshotMetadata {
+    #[allow(dead_code)]
     index: u64,
+    #[allow(dead_code)]
     term: u64,
+    #[allow(dead_code)]
     size: usize,
+    #[allow(dead_code)]
     created_at: SystemTime,
+    #[allow(dead_code)]
     path: String,
 }
 
@@ -745,7 +762,7 @@ impl SnapshotManager {
         Ok(())
     }
 
-    pub async fn load_snapshot(&self, index: u64) -> Result<Vec<u8>> {
+    pub async fn load_snapshot(&self, _index: u64) -> Result<Vec<u8>> {
         Ok(vec![])
     }
 }

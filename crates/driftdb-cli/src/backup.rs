@@ -1,14 +1,14 @@
 //! Backup and restore CLI commands for DriftDB
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::fs;
 use std::sync::Arc;
 use anyhow::{Result, Context};
-use clap::{Parser, Subcommand};
+use clap::Subcommand;
 use serde_json;
 use time::OffsetDateTime;
 
-use driftdb_core::backup::{BackupManager, BackupMetadata, BackupType};
+use driftdb_core::backup::{BackupManager, BackupMetadata};
 use driftdb_core::{Engine, observability::Metrics};
 
 #[derive(Subcommand)]
@@ -112,7 +112,7 @@ fn create_backup(
     source: PathBuf,
     destination: Option<PathBuf>,
     backup_type: String,
-    compression: String,
+    _compression: String,
     parent: Option<PathBuf>,
 ) -> Result<()> {
     println!("🔄 Creating {} backup...", backup_type);
@@ -129,7 +129,7 @@ fn create_backup(
     println!("  Initializing backup...");
 
     // Open the database
-    let engine = Engine::open(&source)
+    let _engine = Engine::open(&source)
         .context("Failed to open source database")?;
 
     let metrics = Arc::new(Metrics::new());

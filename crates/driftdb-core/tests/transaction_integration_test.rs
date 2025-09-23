@@ -1,5 +1,3 @@
-use std::sync::Arc;
-use std::thread;
 use tempfile::TempDir;
 use serde_json::json;
 use time::OffsetDateTime;

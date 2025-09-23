@@ -7,15 +7,13 @@
 //! - Garbage collection of old versions
 //! - Serializable Snapshot Isolation (SSI)
 
-use std::collections::{HashMap, HashSet, BTreeMap, VecDeque};
+use std::collections::{HashMap, HashSet, BTreeMap};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use parking_lot::{RwLock, Mutex};
-use serde::{Serialize, Deserialize};
 use serde_json::Value;
 
 use crate::errors::{DriftError, Result};
-use crate::events::Event;
 
 /// Transaction ID type
 pub type TxnId = u64;
@@ -37,6 +35,7 @@ pub struct MvccEngine {
     /// Dependency graph for deadlock detection
     waits_for: Arc<Mutex<HashMap<TxnId, HashSet<TxnId>>>>,
     /// Garbage collection watermark
+    #[allow(dead_code)]
     gc_watermark: AtomicU64,
     /// Statistics
     stats: Arc<RwLock<MvccStats>>,
@@ -45,6 +44,7 @@ pub struct MvccEngine {
 /// Transaction state
 #[derive(Debug, Clone)]
 struct TransactionState {
+    #[allow(dead_code)]
     id: TxnId,
     start_ts: Timestamp,
     commit_ts: Option<Timestamp>,
@@ -59,6 +59,7 @@ struct TransactionState {
 #[derive(Debug, Clone, PartialEq)]
 enum TxnState {
     Active,
+    #[allow(dead_code)]
     Preparing,
     Committed,
     Aborted,
@@ -82,6 +83,7 @@ struct TransactionSnapshot {
     /// Active transactions at snapshot time
     active_set: HashSet<TxnId>,
     /// Minimum active transaction
+    #[allow(dead_code)]
     min_active: Option<TxnId>,
 }
 
@@ -90,6 +92,7 @@ struct VersionStore {
     /// Table name -> Row ID -> Version chain
     tables: HashMap<String, HashMap<RowId, VersionChain>>,
     /// Index of versions by timestamp for GC
+    #[allow(dead_code)]
     version_index: BTreeMap<Timestamp, Vec<(String, RowId)>>,
 }
 
@@ -110,6 +113,7 @@ struct Version {
     /// Timestamp when version was created
     begin_ts: Timestamp,
     /// Timestamp when version was superseded (None if current)
+    #[allow(dead_code)]
     end_ts: Option<Timestamp>,
     /// The actual data
     data: VersionData,
@@ -119,6 +123,7 @@ struct Version {
 
 /// Version data
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 enum VersionData {
     Insert(Value),
     Update(Value),
@@ -127,13 +132,14 @@ enum VersionData {
 
 /// MVCC statistics
 #[derive(Debug, Default, Clone)]
-struct MvccStats {
+pub struct MvccStats {
     total_txns: u64,
     active_txns: usize,
     committed_txns: u64,
     aborted_txns: u64,
     conflicts: u64,
     deadlocks: u64,
+    #[allow(dead_code)]
     total_versions: usize,
     gc_runs: u64,
     gc_collected: u64,

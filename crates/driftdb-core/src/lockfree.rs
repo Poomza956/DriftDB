@@ -3,14 +3,13 @@
 //! Implements RCU (Read-Copy-Update) pattern for read-heavy workloads
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::collections::HashMap;
 use parking_lot::RwLock;
-use crossbeam_epoch::{self as epoch, Atomic, Guard, Owned, Shared};
+use crossbeam_epoch::{self as epoch, Atomic, Owned};
 use serde_json::Value;
 
 use crate::errors::Result;
-use crate::events::Event;
 
 /// A lock-free, concurrent hash map optimized for reads
 /// Uses RCU pattern with epoch-based memory reclamation
@@ -237,7 +236,7 @@ impl LockFreeIndex {
             }
         }
 
-        let new_version = self.version.fetch_add(1, Ordering::Release) + 1;
+        let _new_version = self.version.fetch_add(1, Ordering::Release) + 1;
         self.root.store(Owned::new(new_node), Ordering::Release);
 
         unsafe {

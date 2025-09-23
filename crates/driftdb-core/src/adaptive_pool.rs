@@ -578,7 +578,7 @@ impl AdaptiveConnectionPool {
     /// Start health monitoring
     async fn start_health_monitor(&self) -> tokio::task::JoinHandle<()> {
         let available_connections = Arc::clone(&self.available_connections);
-        let active_connections = Arc::clone(&self.active_connections);
+        let _active_connections = Arc::clone(&self.active_connections);
         let health_config = self.config.health_check.clone();
 
         tokio::spawn(async move {
@@ -612,7 +612,8 @@ impl AdaptiveConnectionPool {
     }
 
     /// Check individual connection health
-    async fn check_connection_health(conn: &mut ConnectionInfo, config: &HealthCheckConfig) {
+    #[allow(dead_code)]
+    async fn check_connection_health(conn: &mut ConnectionInfo, _config: &HealthCheckConfig) {
         // Simplified health check - in practice would ping the connection
         let health_check_passed = fastrand::f64() > 0.1; // 90% success rate
 
@@ -716,7 +717,7 @@ impl AdaptiveConnection {
 impl Drop for AdaptiveConnection {
     fn drop(&mut self) {
         let duration = self.start_time.elapsed();
-        let performance = ConnectionPerformance {
+        let _performance = ConnectionPerformance {
             avg_response_time: duration,
             total_requests_handled: 1,
             error_count: 0,
