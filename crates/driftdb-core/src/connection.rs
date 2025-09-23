@@ -534,13 +534,13 @@ pub struct PoolStats {
 
 /// Engine pool that manages connections to a DriftDB Engine
 pub struct EnginePool {
-    engine: Arc<tokio::sync::RwLock<Engine>>,
+    engine: Arc<parking_lot::RwLock<Engine>>,
     connection_pool: ConnectionPool,
 }
 
 impl EnginePool {
     pub fn new(
-        engine: Arc<tokio::sync::RwLock<Engine>>,
+        engine: Arc<parking_lot::RwLock<Engine>>,
         config: PoolConfig,
         metrics: Arc<Metrics>,
     ) -> Result<Self> {
@@ -601,23 +601,23 @@ impl Clone for EnginePool {
 
 /// RAII guard for engine access through the pool
 pub struct EngineGuard {
-    engine: Arc<tokio::sync::RwLock<Engine>>,
+    engine: Arc<parking_lot::RwLock<Engine>>,
     _connection_guard: ConnectionGuard,
 }
 
 impl EngineGuard {
     /// Get read access to the engine
-    pub async fn read(&self) -> tokio::sync::RwLockReadGuard<Engine> {
-        self.engine.read().await
+    pub fn read(&self) -> parking_lot::RwLockReadGuard<Engine> {
+        self.engine.read()
     }
 
     /// Get write access to the engine
-    pub async fn write(&self) -> tokio::sync::RwLockWriteGuard<Engine> {
-        self.engine.write().await
+    pub fn write(&self) -> parking_lot::RwLockWriteGuard<Engine> {
+        self.engine.write()
     }
 
     /// Get a reference to the engine Arc for transaction management
-    pub fn get_engine_ref(&self) -> Arc<tokio::sync::RwLock<Engine>> {
+    pub fn get_engine_ref(&self) -> Arc<parking_lot::RwLock<Engine>> {
         self.engine.clone()
     }
 

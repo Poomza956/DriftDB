@@ -67,9 +67,9 @@ async fn readiness_check(State(state): State<HealthState>) -> Result<Json<Value>
 
     // Check if engine is accessible
     let engine_status = match state.engine.try_read() {
-        Ok(_engine) => {
+        Some(_engine) => {
             // Try to execute a simple health check query
-            match perform_engine_health_check(&state.engine).await {
+            match perform_engine_health_check(&state.engine) {
                 Ok(_) => "ready",
                 Err(e) => {
                     error!("Engine health check failed: {}", e);
@@ -77,7 +77,7 @@ async fn readiness_check(State(state): State<HealthState>) -> Result<Json<Value>
                 }
             }
         }
-        Err(_) => {
+        None => {
             error!("Engine is locked, not ready");
             return Err(StatusCode::SERVICE_UNAVAILABLE);
         }
@@ -118,7 +118,7 @@ async fn readiness_check(State(state): State<HealthState>) -> Result<Json<Value>
 }
 
 /// Perform a basic health check on the engine
-async fn perform_engine_health_check(engine: &Arc<RwLock<Engine>>) -> anyhow::Result<()> {
+fn perform_engine_health_check(engine: &Arc<RwLock<Engine>>) -> anyhow::Result<()> {
     // Try to acquire a read lock and perform a basic operation
     let engine_guard = engine.read();
 

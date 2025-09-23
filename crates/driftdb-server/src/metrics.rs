@@ -176,7 +176,7 @@ async fn metrics_handler(State(state): State<MetricsState>) -> Result<Response<S
     debug!("Metrics endpoint requested");
 
     // Update dynamic metrics before serving
-    update_dynamic_metrics(&state).await;
+    update_dynamic_metrics(&state);
 
     // Encode metrics in Prometheus format
     let encoder = TextEncoder::new();
@@ -207,25 +207,25 @@ async fn metrics_handler(State(state): State<MetricsState>) -> Result<Response<S
 }
 
 /// Update dynamic metrics that change over time
-async fn update_dynamic_metrics(state: &MetricsState) {
+fn update_dynamic_metrics(state: &MetricsState) {
     // Update server uptime
     let uptime_seconds = state.start_time.elapsed().as_secs() as f64;
     SERVER_UPTIME.set(uptime_seconds);
 
     // Update database size metrics
-    if let Ok(engine) = state.engine.try_read() {
-        match collect_database_size_metrics(&*engine).await {
+    if let Some(engine) = state.engine.try_read() {
+        match collect_database_size_metrics(&*engine) {
             Ok(_) => debug!("Database size metrics updated"),
             Err(e) => error!("Failed to update database size metrics: {}", e),
         }
     }
 
     // Update system metrics (memory and CPU)
-    update_system_metrics().await;
+    update_system_metrics();
 }
 
 /// Collect database size metrics
-async fn collect_database_size_metrics(engine: &Engine) -> anyhow::Result<()> {
+fn collect_database_size_metrics(engine: &Engine) -> anyhow::Result<()> {
     // Get list of tables
     let tables = engine.list_tables();
 
@@ -258,7 +258,7 @@ async fn collect_database_size_metrics(engine: &Engine) -> anyhow::Result<()> {
 }
 
 /// Update system metrics (memory and CPU)
-async fn update_system_metrics() {
+fn update_system_metrics() {
     // Get or update system information
     let mut sys = SYSTEM.write();
     sys.refresh_all();
