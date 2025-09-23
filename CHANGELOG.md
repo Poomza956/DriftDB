@@ -2,6 +2,25 @@
 
 All notable changes to DriftDB will be documented in this file.
 
+## [0.7.3-alpha] - 2024-01-24 - Time-Travel Performance Fix
+
+### 🚀 Performance Improvements
+- **Integrated snapshots into time-travel queries** - Major performance optimization
+  - Time-travel queries now use snapshots to avoid full event replay
+  - Only replays events since the nearest snapshot
+  - Reduces complexity from O(n) to O(k) where k << n
+  - Expected 10-100x speedup for large tables with regular snapshots
+
+### 🔧 Technical Changes
+- Added `read_events_after_sequence()` method for efficient event filtering
+- Modified `reconstruct_state_at()` to check for snapshots first
+- Snapshot state conversion from String to serde_json::Value
+
+### 📊 Impact
+- **Before**: Every time-travel query loaded ALL events into memory
+- **After**: Queries load snapshot + small delta of recent events
+- **Example**: 1M events with 10K snapshots = 100x fewer events to process
+
 ## [0.7.2-alpha] - 2024-01-23 - Warning Cleanup
 
 ### 🧹 Code Quality Improvements

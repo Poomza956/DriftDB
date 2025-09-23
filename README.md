@@ -1,6 +1,6 @@
 # DriftDB
 
-**Experimental PostgreSQL-Compatible Time-Travel Database (v0.7.2-alpha)** - An ambitious temporal database project with advanced architectural designs for enterprise features. Query your data at any point in history using standard SQL.
+**Experimental PostgreSQL-Compatible Time-Travel Database (v0.7.3-alpha)** - An ambitious temporal database project with advanced architectural designs for enterprise features. Query your data at any point in history using standard SQL.
 
 ⚠️ **ALPHA SOFTWARE - NOT FOR PRODUCTION USE**: This version contains experimental implementations of enterprise features. The codebase now compiles cleanly with minimal warnings (reduced from 335 to 17). Many advanced features remain as architectural designs requiring implementation.
 
