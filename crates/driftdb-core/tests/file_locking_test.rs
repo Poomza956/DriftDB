@@ -14,10 +14,10 @@ fn test_exclusive_table_lock() {
     };
 
     // First TableStorage should acquire the lock successfully
-    let _table1 = TableStorage::create(temp_dir.path(), schema.clone()).unwrap();
+    let _table1 = TableStorage::create(temp_dir.path(), schema.clone(), None).unwrap();
 
     // Second TableStorage should fail to acquire the lock
-    let result = TableStorage::open(temp_dir.path(), "test_table");
+    let result = TableStorage::open(temp_dir.path(), "test_table", None);
     assert!(result.is_err());
     let error_msg = format!("{}", result.err().unwrap());
     assert!(error_msg.contains("Failed to acquire table lock"));
@@ -36,11 +36,11 @@ fn test_lock_released_on_drop() {
 
     // Create and drop first TableStorage
     {
-        let _table1 = TableStorage::create(temp_dir.path(), schema.clone()).unwrap();
+        let _table1 = TableStorage::create(temp_dir.path(), schema.clone(), None).unwrap();
         // Lock is held here
     }
     // Lock should be released after drop
 
     // Second TableStorage should now acquire the lock successfully
-    let _table2 = TableStorage::open(temp_dir.path(), "test_table").unwrap();
+    let _table2 = TableStorage::open(temp_dir.path(), "test_table", None).unwrap();
 }

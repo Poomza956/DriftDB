@@ -304,10 +304,11 @@ impl TransactionManager {
         // Get data path from environment or use a sensible default
         let data_path = std::env::var("DRIFTDB_DATA_PATH")
             .unwrap_or_else(|_| "./data".to_string());
-        let wal_path = std::path::PathBuf::from(data_path).join("wal");
+        let wal_dir = std::path::PathBuf::from(data_path).join("wal");
+        let wal_path = wal_dir.join("wal.log");
 
         // Try to create the WAL directory
-        if let Err(e) = std::fs::create_dir_all(&wal_path) {
+        if let Err(e) = std::fs::create_dir_all(&wal_dir) {
             eprintln!("WARNING: Failed to create WAL directory: {}", e);
         }
 
@@ -319,8 +320,9 @@ impl TransactionManager {
                 eprintln!("FALLBACK: Using temporary directory for WAL (DATA NOT DURABLE!)");
 
                 // Try fallback to temp directory
-                let temp_path = std::env::temp_dir().join("driftdb_wal_fallback");
-                let _ = std::fs::create_dir_all(&temp_path);
+                let temp_dir = std::env::temp_dir().join("driftdb_wal_fallback");
+                let _ = std::fs::create_dir_all(&temp_dir);
+                let temp_path = temp_dir.join("wal.log");
 
                 match WalManager::new(temp_path, crate::wal::WalConfig::default()) {
                     Ok(w) => Arc::new(w),

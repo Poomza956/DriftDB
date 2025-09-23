@@ -10,7 +10,7 @@ use driftdb_core::{
     connection::{ConnectionPool, PoolConfig},
     observability::Metrics,
     transaction::{IsolationLevel, TransactionManager},
-    wal::Wal,
+    wal::{WalManager, WalConfig},
 };
 use serde_json::json;
 use tempfile::TempDir;
@@ -83,7 +83,7 @@ async fn test_end_to_end_workflow() {
 #[tokio::test]
 async fn test_concurrent_transactions() {
     let temp_dir = TempDir::new().unwrap();
-    let wal = Arc::new(Wal::new(temp_dir.path()).unwrap());
+    let wal = Arc::new(WalManager::new(temp_dir.path(), WalConfig::default()).unwrap());
     let metrics = Arc::new(Metrics::new());
     let tx_mgr = Arc::new(TransactionManager::new_with_deps(wal.clone(), metrics.clone()));
 
@@ -138,7 +138,7 @@ async fn test_concurrent_transactions() {
 #[tokio::test]
 async fn test_connection_pool_stress() {
     let temp_dir = TempDir::new().unwrap();
-    let wal = Arc::new(Wal::new(temp_dir.path()).unwrap());
+    let wal = Arc::new(WalManager::new(temp_dir.path(), WalConfig::default()).unwrap());
     let metrics = Arc::new(Metrics::new());
     let tx_mgr = Arc::new(TransactionManager::new_with_deps(wal, metrics.clone()));
 
@@ -222,7 +222,7 @@ async fn test_crash_recovery_via_wal() {
 
     // Phase 1: Write data with WAL
     {
-        let wal = Arc::new(Wal::new(temp_dir.path()).unwrap());
+        let wal = Arc::new(WalManager::new(temp_dir.path(), WalConfig::default()).unwrap());
         let metrics = Arc::new(Metrics::new());
         let tx_mgr = Arc::new(TransactionManager::new_with_deps(wal.clone(), metrics));
 
@@ -245,7 +245,7 @@ async fn test_crash_recovery_via_wal() {
 
     // Phase 2: Simulate crash and recovery
     {
-        let wal = Arc::new(Wal::new(temp_dir.path()).unwrap());
+        let wal = Arc::new(WalManager::new(temp_dir.path(), WalConfig::default()).unwrap());
 
         // Replay WAL
         let mut events = Vec::new();
@@ -262,7 +262,7 @@ async fn test_crash_recovery_via_wal() {
 #[tokio::test]
 async fn test_rate_limiting() {
     let temp_dir = TempDir::new().unwrap();
-    let wal = Arc::new(Wal::new(temp_dir.path()).unwrap());
+    let wal = Arc::new(WalManager::new(temp_dir.path(), WalConfig::default()).unwrap());
     let metrics = Arc::new(Metrics::new());
     let tx_mgr = Arc::new(TransactionManager::new_with_deps(wal, metrics.clone()));
 
@@ -293,7 +293,7 @@ async fn test_rate_limiting() {
 #[tokio::test]
 async fn test_isolation_levels() {
     let temp_dir = TempDir::new().unwrap();
-    let wal = Arc::new(Wal::new(temp_dir.path()).unwrap());
+    let wal = Arc::new(WalManager::new(temp_dir.path(), WalConfig::default()).unwrap());
     let metrics = Arc::new(Metrics::new());
     let tx_mgr = Arc::new(TransactionManager::new_with_deps(wal.clone(), metrics));
 

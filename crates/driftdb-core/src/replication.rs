@@ -628,6 +628,11 @@ impl ReplicationCoordinator {
         true
     }
 
+    /// Get the current role of this node
+    pub fn get_role(&self) -> NodeRole {
+        self.state.read().role.clone()
+    }
+
     /// Shutdown the replication coordinator
     pub async fn shutdown(&mut self) -> Result<()> {
         info!("Shutting down replication coordinator");

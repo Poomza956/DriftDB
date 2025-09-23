@@ -6,8 +6,7 @@ use tokio::time::sleep;
 use driftdb_core::replication::{
     ReplicationCoordinator, ReplicationConfig, NodeRole, ReplicationMode
 };
-use driftdb_core::{Engine, Query};
-use serde_json::json;
+use driftdb_core::Engine;
 
 #[tokio::test]
 async fn test_master_slave_replication() {
@@ -26,7 +25,7 @@ async fn test_master_slave_replication() {
         min_sync_replicas: 1,
     };
 
-    let master_coordinator = ReplicationCoordinator::new(master_config);
+    let mut master_coordinator = ReplicationCoordinator::new(master_config);
 
     // Start master
     let master_handle = tokio::spawn(async move {
@@ -51,7 +50,7 @@ async fn test_master_slave_replication() {
         min_sync_replicas: 0,
     };
 
-    let slave_coordinator = ReplicationCoordinator::new(slave_config);
+    let mut slave_coordinator = ReplicationCoordinator::new(slave_config);
 
     // Start slave and connect to master
     let slave_handle = tokio::spawn(async move {
@@ -72,7 +71,7 @@ async fn test_master_slave_replication() {
 #[tokio::test]
 async fn test_failover_consensus() {
     // Setup 3-node cluster: 1 master, 2 slaves
-    let dirs: Vec<TempDir> = (0..3).map(|_| TempDir::new().unwrap()).collect();
+    let _dirs: Vec<TempDir> = (0..3).map(|_| TempDir::new().unwrap()).collect();
 
     // Master configuration
     let master_config = ReplicationConfig {
@@ -86,7 +85,7 @@ async fn test_failover_consensus() {
         min_sync_replicas: 2,
     };
 
-    let master = ReplicationCoordinator::new(master_config);
+    let mut master = ReplicationCoordinator::new(master_config);
 
     // Start master
     let master_handle = tokio::spawn(async move {
@@ -111,7 +110,7 @@ async fn test_failover_consensus() {
             min_sync_replicas: 0,
         };
 
-        let slave = ReplicationCoordinator::new(slave_config);
+        let mut slave = ReplicationCoordinator::new(slave_config);
 
         // Start slave
         let handle = tokio::spawn(async move {
@@ -143,7 +142,7 @@ async fn test_failover_consensus() {
 #[tokio::test]
 async fn test_failover_to_slave() {
     // Setup 3-node cluster
-    let dirs: Vec<TempDir> = (0..3).map(|_| TempDir::new().unwrap()).collect();
+    let _dirs: Vec<TempDir> = (0..3).map(|_| TempDir::new().unwrap()).collect();
 
     // Initial master (node-0)
     let master_config = ReplicationConfig {
@@ -157,7 +156,7 @@ async fn test_failover_to_slave() {
         min_sync_replicas: 1,
     };
 
-    let master = ReplicationCoordinator::new(master_config);
+    let mut master = ReplicationCoordinator::new(master_config);
     let master_handle = tokio::spawn(async move {
         master.start().await.unwrap();
     });
@@ -177,7 +176,7 @@ async fn test_failover_to_slave() {
         min_sync_replicas: 0,
     };
 
-    let new_master = ReplicationCoordinator::new(slave1_config);
+    let mut new_master = ReplicationCoordinator::new(slave1_config);
     let slave1_handle = tokio::spawn(async move {
         new_master.start().await.unwrap();
     });
@@ -200,7 +199,7 @@ async fn test_failover_to_slave() {
 #[tokio::test]
 async fn test_sync_replication() {
     // Setup master with sync replication
-    let master_dir = TempDir::new().unwrap();
+    let _master_dir = TempDir::new().unwrap();
 
     let master_config = ReplicationConfig {
         role: NodeRole::Master,
@@ -213,7 +212,7 @@ async fn test_sync_replication() {
         min_sync_replicas: 1,
     };
 
-    let master = ReplicationCoordinator::new(master_config);
+    let mut master = ReplicationCoordinator::new(master_config);
     let master_handle = tokio::spawn(async move {
         master.start().await.unwrap();
     });
@@ -221,7 +220,7 @@ async fn test_sync_replication() {
     // Give master time to start
     sleep(Duration::from_millis(500)).await;
 
-    let slave_dir = TempDir::new().unwrap();
+    let _slave_dir = TempDir::new().unwrap();
     let slave_config = ReplicationConfig {
         role: NodeRole::Slave,
         mode: ReplicationMode::Synchronous,
@@ -233,7 +232,7 @@ async fn test_sync_replication() {
         min_sync_replicas: 0,
     };
 
-    let slave = ReplicationCoordinator::new(slave_config);
+    let mut slave = ReplicationCoordinator::new(slave_config);
     let slave_handle = tokio::spawn(async move {
         slave.start().await.unwrap();
     });
@@ -251,7 +250,7 @@ async fn test_sync_replication() {
 
 #[tokio::test]
 async fn test_replication_lag_detection() {
-    let master_dir = TempDir::new().unwrap();
+    let _master_dir = TempDir::new().unwrap();
 
     let config = ReplicationConfig {
         role: NodeRole::Master,

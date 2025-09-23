@@ -652,7 +652,7 @@ mod tests {
     #[tokio::test]
     async fn test_connection_pool() {
         let temp_dir = TempDir::new().unwrap();
-        let wal = Arc::new(Wal::new(temp_dir.path()).unwrap());
+        let wal = Arc::new(WalManager::new(temp_dir.path(), WalConfig::default()).unwrap());
         let metrics = Arc::new(Metrics::new());
         let tx_mgr = Arc::new(TransactionManager::new_with_deps(wal, metrics.clone()));
 
