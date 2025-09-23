@@ -202,14 +202,60 @@ impl TableStorage {
     }
 
     pub fn reconstruct_state_at(&self, sequence: Option<u64>) -> Result<HashMap<String, serde_json::Value>> {
+        let target_seq = sequence.unwrap_or(u64::MAX);
+
+        // OPTIMIZATION: Try to use a snapshot first
+        let snapshot_manager = crate::snapshot::SnapshotManager::new(&self.path);
+        if let Ok(Some(snapshot)) = snapshot_manager.find_latest_before(target_seq) {
+            // We have a snapshot before our target sequence!
+            // Convert snapshot state from HashMap<String, String> to HashMap<String, serde_json::Value>
+            let mut state: HashMap<String, serde_json::Value> = snapshot.state
+                .into_iter()
+                .filter_map(|(k, v)| {
+                    serde_json::from_str(&v)
+                        .ok()
+                        .map(|json_val| (k, json_val))
+                })
+                .collect();
+
+            // Only read events AFTER the snapshot
+            let events = self.read_events_after_sequence(snapshot.sequence)?;
+
+            for event in events {
+                if event.sequence > target_seq {
+                    break;
+                }
+
+                match event.event_type {
+                    crate::events::EventType::Insert => {
+                        state.insert(event.primary_key.to_string(), event.payload);
+                    }
+                    crate::events::EventType::Patch => {
+                        if let Some(existing) = state.get_mut(&event.primary_key.to_string()) {
+                            if let (serde_json::Value::Object(existing_map), serde_json::Value::Object(patch_map)) =
+                                (existing, &event.payload) {
+                                for (key, value) in patch_map {
+                                    existing_map.insert(key.clone(), value.clone());
+                                }
+                            }
+                        }
+                    }
+                    crate::events::EventType::SoftDelete => {
+                        state.remove(&event.primary_key.to_string());
+                    }
+                }
+            }
+
+            return Ok(state);
+        }
+
+        // Fallback: No snapshot available, do full replay (existing logic)
         let events = self.read_all_events()?;
         let mut state = HashMap::new();
 
         for event in events {
-            if let Some(seq) = sequence {
-                if event.sequence > seq {
-                    break;
-                }
+            if event.sequence > target_seq {
+                break;
             }
 
             match event.event_type {
@@ -233,6 +279,20 @@ impl TableStorage {
         }
 
         Ok(state)
+    }
+
+    /// Read only events after a specific sequence number
+    pub fn read_events_after_sequence(&self, after_seq: u64) -> Result<Vec<Event>> {
+        // For now, just filter from all events
+        // TODO: Optimize this to only read relevant segments
+        let all_events = self.read_all_events()?;
+
+        let filtered_events: Vec<Event> = all_events
+            .into_iter()
+            .filter(|e| e.sequence > after_seq)
+            .collect();
+
+        Ok(filtered_events)
     }
 
     pub fn find_sequence_at_timestamp(&self, timestamp: chrono::DateTime<chrono::Utc>) -> Result<Option<u64>> {

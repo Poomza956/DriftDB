@@ -63,3 +63,8 @@ criterion = { workspace = true }
 [[bench]]
 name = "performance"
 harness = false
+
+[[bench]]
+name = "time_travel_bench"
+harness = false
+path = "../../benches/time_travel_bench.rs"

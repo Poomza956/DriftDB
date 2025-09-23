@@ -111,7 +111,7 @@ pub struct SystemMetrics {
     pub open_files: usize,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DatabaseMetrics {
     pub tables_count: usize,
     pub total_rows: u64,
