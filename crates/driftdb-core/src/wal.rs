@@ -4,7 +4,7 @@
 //! applying them to the main database. Critical for crash recovery.
 
 use std::fs::{File, OpenOptions};
-use std::io::{BufWriter, Write, BufReader, BufRead, Seek, SeekFrom};
+use std::io::{BufWriter, Write, BufReader, BufRead};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use serde::{Serialize, Deserialize};
@@ -12,7 +12,7 @@ use serde_json::{self, Value};
 use crc32fast::Hasher;
 
 use crate::errors::{DriftError, Result};
-use crate::events::Event;
+// use crate::events::Event;
 
 /// WAL entry representing a single logged operation
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -1,9 +1,9 @@
 use crate::errors::{DriftError, Result};
-use crate::auth::{User, AuthContext};
+use crate::auth::AuthContext;
 use serde::{Serialize, Deserialize};
 use std::collections::{HashMap, VecDeque};
 use std::fs::{File, OpenOptions};
-use std::io::{Write, BufWriter, BufReader, BufRead};
+use std::io::{Write, BufWriter};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};

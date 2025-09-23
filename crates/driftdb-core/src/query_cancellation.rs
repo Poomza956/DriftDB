@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use parking_lot::{RwLock, Mutex};
-use tokio::sync::{oneshot, watch};
+use tokio::sync::oneshot;
 use uuid::Uuid;
 
 /// Query cancellation and timeout management

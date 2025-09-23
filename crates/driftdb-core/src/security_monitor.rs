@@ -7,6 +7,7 @@ use std::time::{Duration, SystemTime, Instant};
 use parking_lot::{RwLock, Mutex};
 use uuid::Uuid;
 use tracing::{warn, error, info, debug};
+use chrono::Timelike;
 
 /// Advanced security monitoring and intrusion detection system
 pub struct SecurityMonitor {
@@ -550,11 +551,13 @@ impl SecurityMonitor {
             detector.update_user_baseline(&user_info.username, event);
 
             // Check for anomalies
+            let mut anomalies = Vec::new();
+
             if let Some(baseline) = detector.get_user_baseline(&user_info.username) {
                 // Check login time anomaly
                 if matches!(event.action, AuditAction::Login) {
-                    let current_hour = chrono::DateTime::from(event.timestamp)
-                        .hour() as u8;
+                    let current_hour = chrono::DateTime::<chrono::Utc>::from(event.timestamp)
+                        .time().hour() as u8;
 
                     if !baseline.typical_login_times.contains(&current_hour) {
                         let anomaly = AnomalyEvent {
@@ -568,7 +571,7 @@ impl SecurityMonitor {
                             baseline_deviation: 1.0,
                         };
 
-                        detector.record_anomaly(anomaly);
+                        anomalies.push(anomaly);
                     }
                 }
 
@@ -586,9 +589,14 @@ impl SecurityMonitor {
                             baseline_deviation: 0.8,
                         };
 
-                        detector.record_anomaly(anomaly);
+                        anomalies.push(anomaly);
                     }
                 }
+            }
+
+            // Record collected anomalies
+            for anomaly in anomalies {
+                detector.record_anomaly(anomaly);
             }
         }
 
@@ -994,7 +1002,7 @@ impl AnomalyDetector {
 
         // Update login times
         if matches!(event.action, AuditAction::Login) {
-            let hour = chrono::DateTime::from(event.timestamp).hour() as u8;
+            let hour = chrono::DateTime::<chrono::Utc>::from(event.timestamp).time().hour() as u8;
             if !baseline.typical_login_times.contains(&hour) {
                 baseline.typical_login_times.push(hour);
             }

@@ -1,13 +1,13 @@
-use crate::errors::{DriftError, Result};
+use crate::errors::Result;
 use crate::observability::Metrics;
 use crate::engine::Engine;
 use serde::{Serialize, Deserialize};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use parking_lot::{RwLock, Mutex};
-use tokio::sync::mpsc;
+use std::time::{Duration, SystemTime};
+use parking_lot::RwLock;
+// use tokio::sync::mpsc;
 
 /// Comprehensive monitoring system for DriftDB
 pub struct MonitoringSystem {
