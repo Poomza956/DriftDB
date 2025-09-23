@@ -18,7 +18,7 @@ use tracing::{debug, error, info, instrument, warn};
 use crate::errors::{DriftError, Result};
 use crate::events::Event;
 use crate::observability::Metrics;
-use crate::wal::Wal;
+use crate::wal::{WalManager, WalOperation};
 
 /// Transaction isolation levels
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -294,7 +294,7 @@ pub struct TransactionManager {
     next_txn_id: Arc<AtomicU64>,
     pub(crate) active_transactions: Arc<RwLock<HashMap<u64, Arc<Mutex<Transaction>>>>>,
     lock_manager: Arc<LockManager>,
-    wal: Arc<Wal>,
+    wal: Arc<WalManager>,
     metrics: Arc<Metrics>,
     current_version: Arc<AtomicU64>,
 }
@@ -312,7 +312,7 @@ impl TransactionManager {
         }
 
         // Create WAL with proper error handling
-        let wal = match Wal::new(&wal_path) {
+        let wal = match WalManager::new(&wal_path, crate::wal::WalConfig::default()) {
             Ok(w) => Arc::new(w),
             Err(e) => {
                 eprintln!("ERROR: Failed to create WAL at {:?}: {}", wal_path, e);
@@ -322,7 +322,7 @@ impl TransactionManager {
                 let temp_path = std::env::temp_dir().join("driftdb_wal_fallback");
                 let _ = std::fs::create_dir_all(&temp_path);
 
-                match Wal::new(temp_path) {
+                match WalManager::new(temp_path, crate::wal::WalConfig::default()) {
                     Ok(w) => Arc::new(w),
                     Err(e2) => {
                         return Err(DriftError::Other(
@@ -343,7 +343,7 @@ impl TransactionManager {
         })
     }
 
-    pub fn new_with_deps(wal: Arc<Wal>, metrics: Arc<Metrics>) -> Self {
+    pub fn new_with_deps(wal: Arc<WalManager>, metrics: Arc<Metrics>) -> Self {
         Self {
             next_txn_id: Arc::new(AtomicU64::new(1)),
             active_transactions: Arc::new(RwLock::new(HashMap::new())),
@@ -363,7 +363,7 @@ impl TransactionManager {
         let txn = Arc::new(Mutex::new(Transaction::new(txn_id, isolation, snapshot_version)));
 
         // Record in WAL
-        self.wal.begin_transaction()?;
+        self.wal.log_operation(WalOperation::TransactionBegin { transaction_id: txn_id })?;
 
         // Add to active transactions
         self.active_transactions.write().insert(txn_id, txn.clone());
@@ -452,11 +452,30 @@ impl TransactionManager {
 
         // Write to WAL
         for event in txn_guard.write_set.values() {
-            self.wal.write_event(txn_guard.id, event.clone())?;
+            // Convert event to WAL operation
+            let wal_op = match event.event_type {
+                crate::events::EventType::Insert => WalOperation::Insert {
+                    table: event.table_name.clone(),
+                    row_id: event.primary_key.to_string(),
+                    data: event.payload.clone(),
+                },
+                crate::events::EventType::Patch => WalOperation::Update {
+                    table: event.table_name.clone(),
+                    row_id: event.primary_key.to_string(),
+                    old_data: serde_json::Value::Null, // We don't have old data here
+                    new_data: event.payload.clone(),
+                },
+                crate::events::EventType::SoftDelete => WalOperation::Delete {
+                    table: event.table_name.clone(),
+                    row_id: event.primary_key.to_string(),
+                    data: event.payload.clone(),
+                },
+            };
+            self.wal.log_operation(wal_op)?;
         }
 
         // Commit in WAL
-        self.wal.commit_transaction(txn_guard.id)?;
+        self.wal.log_operation(WalOperation::TransactionCommit { transaction_id: txn_guard.id })?;
 
         txn_guard.state = TransactionState::Committing;
 
@@ -493,7 +512,7 @@ impl TransactionManager {
         txn.state = TransactionState::Aborting;
 
         // Record abort in WAL
-        self.wal.rollback_transaction(txn.id)?;
+        self.wal.log_operation(WalOperation::TransactionAbort { transaction_id: txn.id })?;
 
         // Release locks
         self.lock_manager.release_transaction_locks(txn.id);
@@ -638,7 +657,7 @@ mod tests {
     #[test]
     fn test_transaction_lifecycle() {
         let temp_dir = TempDir::new().unwrap();
-        let wal = Arc::new(Wal::new(temp_dir.path()).unwrap());
+        let wal = Arc::new(WalManager::new(temp_dir.path().join("test.wal"), crate::wal::WalConfig::default()).unwrap());
         let metrics = Arc::new(Metrics::new());
         let mgr = TransactionManager::new_with_deps(wal, metrics);
 
@@ -662,7 +681,7 @@ mod tests {
     #[test]
     fn test_transaction_abort() {
         let temp_dir = TempDir::new().unwrap();
-        let wal = Arc::new(Wal::new(temp_dir.path()).unwrap());
+        let wal = Arc::new(WalManager::new(temp_dir.path().join("test.wal"), crate::wal::WalConfig::default()).unwrap());
         let metrics = Arc::new(Metrics::new());
         let mgr = TransactionManager::new_with_deps(wal, metrics);
 

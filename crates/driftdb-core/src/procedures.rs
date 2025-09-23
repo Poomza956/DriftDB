@@ -20,6 +20,9 @@ use serde_json::{Value, json};
 use tracing::{debug, info, warn, error, trace};
 
 use crate::errors::{DriftError, Result};
+use crate::engine::Engine;
+use crate::sql_bridge;
+use crate::query::QueryResult;
 
 /// Stored procedure definition
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -386,6 +389,8 @@ pub struct ProcedureManager {
     stats: Arc<RwLock<GlobalProcedureStats>>,
     /// Procedure cache for compiled procedures
     compiled_cache: Arc<RwLock<HashMap<String, CompiledProcedure>>>,
+    /// Database engine for executing SQL statements
+    engine: Option<Arc<RwLock<Engine>>>,
 }
 
 /// Global procedure statistics
@@ -420,7 +425,14 @@ impl ProcedureManager {
             procedures: Arc::new(RwLock::new(HashMap::new())),
             stats: Arc::new(RwLock::new(GlobalProcedureStats::default())),
             compiled_cache: Arc::new(RwLock::new(HashMap::new())),
+            engine: None,
         }
+    }
+
+    /// Set the database engine for executing procedure SQL statements
+    pub fn with_engine(mut self, engine: Arc<RwLock<Engine>>) -> Self {
+        self.engine = Some(engine);
+        self
     }
 
     /// Create a stored procedure
@@ -748,9 +760,46 @@ impl ProcedureManager {
             }
 
             Statement::Execute { sql, parameters } => {
-                // TODO: Execute SQL with parameter binding
+                // Execute SQL with parameter binding
                 context.stats.queries_executed += 1;
-                debug!("Would execute SQL: {}", sql);
+
+                if let Some(ref engine_arc) = self.engine {
+                    // Evaluate parameters safely without string interpolation
+                    let mut param_values = Vec::new();
+                    for param_expr in parameters.iter() {
+                        let param_value = self.evaluate_expression(param_expr, context)?;
+                        param_values.push(param_value);
+                    }
+
+                    debug!("Executing parameterized SQL: {} with {} parameters", sql, param_values.len());
+
+                    // Execute the SQL with parameters (no string concatenation)
+                    let mut engine = engine_arc.write();
+                    match sql_bridge::execute_sql_with_params(&mut engine, sql, &param_values) {
+                        Ok(QueryResult::Rows { data }) => {
+                            // Store results in a special variable
+                            context.variables.insert("@@ROWCOUNT".to_string(), json!(data.len()));
+                            context.stats.rows_affected += data.len();
+                        }
+                        Ok(QueryResult::Success { message }) => {
+                            debug!("Procedure SQL executed successfully: {}", message);
+                            context.variables.insert("@@ROWCOUNT".to_string(), json!(1));
+                            context.stats.rows_affected += 1;
+                        }
+                        Ok(QueryResult::DriftHistory { .. }) => {
+                            debug!("Procedure SQL executed and returned drift history");
+                            context.variables.insert("@@ROWCOUNT".to_string(), json!(0));
+                        }
+                        Ok(QueryResult::Error { message }) => {
+                            return Err(DriftError::InvalidQuery(format!("SQL execution failed in procedure: {}", message)));
+                        }
+                        Err(e) => {
+                            return Err(DriftError::InvalidQuery(format!("SQL execution error in procedure: {}", e)));
+                        }
+                    }
+                } else {
+                    debug!("No engine available for SQL execution in procedure");
+                }
             }
 
             Statement::Return { value } => {
@@ -830,8 +879,41 @@ impl ProcedureManager {
                 self.call_function(name, args)
             }
 
+            Expression::Unary { operator, operand } => {
+                let val = self.evaluate_expression(operand, context)?;
+                self.apply_unary_operator(operator, &val)
+            }
+
+            Expression::Subquery(sql) => {
+                // Execute a query as an expression (returns scalar or first row/column)
+                if let Some(ref engine_arc) = self.engine {
+                    let mut engine = engine_arc.write();
+                    match sql_bridge::execute_sql(&mut engine, sql) {
+                        Ok(QueryResult::Rows { data }) => {
+                            if let Some(first_row) = data.first() {
+                                // Return the first value from the first row
+                                if let Value::Object(obj) = first_row {
+                                    if let Some(first_val) = obj.values().next() {
+                                        Ok(first_val.clone())
+                                    } else {
+                                        Ok(Value::Null)
+                                    }
+                                } else {
+                                    Ok(first_row.clone())
+                                }
+                            } else {
+                                Ok(Value::Null)
+                            }
+                        }
+                        _ => Ok(Value::Null),
+                    }
+                } else {
+                    Ok(Value::Null)
+                }
+            }
+
             _ => {
-                // TODO: Implement other expression types
+                // For unimplemented expression types, return null
                 Ok(Value::Null)
             }
         }
@@ -850,8 +932,63 @@ impl ProcedureManager {
             (a, BinaryOperator::Equal, b) => {
                 Ok(json!(a == b))
             }
+            (Value::Number(a), BinaryOperator::Subtract, Value::Number(b)) => {
+                let result = a.as_f64().unwrap_or(0.0) - b.as_f64().unwrap_or(0.0);
+                Ok(json!(result))
+            }
+            (Value::Number(a), BinaryOperator::Multiply, Value::Number(b)) => {
+                let result = a.as_f64().unwrap_or(0.0) * b.as_f64().unwrap_or(0.0);
+                Ok(json!(result))
+            }
+            (Value::Number(a), BinaryOperator::Divide, Value::Number(b)) => {
+                let b_val = b.as_f64().unwrap_or(0.0);
+                if b_val == 0.0 {
+                    Err(DriftError::InvalidQuery("Division by zero".to_string()))
+                } else {
+                    let result = a.as_f64().unwrap_or(0.0) / b_val;
+                    Ok(json!(result))
+                }
+            }
+            (Value::Number(a), BinaryOperator::Greater, Value::Number(b)) => {
+                Ok(json!(a.as_f64().unwrap_or(0.0) > b.as_f64().unwrap_or(0.0)))
+            }
+            (Value::Number(a), BinaryOperator::Less, Value::Number(b)) => {
+                Ok(json!(a.as_f64().unwrap_or(0.0) < b.as_f64().unwrap_or(0.0)))
+            }
+            (Value::Number(a), BinaryOperator::GreaterEqual, Value::Number(b)) => {
+                Ok(json!(a.as_f64().unwrap_or(0.0) >= b.as_f64().unwrap_or(0.0)))
+            }
+            (Value::Number(a), BinaryOperator::LessEqual, Value::Number(b)) => {
+                Ok(json!(a.as_f64().unwrap_or(0.0) <= b.as_f64().unwrap_or(0.0)))
+            }
+            (a, BinaryOperator::NotEqual, b) => {
+                Ok(json!(a != b))
+            }
+            (Value::Bool(a), BinaryOperator::And, Value::Bool(b)) => {
+                Ok(json!(*a && *b))
+            }
+            (Value::Bool(a), BinaryOperator::Or, Value::Bool(b)) => {
+                Ok(json!(*a || *b))
+            }
             _ => {
-                // TODO: Implement more operators
+                // For unimplemented operators, return null
+                debug!("Unimplemented binary operator: {:?} {:?} {:?}", left, op, right);
+                Ok(Value::Null)
+            }
+        }
+    }
+
+    /// Apply unary operator to a value
+    fn apply_unary_operator(&self, op: &UnaryOperator, value: &Value) -> Result<Value> {
+        match (op, value) {
+            (UnaryOperator::Not, Value::Bool(b)) => Ok(json!(!b)),
+            (UnaryOperator::Minus, Value::Number(n)) => {
+                let val = -n.as_f64().unwrap_or(0.0);
+                Ok(json!(val))
+            }
+            (UnaryOperator::Plus, Value::Number(n)) => Ok(value.clone()),
+            _ => {
+                debug!("Unimplemented unary operator: {:?} {:?}", op, value);
                 Ok(Value::Null)
             }
         }

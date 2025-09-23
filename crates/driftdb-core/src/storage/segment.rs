@@ -1,19 +1,34 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufReader, BufWriter, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use crate::errors::Result;
 use crate::events::Event;
 use crate::storage::frame::{Frame, FramedRecord};
+use crate::encryption::EncryptionService;
 
 pub struct Segment {
     path: PathBuf,
     id: u64,
+    encryption_service: Option<Arc<EncryptionService>>,
 }
 
 impl Segment {
     pub fn new(path: PathBuf, id: u64) -> Self {
-        Self { path, id }
+        Self {
+            path,
+            id,
+            encryption_service: None,
+        }
+    }
+
+    pub fn new_with_encryption(path: PathBuf, id: u64, encryption_service: Arc<EncryptionService>) -> Self {
+        Self {
+            path,
+            id,
+            encryption_service: Some(encryption_service),
+        }
     }
 
     pub fn create(&self) -> Result<SegmentWriter> {
@@ -25,7 +40,7 @@ impl Segment {
             .write(true)
             .truncate(true)
             .open(&self.path)?;
-        Ok(SegmentWriter::new(file))
+        Ok(SegmentWriter::new(file, self.encryption_service.clone(), self.id))
     }
 
     pub fn open_writer(&self) -> Result<SegmentWriter> {
@@ -33,12 +48,12 @@ impl Segment {
             .create(true)
             .append(true)
             .open(&self.path)?;
-        Ok(SegmentWriter::new(file))
+        Ok(SegmentWriter::new(file, self.encryption_service.clone(), self.id))
     }
 
     pub fn open_reader(&self) -> Result<SegmentReader> {
         let file = File::open(&self.path)?;
-        Ok(SegmentReader::new(file))
+        Ok(SegmentReader::new(file, self.encryption_service.clone(), self.id))
     }
 
     pub fn size(&self) -> Result<u64> {
@@ -67,20 +82,37 @@ impl Segment {
 pub struct SegmentWriter {
     writer: BufWriter<File>,
     bytes_written: u64,
+    encryption_service: Option<Arc<EncryptionService>>,
+    segment_id: u64,
 }
 
 impl SegmentWriter {
-    fn new(file: File) -> Self {
+    fn new(file: File, encryption_service: Option<Arc<EncryptionService>>, segment_id: u64) -> Self {
         let pos = file.metadata().map(|m| m.len()).unwrap_or(0);
         Self {
             writer: BufWriter::new(file),
             bytes_written: pos,
+            encryption_service,
+            segment_id,
         }
     }
 
     pub fn append_event(&mut self, event: &Event) -> Result<u64> {
         let record = FramedRecord::from_event(event.clone());
-        let frame = record.to_frame()?;
+        let mut frame = record.to_frame()?;
+
+        // Encrypt frame data if encryption service is available
+        if let Some(ref encryption_service) = self.encryption_service {
+            let context = format!("segment_{}", self.segment_id);
+            frame.data = encryption_service.encrypt(&frame.data, &context)?;
+            // Recalculate CRC after encryption
+            use crc32fast::Hasher;
+            let mut hasher = Hasher::new();
+            hasher.update(&frame.data);
+            frame.crc32 = hasher.finalize();
+            frame.length = frame.data.len() as u32;
+        }
+
         frame.write_to(&mut self.writer)?;
         self.bytes_written += 8 + frame.data.len() as u64;
         Ok(self.bytes_written)
@@ -104,12 +136,16 @@ impl SegmentWriter {
 
 pub struct SegmentReader {
     reader: BufReader<File>,
+    encryption_service: Option<Arc<EncryptionService>>,
+    segment_id: u64,
 }
 
 impl SegmentReader {
-    fn new(file: File) -> Self {
+    fn new(file: File, encryption_service: Option<Arc<EncryptionService>>, segment_id: u64) -> Self {
         Self {
             reader: BufReader::new(file),
+            encryption_service,
+            segment_id,
         }
     }
 
@@ -123,7 +159,13 @@ impl SegmentReader {
 
     pub fn read_next_event(&mut self) -> Result<Option<Event>> {
         match Frame::read_from(&mut self.reader)? {
-            Some(frame) => {
+            Some(mut frame) => {
+                // Decrypt frame data if encryption service is available
+                if let Some(ref encryption_service) = self.encryption_service {
+                    let context = format!("segment_{}", self.segment_id);
+                    frame.data = encryption_service.decrypt(&frame.data, &context)?;
+                }
+
                 let record = FramedRecord::from_frame(&frame)?;
                 Ok(Some(record.event))
             }
@@ -137,10 +179,20 @@ impl SegmentReader {
         loop {
             let current_pos = self.reader.stream_position()?;
             match Frame::read_from(&mut self.reader) {
-                Ok(Some(frame)) => {
+                Ok(Some(mut frame)) => {
                     if !frame.verify() {
                         return Ok(Some(current_pos));
                     }
+
+                    // Try to decrypt if encryption is enabled
+                    if let Some(ref encryption_service) = self.encryption_service {
+                        let context = format!("segment_{}", self.segment_id);
+                        match encryption_service.decrypt(&frame.data, &context) {
+                            Ok(decrypted) => frame.data = decrypted,
+                            Err(_) => return Ok(Some(current_pos)), // Decryption failure indicates corruption
+                        }
+                    }
+
                     match FramedRecord::from_frame(&frame) {
                         Ok(_) => {
                             let _ = self.reader.stream_position()?;

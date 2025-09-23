@@ -9,6 +9,7 @@ use crate::errors::{DriftError, Result};
 use crate::events::Event;
 use crate::schema::Schema;
 use crate::storage::{Segment, SegmentWriter, TableMeta};
+use crate::encryption::EncryptionService;
 
 #[derive(Debug, Clone)]
 pub struct TableStats {
@@ -22,11 +23,16 @@ pub struct TableStorage {
     schema: Schema,
     meta: Arc<RwLock<TableMeta>>,
     current_writer: Arc<RwLock<Option<SegmentWriter>>>,
+    encryption_service: Option<Arc<EncryptionService>>,
     _lock_file: Option<fs::File>,
 }
 
 impl TableStorage {
-    pub fn create<P: AsRef<Path>>(base_path: P, schema: Schema) -> Result<Self> {
+    pub fn create<P: AsRef<Path>>(
+        base_path: P,
+        schema: Schema,
+        encryption_service: Option<Arc<EncryptionService>>,
+    ) -> Result<Self> {
         let path = base_path.as_ref().join("tables").join(&schema.name);
         fs::create_dir_all(&path)?;
 
@@ -51,7 +57,15 @@ impl TableStorage {
         fs::create_dir_all(path.join("snapshots"))?;
         fs::create_dir_all(path.join("indexes"))?;
 
-        let segment = Segment::new(path.join("segments").join("00000001.seg"), 1);
+        let segment = if let Some(ref encryption_service) = encryption_service {
+            Segment::new_with_encryption(
+                path.join("segments").join("00000001.seg"),
+                1,
+                encryption_service.clone(),
+            )
+        } else {
+            Segment::new(path.join("segments").join("00000001.seg"), 1)
+        };
         let writer = segment.create()?;
 
         Ok(Self {
@@ -59,11 +73,16 @@ impl TableStorage {
             schema,
             meta: Arc::new(RwLock::new(meta)),
             current_writer: Arc::new(RwLock::new(Some(writer))),
+            encryption_service,
             _lock_file: Some(lock_file),
         })
     }
 
-    pub fn open<P: AsRef<Path>>(base_path: P, table_name: &str) -> Result<Self> {
+    pub fn open<P: AsRef<Path>>(
+        base_path: P,
+        table_name: &str,
+        encryption_service: Option<Arc<EncryptionService>>,
+    ) -> Result<Self> {
         let path = base_path.as_ref().join("tables").join(table_name);
 
         if !path.exists() {
@@ -85,7 +104,11 @@ impl TableStorage {
 
         let segment_id = meta.segment_count;
         let segment_path = path.join("segments").join(format!("{:08}.seg", segment_id));
-        let segment = Segment::new(segment_path, segment_id);
+        let segment = if let Some(ref encryption_service) = encryption_service {
+            Segment::new_with_encryption(segment_path, segment_id, encryption_service.clone())
+        } else {
+            Segment::new(segment_path, segment_id)
+        };
 
         let writer = if segment.exists() {
             segment.open_writer()?
@@ -98,6 +121,7 @@ impl TableStorage {
             schema,
             meta: Arc::new(RwLock::new(meta)),
             current_writer: Arc::new(RwLock::new(Some(writer))),
+            encryption_service,
             _lock_file: Some(lock_file),
         })
     }
@@ -119,7 +143,11 @@ impl TableStorage {
                 meta.segment_count += 1;
                 let new_segment_path = self.path.join("segments")
                     .join(format!("{:08}.seg", meta.segment_count));
-                let new_segment = Segment::new(new_segment_path, meta.segment_count);
+                let new_segment = if let Some(ref encryption_service) = self.encryption_service {
+                    Segment::new_with_encryption(new_segment_path, meta.segment_count, encryption_service.clone())
+                } else {
+                    Segment::new(new_segment_path, meta.segment_count)
+                };
                 *writer_guard = Some(new_segment.create()?);
             }
         } else {
@@ -161,7 +189,11 @@ impl TableStorage {
         segment_files.sort_by_key(|entry| entry.path());
 
         for entry in segment_files {
-            let segment = Segment::new(entry.path(), 0);
+            let segment = if let Some(ref encryption_service) = self.encryption_service {
+                Segment::new_with_encryption(entry.path(), 0, encryption_service.clone())
+            } else {
+                Segment::new(entry.path(), 0)
+            };
             let mut reader = segment.open_reader()?;
             all_events.extend(reader.read_all_events()?);
         }
@@ -352,6 +384,15 @@ impl TableStorage {
 
     fn segment_rotation_threshold(&self) -> u64 {
         10 * 1024 * 1024
+    }
+
+    /// Count total number of records in the table
+    pub fn count_records(&self) -> Result<usize> {
+        let events = self.read_all_events()?;
+
+        // Count non-deleted records by reconstructing the current state
+        let state = self.reconstruct_state_at(None)?;
+        Ok(state.len())
     }
 }
 

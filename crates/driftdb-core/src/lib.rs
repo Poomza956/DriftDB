@@ -2,14 +2,18 @@ pub mod errors;
 pub mod events;
 pub mod schema;
 pub mod auth;
+pub mod audit;
 pub mod compression;
 pub mod storage;
 pub mod index;
 pub mod snapshot;
 pub mod query;
+pub mod query_cancellation;
+pub mod query_cache;
 pub mod engine;
 pub mod wal;
 pub mod observability;
+pub mod monitoring;
 pub mod backup;
 pub mod transaction;
 pub mod connection;
@@ -22,10 +26,12 @@ pub mod sql;
 pub mod rate_limit;
 pub mod cache;
 pub mod constraints;
+pub mod foreign_keys;
 pub mod sequences;
 pub mod parallel;
 pub mod views;
 pub mod triggers;
+pub mod partitioning;
 pub mod fulltext;
 pub mod window;
 pub mod procedures;
@@ -47,9 +53,19 @@ pub mod streaming;
 pub mod vector_search;
 pub mod mvcc_engine;
 pub mod cost_optimizer;
+pub mod distributed_coordinator;
+pub mod transaction_coordinator;
+pub mod error_recovery;
+pub mod backup_enhanced;
+pub mod security_monitor;
+pub mod security_cli;
+pub mod query_performance;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod storage_test;
 
 pub use engine::Engine;
 pub use errors::{DriftError, Result};
@@ -59,3 +75,6 @@ pub use schema::Schema;
 pub use connection::{EnginePool, EngineGuard, PoolConfig, PoolStats, EnginePoolStats};
 pub use rate_limit::{RateLimitConfig, RateLimitManager, RateLimitStats, QueryCost};
 pub use auth::{AuthManager, AuthConfig, User, Role, Permission, Session, AuthContext};
+pub use audit::{AuditSystem, AuditConfig, AuditEvent, AuditEventType, AuditAction};
+pub use security_monitor::{SecurityMonitor, SecurityConfig, ThreatEvent, ThreatType, AlertType, SecurityStats};
+pub use query_performance::{QueryPerformanceOptimizer, OptimizationConfig, OptimizationStats};

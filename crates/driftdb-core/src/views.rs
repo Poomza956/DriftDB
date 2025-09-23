@@ -20,8 +20,10 @@ use serde_json::Value;
 use tracing::{debug, info};
 
 use crate::errors::{DriftError, Result};
-use crate::query::{Query, QueryResult, AsOf};
+use crate::query::{Query, QueryResult, AsOf, WhereCondition};
 use crate::cache::{QueryCache, CacheConfig};
+use crate::engine::Engine;
+use crate::sql_bridge;
 
 /// View definition
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -125,6 +127,8 @@ pub struct ViewManager {
     query_cache: Arc<QueryCache>,
     /// Statistics
     stats: Arc<RwLock<ViewStatistics>>,
+    /// Database engine for executing queries
+    engine: Option<Arc<RwLock<Engine>>>,
 }
 
 /// View dependency graph for tracking dependencies
@@ -235,7 +239,14 @@ impl ViewManager {
             dependency_graph: Arc::new(RwLock::new(ViewDependencyGraph::default())),
             query_cache: Arc::new(QueryCache::new(cache_config)),
             stats: Arc::new(RwLock::new(ViewStatistics::default())),
+            engine: None,
         }
+    }
+
+    /// Set the database engine for executing view queries
+    pub fn with_engine(mut self, engine: Arc<RwLock<Engine>>) -> Self {
+        self.engine = Some(engine);
+        self
     }
 
     /// Create a new view
@@ -399,9 +410,52 @@ impl ViewManager {
         stats.cache_misses += 1;
         drop(stats);
 
-        // TODO: Execute the view's SQL query with additional conditions
-        // For now, return empty result
-        let results = vec![];
+        // Execute the view's SQL query
+        let results = if let Some(ref engine_arc) = self.engine {
+            // Create a modified query with additional conditions if needed
+            let mut query_sql = view.query.clone();
+
+            // If we have additional conditions, we need to modify the SQL
+            if !conditions.is_empty() {
+                // For simplicity, wrap the view query in a subquery and add WHERE clause
+                let mut where_clauses = Vec::new();
+                for condition in &conditions {
+                    where_clauses.push(format!("{} {} {}",
+                        condition.column,
+                        condition.operator,
+                        if condition.value.is_string() {
+                            format!("'{}'", condition.value.as_str().unwrap_or(""))
+                        } else {
+                            condition.value.to_string()
+                        }
+                    ));
+                }
+
+                if !where_clauses.is_empty() {
+                    query_sql = format!("SELECT * FROM ({}) AS subquery WHERE {}",
+                        query_sql, where_clauses.join(" AND "));
+                }
+            }
+
+            // Add LIMIT if specified
+            if let Some(limit) = limit {
+                query_sql = format!("{} LIMIT {}", query_sql, limit);
+            }
+
+            // Execute the SQL query
+            let mut engine = engine_arc.write();
+            match sql_bridge::execute_sql(&mut engine, &query_sql) {
+                Ok(QueryResult::Rows { data }) => data,
+                Ok(_) => vec![], // Handle non-row results
+                Err(e) => {
+                    debug!("View query execution failed: {}", e);
+                    vec![] // Return empty on error for now
+                }
+            }
+        } else {
+            debug!("No engine available for view execution");
+            vec![]
+        };
 
         // Cache the results
         self.query_cache.put(
@@ -487,8 +541,21 @@ impl ViewManager {
             ));
         }
 
-        // TODO: Execute view query and store results
-        let data = vec![];
+        // Execute view query and store results
+        let data = if let Some(ref engine_arc) = self.engine {
+            let mut engine = engine_arc.write();
+            match sql_bridge::execute_sql(&mut engine, &view.query) {
+                Ok(QueryResult::Rows { data }) => data,
+                Ok(_) => vec![], // Handle non-row results
+                Err(e) => {
+                    debug!("Materialized view refresh failed: {}", e);
+                    vec![] // Return empty on error
+                }
+            }
+        } else {
+            debug!("No engine available for materialized view refresh");
+            vec![]
+        };
         let row_count = data.len();
         let size_bytes = data.len() * 100; // Rough estimate
 
@@ -543,9 +610,85 @@ impl ViewManager {
 
     /// Validate view SQL and extract metadata
     pub fn validate_view_sql(sql: &str) -> Result<(HashSet<String>, Vec<ColumnDefinition>)> {
-        // TODO: Parse SQL to extract dependencies and columns
-        // For now, return empty results
-        Ok((HashSet::new(), vec![]))
+        use sqlparser::parser::Parser;
+        use sqlparser::dialect::GenericDialect;
+        use sqlparser::ast::{Statement, TableFactor, TableWithJoins, Expr, SelectItem};
+
+        let dialect = GenericDialect {};
+        let ast = Parser::parse_sql(&dialect, sql)
+            .map_err(|e| DriftError::Parse(format!("Invalid SQL in view definition: {}", e)))?;
+
+        if ast.is_empty() {
+            return Err(DriftError::InvalidQuery("Empty SQL in view definition".to_string()));
+        }
+
+        let mut dependencies = HashSet::new();
+        let mut columns = Vec::new();
+
+        // Extract table dependencies and column info from the parsed AST
+        match &ast[0] {
+            Statement::Query(query) => {
+                // Extract table dependencies
+                if let sqlparser::ast::SetExpr::Select(select) = query.body.as_ref() {
+                        // Extract FROM tables
+                        for table_with_joins in &select.from {
+                            extract_table_name(&table_with_joins.relation, &mut dependencies);
+                            for join in &table_with_joins.joins {
+                                extract_table_name(&join.relation, &mut dependencies);
+                            }
+                        }
+
+                        // Extract column information from SELECT items
+                        for (i, select_item) in select.projection.iter().enumerate() {
+                            match select_item {
+                                SelectItem::UnnamedExpr(expr) => {
+                                    columns.push(ColumnDefinition {
+                                        name: format!("column_{}", i),
+                                        data_type: "UNKNOWN".to_string(),
+                                        nullable: true,
+                                        source_table: None,
+                                        source_column: None,
+                                    });
+                                }
+                                SelectItem::ExprWithAlias { alias, .. } => {
+                                    columns.push(ColumnDefinition {
+                                        name: alias.value.clone(),
+                                        data_type: "UNKNOWN".to_string(),
+                                        nullable: true,
+                                        source_table: None,
+                                        source_column: None,
+                                    });
+                                }
+                                SelectItem::Wildcard(_) => {
+                                    // For wildcard, we can't determine columns without schema info
+                                    columns.push(ColumnDefinition {
+                                        name: "*".to_string(),
+                                        data_type: "WILDCARD".to_string(),
+                                        nullable: true,
+                                        source_table: None,
+                                        source_column: None,
+                                    });
+                                }
+                                SelectItem::QualifiedWildcard(prefix, _) => {
+                                    let prefix_str = prefix.0.iter().map(|i| i.value.clone()).collect::<Vec<_>>().join(".");
+                                    columns.push(ColumnDefinition {
+                                        name: format!("{}.*", prefix_str),
+                                        data_type: "QUALIFIED_WILDCARD".to_string(),
+                                        nullable: true,
+                                        source_table: Some(prefix_str),
+                                        source_column: None,
+                                    });
+                                }
+                            }
+                        }
+                }
+            }
+            _ => {
+                return Err(DriftError::InvalidQuery("View definition must be a SELECT query".to_string()));
+            }
+        }
+
+        Ok((dependencies, columns))
     }
 
     /// Cache materialized view data
@@ -652,6 +795,44 @@ impl ViewBuilder {
             refresh_policy: self.refresh_policy,
             comment: self.comment,
         })
+    }
+}
+
+/// Helper function to extract table name from TableFactor
+fn extract_table_name(table_factor: &sqlparser::ast::TableFactor, dependencies: &mut HashSet<String>) {
+    use sqlparser::ast::TableFactor;
+
+    match table_factor {
+        TableFactor::Table { name, .. } => {
+            dependencies.insert(name.to_string());
+        }
+        TableFactor::Derived { .. } => {
+            // Subquery - could recursively analyze but for now skip
+        }
+        TableFactor::TableFunction { .. } => {
+            // Table function - skip for now
+        }
+        TableFactor::UNNEST { .. } => {
+            // UNNEST - skip for now
+        }
+        TableFactor::JsonTable { .. } => {
+            // JSON table - skip for now
+        }
+        TableFactor::NestedJoin { .. } => {
+            // Nested join - would need recursive handling
+        }
+        TableFactor::Pivot { .. } => {
+            // Pivot - skip for now
+        }
+        TableFactor::Unpivot { .. } => {
+            // Unpivot - skip for now
+        }
+        TableFactor::MatchRecognize { .. } => {
+            // Match recognize - skip for now
+        }
+        TableFactor::Function { .. } => {
+            // Table function - skip for now
+        }
     }
 }
 

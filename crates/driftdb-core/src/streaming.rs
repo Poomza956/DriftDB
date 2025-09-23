@@ -11,7 +11,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use parking_lot::RwLock;
-use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
 use serde::{Serialize, Deserialize};
 use serde_json::Value;
 use uuid::Uuid;
@@ -323,10 +323,18 @@ impl StreamManager {
                                     include_after,
                                 ) {
                                     // Send to client
-                                    if let Some(subscription) = subscriptions.read().get(&subscription_id) {
-                                        if let Some(client) = clients.read().get(&subscription.client_id) {
-                                            let _ = client.sender.send(stream_event).await;
+                                    let sender = {
+                                        let subs = subscriptions.read();
+                                        if let Some(subscription) = subs.get(&subscription_id) {
+                                            let cls = clients.read();
+                                            cls.get(&subscription.client_id).map(|c| c.sender.clone())
+                                        } else {
+                                            None
                                         }
+                                    };
+
+                                    if let Some(sender) = sender {
+                                        let _ = sender.send(stream_event).await;
                                     }
                                 }
                         }
@@ -415,10 +423,18 @@ impl StreamManager {
                     metadata: None,
                 };
 
-                if let Some(subscription) = subscriptions.read().get(&subscription_id) {
-                    if let Some(client) = clients.read().get(&subscription.client_id) {
-                        let _ = client.sender.send(result).await;
+                let sender = {
+                    let subs = subscriptions.read();
+                    if let Some(subscription) = subs.get(&subscription_id) {
+                        let cls = clients.read();
+                        cls.get(&subscription.client_id).map(|c| c.sender.clone())
+                    } else {
+                        None
                     }
+                };
+
+                if let Some(sender) = sender {
+                    let _ = sender.send(result).await;
                 }
             }
         });
@@ -448,10 +464,18 @@ impl StreamManager {
                         metadata: None,
                     };
 
-                    if let Some(subscription) = subscriptions.read().get(&subscription_id) {
-                        if let Some(client) = clients.read().get(&subscription.client_id) {
-                            let _ = client.sender.send(stream_event).await;
+                    let sender = {
+                        let subs = subscriptions.read();
+                        if let Some(subscription) = subs.get(&subscription_id) {
+                            let cls = clients.read();
+                            cls.get(&subscription.client_id).map(|c| c.sender.clone())
+                        } else {
+                            None
                         }
+                    };
+
+                    if let Some(sender) = sender {
+                        let _ = sender.send(stream_event).await;
                     }
                 }
             }
@@ -524,7 +548,8 @@ pub mod websocket {
         stream_manager: Arc<StreamManager>,
         websocket: tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
     ) {
-        let (mut tx, mut rx) = websocket.split();
+        let (tx, mut rx) = websocket.split();
+        let tx = Arc::new(Mutex::new(tx));
         let client_id = Uuid::new_v4().to_string();
 
         // Handle incoming messages
@@ -546,14 +571,15 @@ pub mod websocket {
                                     subscription_id,
                                     status: "subscribed".to_string(),
                                 };
-                                let _ = tx.send(Message::Text(
+                                let _ = tx.lock().await.send(Message::Text(
                                     serde_json::to_string(&response).unwrap()
                                 )).await;
 
                                 // Forward stream events to WebSocket
+                                let tx_clone = tx.clone();
                                 tokio::spawn(async move {
                                     while let Some(event) = receiver.recv().await {
-                                        let _ = tx.send(Message::Text(
+                                        let _ = tx_clone.lock().await.send(Message::Text(
                                             serde_json::to_string(&event).unwrap()
                                         )).await;
                                     }
@@ -570,7 +596,7 @@ pub mod websocket {
                                     data: Value::Null,
                                     metadata: None,
                                 };
-                                let _ = tx.send(Message::Text(
+                                let _ = tx.lock().await.send(Message::Text(
                                     serde_json::to_string(&error).unwrap()
                                 )).await;
                             }

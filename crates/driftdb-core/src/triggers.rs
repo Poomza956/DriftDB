@@ -21,6 +21,9 @@ use serde_json::{Value, json};
 use tracing::{debug, info, error, trace};
 
 use crate::errors::{DriftError, Result};
+use crate::engine::Engine;
+use crate::sql_bridge;
+use crate::query::QueryResult;
 
 /// Trigger timing - when the trigger fires relative to the event
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -156,6 +159,8 @@ pub struct TriggerManager {
     max_recursion_depth: usize,
     /// Current recursion depth tracking
     recursion_depth: Arc<RwLock<HashMap<u64, usize>>>, // transaction_id -> depth
+    /// Database engine for executing trigger SQL
+    engine: Option<Arc<RwLock<Engine>>>,
 }
 
 /// Trigger execution statistics
@@ -180,7 +185,14 @@ impl TriggerManager {
             stats: Arc::new(RwLock::new(TriggerStatistics::default())),
             max_recursion_depth: 16,
             recursion_depth: Arc::new(RwLock::new(HashMap::new())),
+            engine: None,
         }
+    }
+
+    /// Set the database engine for executing trigger SQL
+    pub fn with_engine(mut self, engine: Arc<RwLock<Engine>>) -> Self {
+        self.engine = Some(engine);
+        self
     }
 
     /// Create a new trigger
@@ -403,14 +415,103 @@ impl TriggerManager {
 
         match &trigger.action {
             TriggerAction::SqlStatement(sql) => {
-                // TODO: Execute SQL statement
-                debug!("Would execute SQL: {}", sql);
-                Ok(TriggerResult::Continue)
+                // Execute SQL statement
+                if let Some(ref engine_arc) = self.engine {
+                    // Replace placeholders in SQL with trigger context values
+                    let mut bound_sql = sql.clone();
+
+                    // Replace OLD and NEW row references
+                    if let Some(ref old_row) = context.old_row {
+                        for (key, value) in old_row.as_object().unwrap_or(&serde_json::Map::new()) {
+                            let placeholder = format!("OLD.{}", key);
+                            let value_str = match value {
+                                Value::String(s) => format!("'{}'", s.replace('\'', "''")),
+                                Value::Number(n) => n.to_string(),
+                                Value::Bool(b) => b.to_string(),
+                                Value::Null => "NULL".to_string(),
+                                _ => format!("'{}'", value.to_string().replace('\'', "''")),
+                            };
+                            bound_sql = bound_sql.replace(&placeholder, &value_str);
+                        }
+                    }
+
+                    if let Some(ref new_row) = context.new_row {
+                        for (key, value) in new_row.as_object().unwrap_or(&serde_json::Map::new()) {
+                            let placeholder = format!("NEW.{}", key);
+                            let value_str = match value {
+                                Value::String(s) => format!("'{}'", s.replace('\'', "''")),
+                                Value::Number(n) => n.to_string(),
+                                Value::Bool(b) => b.to_string(),
+                                Value::Null => "NULL".to_string(),
+                                _ => format!("'{}'", value.to_string().replace('\'', "''")),
+                            };
+                            bound_sql = bound_sql.replace(&placeholder, &value_str);
+                        }
+                    }
+
+                    debug!("Executing trigger SQL: {}", bound_sql);
+
+                    // Execute the SQL
+                    let mut engine = engine_arc.write();
+                    match sql_bridge::execute_sql(&mut engine, &bound_sql) {
+                        Ok(QueryResult::Success { .. }) => {
+                            debug!("Trigger SQL executed successfully");
+                            Ok(TriggerResult::Continue)
+                        }
+                        Ok(QueryResult::Rows { .. }) => {
+                            debug!("Trigger SQL executed and returned rows");
+                            Ok(TriggerResult::Continue)
+                        }
+                        Ok(QueryResult::DriftHistory { .. }) => {
+                            debug!("Trigger SQL executed and returned history");
+                            Ok(TriggerResult::Continue)
+                        }
+                        Ok(QueryResult::Error { message }) => {
+                            error!("Trigger SQL execution failed: {}", message);
+                            Ok(TriggerResult::Abort(format!("Trigger failed: {}", message)))
+                        }
+                        Err(e) => {
+                            error!("Trigger SQL execution error: {}", e);
+                            Ok(TriggerResult::Abort(format!("Trigger error: {}", e)))
+                        }
+                    }
+                } else {
+                    debug!("No engine available for trigger SQL execution");
+                    Ok(TriggerResult::Continue)
+                }
             },
             TriggerAction::CallProcedure { name, args } => {
-                // TODO: Call stored procedure
-                debug!("Would call procedure '{}' with {} args", name, args.len());
-                Ok(TriggerResult::Continue)
+                // Call stored procedure
+                if let Some(ref engine_arc) = self.engine {
+                    // Build CALL statement
+                    let arg_strings: Vec<String> = args.iter().map(|arg| {
+                        match arg {
+                            Value::String(s) => format!("'{}'", s.replace('\'', "''")),
+                            Value::Number(n) => n.to_string(),
+                            Value::Bool(b) => b.to_string(),
+                            Value::Null => "NULL".to_string(),
+                            _ => format!("'{}'", arg.to_string().replace('\'', "''")),
+                        }
+                    }).collect();
+
+                    let call_sql = format!("CALL {}({})", name, arg_strings.join(", "));
+                    debug!("Executing procedure call: {}", call_sql);
+
+                    let mut engine = engine_arc.write();
+                    match sql_bridge::execute_sql(&mut engine, &call_sql) {
+                        Ok(_) => {
+                            debug!("Procedure call executed successfully");
+                            Ok(TriggerResult::Continue)
+                        }
+                        Err(e) => {
+                            error!("Procedure call execution error: {}", e);
+                            Ok(TriggerResult::Abort(format!("Procedure call error: {}", e)))
+                        }
+                    }
+                } else {
+                    debug!("No engine available for procedure call execution");
+                    Ok(TriggerResult::Continue)
+                }
             },
             TriggerAction::CustomFunction(func_name) => {
                 // TODO: Execute custom function
@@ -467,10 +568,45 @@ impl TriggerManager {
             }
         }
 
-        // TODO: Actually insert into audit table
-        debug!("Would insert audit entry into '{}': {:?}", audit_table, audit_entry);
+        // Actually insert into audit table
+        if let Some(ref engine_arc) = self.engine {
+            // Create INSERT statement for audit table
+            let columns: Vec<String> = audit_entry.as_object().unwrap().keys().cloned().collect();
+            let values: Vec<String> = audit_entry.as_object().unwrap().values().map(|v| {
+                match v {
+                    Value::String(s) => format!("'{}'", s.replace('\'', "''")),
+                    Value::Number(n) => n.to_string(),
+                    Value::Bool(b) => b.to_string(),
+                    Value::Null => "NULL".to_string(),
+                    _ => format!("'{}'", v.to_string().replace('\'', "''")),
+                }
+            }).collect();
 
-        Ok(TriggerResult::Continue)
+            let insert_sql = format!(
+                "INSERT INTO {} ({}) VALUES ({})",
+                audit_table,
+                columns.join(", "),
+                values.join(", ")
+            );
+
+            debug!("Inserting audit entry: {}", insert_sql);
+
+            let mut engine = engine_arc.write();
+            match sql_bridge::execute_sql(&mut engine, &insert_sql) {
+                Ok(_) => {
+                    debug!("Audit entry inserted successfully");
+                    Ok(TriggerResult::Continue)
+                }
+                Err(e) => {
+                    error!("Failed to insert audit entry: {}", e);
+                    // Don't fail the trigger, just log the error
+                    Ok(TriggerResult::Continue)
+                }
+            }
+        } else {
+            debug!("No engine available for audit log insertion");
+            Ok(TriggerResult::Continue)
+        }
     }
 
     /// Evaluate WHEN condition for a trigger
@@ -484,9 +620,72 @@ impl TriggerManager {
 
     /// Evaluate a condition expression
     fn evaluate_condition(&self, condition: &str, context: &TriggerContext) -> bool {
-        // TODO: Implement proper condition evaluation
-        // For now, just return true
-        true
+        // Simple condition evaluation - in a real implementation, this would parse SQL expressions
+
+        // Handle some common patterns
+        if condition.is_empty() {
+            return true;
+        }
+
+        // Replace OLD and NEW references with actual values
+        let mut eval_condition = condition.to_string();
+
+        if let Some(ref old_row) = context.old_row {
+            for (key, value) in old_row.as_object().unwrap_or(&serde_json::Map::new()) {
+                let placeholder = format!("OLD.{}", key);
+                let value_str = match value {
+                    Value::String(s) => format!("'{}'", s),
+                    Value::Number(n) => n.to_string(),
+                    Value::Bool(b) => b.to_string(),
+                    Value::Null => "NULL".to_string(),
+                    _ => format!("'{}'", value.to_string()),
+                };
+                eval_condition = eval_condition.replace(&placeholder, &value_str);
+            }
+        }
+
+        if let Some(ref new_row) = context.new_row {
+            for (key, value) in new_row.as_object().unwrap_or(&serde_json::Map::new()) {
+                let placeholder = format!("NEW.{}", key);
+                let value_str = match value {
+                    Value::String(s) => format!("'{}'", s),
+                    Value::Number(n) => n.to_string(),
+                    Value::Bool(b) => b.to_string(),
+                    Value::Null => "NULL".to_string(),
+                    _ => format!("'{}'", value.to_string()),
+                };
+                eval_condition = eval_condition.replace(&placeholder, &value_str);
+            }
+        }
+
+        // For simple conditions, we can execute them as SQL queries
+        if let Some(ref engine_arc) = self.engine {
+            let check_sql = format!("SELECT CASE WHEN ({}) THEN 1 ELSE 0 END AS result", eval_condition);
+
+            let mut engine = engine_arc.write();
+            match sql_bridge::execute_sql(&mut engine, &check_sql) {
+                Ok(QueryResult::Rows { data }) => {
+                    if let Some(first_row) = data.first() {
+                        if let Some(result) = first_row.get("result") {
+                            return result.as_i64().unwrap_or(0) == 1;
+                        }
+                    }
+                    false
+                }
+                _ => {
+                    debug!("Failed to evaluate condition: {}", condition);
+                    true // Default to true if evaluation fails
+                }
+            }
+        } else {
+            // Without engine access, do basic string matching for common patterns
+            if eval_condition.contains(" = ") || eval_condition.contains(" == ") {
+                // Very basic equality check
+                true // Simplified for now
+            } else {
+                true
+            }
+        }
     }
 
     /// Update execution statistics

@@ -14,6 +14,7 @@ use std::sync::Arc;
 use parking_lot::RwLock;
 use serde::{Serialize, Deserialize};
 use ordered_float::OrderedFloat;
+use tracing::debug;
 
 use crate::errors::{DriftError, Result};
 
@@ -54,7 +55,7 @@ pub enum IndexType {
 }
 
 /// Vector entry in the index
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VectorEntry {
     pub id: String,
     pub vector: Vector,
@@ -131,6 +132,7 @@ pub struct IndexStatistics {
 }
 
 /// Flat index for exact search
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FlatIndex {
     entries: HashMap<String, VectorEntry>,
     dimension: usize,
@@ -372,6 +374,157 @@ impl HNSWIndex {
             .collect();
         result.sort_by_key(|(dist, _)| OrderedFloat(*dist));
         result
+    }
+}
+
+impl VectorIndex for HNSWIndex {
+    fn add(&mut self, entry: VectorEntry) -> Result<()> {
+        // Get the level for this node
+        let level = self.get_random_level();
+
+        // Add to all layers up to the level
+        for l in 0..=level {
+            if l >= self.layers.len() {
+                self.layers.push(HashMap::new());
+            }
+            self.layers[l].insert(entry.id.clone(), HashSet::new());
+        }
+
+        // Store the entry
+        self.entries.insert(entry.id.clone(), entry.clone());
+
+        // Update entry point if needed
+        if self.entry_point.is_none() {
+            self.entry_point = Some(entry.id.clone());
+            return Ok(());
+        }
+
+        // Connect to nearest neighbors in each layer
+        let mut entry_points = HashSet::new();
+        entry_points.insert(self.entry_point.as_ref().unwrap().clone());
+
+        for layer_idx in (0..=level).rev() {
+            let candidates = self.search_layer(&entry.vector, entry_points.clone(), self.m, layer_idx);
+
+            // Connect to M nearest neighbors at this layer
+            let m = if layer_idx == 0 { self.max_m } else { self.m };
+            for (_, neighbor_id) in candidates.iter().take(m) {
+                // Add bidirectional edges
+                if let Some(neighbors) = self.layers[layer_idx].get_mut(&entry.id) {
+                    neighbors.insert(neighbor_id.clone());
+                }
+                if let Some(neighbors) = self.layers[layer_idx].get_mut(neighbor_id) {
+                    neighbors.insert(entry.id.clone());
+
+                    // Prune connections if necessary
+                    if neighbors.len() > m {
+                        // Get data we need before borrowing neighbors mutably
+                        let neighbor_entry = self.entries[neighbor_id].clone();
+                        let neighbor_ids: Vec<_> = neighbors.iter().cloned().collect();
+
+                        // Drop the mutable borrow by using scope
+                        drop(neighbors);
+
+                        // Calculate distances without holding any borrow
+                        let mut neighbor_distances: Vec<_> = neighbor_ids.iter()
+                            .filter_map(|n| self.entries.get(n))
+                            .map(|n| (self.calculate_distance(&neighbor_entry.vector, &n.vector), n.id.clone()))
+                            .collect();
+                        neighbor_distances.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+
+                        let keep: HashSet<_> = neighbor_distances.iter()
+                            .take(m)
+                            .map(|(_, id)| id.clone())
+                            .collect();
+
+                        // Re-borrow for the final operation
+                        if let Some(neighbors) = self.layers[layer_idx].get_mut(neighbor_id) {
+                            neighbors.retain(|n| keep.contains(n));
+                        }
+                    }
+                }
+            }
+
+            // Update entry points for next layer
+            entry_points.clear();
+            for (_, id) in candidates.iter().take(1) {
+                entry_points.insert(id.clone());
+            }
+        }
+
+        Ok(())
+    }
+
+    fn remove(&mut self, id: &str) -> Result<()> {
+        if self.entries.remove(id).is_some() {
+            // Remove from all layers
+            for layer in &mut self.layers {
+                layer.remove(id);
+            }
+
+            // Update entry point if needed
+            if self.entry_point.as_ref() == Some(&id.to_string()) {
+                self.entry_point = self.entries.keys().next().cloned();
+            }
+
+            Ok(())
+        } else {
+            Err(DriftError::NotFound(format!("Vector {} not found", id)))
+        }
+    }
+
+    fn search(&self, query: &Vector, k: usize, filter: Option<&MetadataFilter>) -> Result<Vec<SearchResult>> {
+        // For now, ignore metadata filter - would need to be implemented
+        if filter.is_some() {
+            debug!("Metadata filter not yet implemented for HNSW");
+        }
+
+        // Use entry point to start search
+        let entry_points = if let Some(ref ep) = self.entry_point {
+            let mut set = HashSet::new();
+            set.insert(ep.clone());
+            set
+        } else {
+            return Ok(Vec::new());
+        };
+
+        // Search from top layer down
+        let top_layer = self.layers.len().saturating_sub(1);
+        let results = self.search_layer(query, entry_points, k, top_layer);
+
+        Ok(results.into_iter().map(|(distance, id)| SearchResult {
+            id,
+            score: -distance,  // Convert distance to similarity score
+            vector: None,
+            metadata: HashMap::new(),
+        }).collect())
+    }
+
+    fn statistics(&self) -> IndexStatistics {
+        IndexStatistics {
+            total_vectors: self.entries.len(),
+            dimension: self.dimension,
+            index_size_bytes: 0, // Would need actual calculation
+            search_count: 0,
+            add_count: 0,
+            remove_count: 0,
+            avg_search_time_ms: 0.0,
+        }
+    }
+
+    fn optimize(&mut self) -> Result<()> {
+        // HNSW doesn't need regular optimization
+        Ok(())
+    }
+
+    fn serialize(&self) -> Result<Vec<u8>> {
+        // Would need proper serialization
+        Err(DriftError::Other("HNSW serialization not yet implemented".to_string()))
+    }
+
+    fn deserialize(_data: &[u8]) -> Result<Self> where Self: Sized {
+        // Would need proper deserialization
+        Err(DriftError::Other("HNSW deserialization not yet implemented".to_string()))
     }
 }
 

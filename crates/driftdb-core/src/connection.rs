@@ -22,6 +22,7 @@ use crate::errors::{DriftError, Result};
 use crate::observability::Metrics;
 use crate::transaction::{TransactionManager, IsolationLevel};
 use crate::engine::Engine;
+use crate::wal::{WalManager, WalConfig};
 
 /// Connection pool configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -547,7 +548,7 @@ impl EnginePool {
         // This is a temporary solution - ideally the Engine should expose its WAL
         let temp_dir = std::env::temp_dir().join(format!("driftdb_pool_{}", std::process::id()));
         std::fs::create_dir_all(&temp_dir)?;
-        let wal = Arc::new(crate::wal::Wal::new(&temp_dir)?);
+        let wal = Arc::new(WalManager::new(temp_dir.join("test.wal"), WalConfig::default())?);
         let transaction_manager = Arc::new(TransactionManager::new_with_deps(wal, metrics.clone()));
 
         let connection_pool = ConnectionPool::new(config, metrics, transaction_manager)?;
@@ -645,7 +646,7 @@ pub struct EnginePoolStats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::wal::Wal;
+    use crate::wal::{WalManager, WalOperation};
     use tempfile::TempDir;
 
     #[tokio::test]

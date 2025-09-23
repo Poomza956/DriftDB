@@ -230,11 +230,28 @@ impl AuthManager {
     }
 
     fn create_default_admin(&mut self) -> Result<()> {
+        // Generate a secure random password for the default admin
+        use rand::{Rng, thread_rng};
+        use rand::distributions::Alphanumeric;
+
+        let random_password: String = thread_rng()
+            .sample_iter(&Alphanumeric)
+            .take(16)
+            .map(char::from)
+            .collect();
+
+        eprintln!("===========================================");
+        eprintln!("IMPORTANT: DEFAULT ADMIN CREDENTIALS");
+        eprintln!("Username: admin");
+        eprintln!("Password: {}", random_password);
+        eprintln!("PLEASE CHANGE THIS PASSWORD IMMEDIATELY!");
+        eprintln!("===========================================");
+
         let admin_user = User {
             id: Uuid::new_v4(),
             username: "admin".to_string(),
             email: Some("admin@driftdb.local".to_string()),
-            password_hash: self.hash_password("admin123!")?,
+            password_hash: self.hash_password(&random_password)?,
             roles: vec!["superadmin".to_string()].into_iter().collect(),
             created_at: SystemTime::now(),
             last_login: None,

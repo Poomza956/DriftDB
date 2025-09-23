@@ -178,7 +178,7 @@ impl SqlViewManager {
                 }
 
                 // Cache parsed query (dereference boxed query)
-                self.parsed_views.write().insert(view_name.clone(), (*query).clone());
+                self.parsed_views.write().insert(view_name.clone(), (**query).clone());
 
                 // If materialized, perform initial refresh
                 if *materialized {

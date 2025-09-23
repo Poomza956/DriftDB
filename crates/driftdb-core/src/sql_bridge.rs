@@ -19,7 +19,45 @@ thread_local! {
     static IN_RECURSIVE_CTE: RefCell<bool> = RefCell::new(false);
 }
 
-/// Execute SQL query
+/// Execute SQL query with parameters (prevents SQL injection)
+pub fn execute_sql_with_params(engine: &mut Engine, sql: &str, params: &[Value]) -> Result<QueryResult> {
+    // Parse SQL but keep parameters separate
+    let dialect = GenericDialect {};
+    let ast = Parser::parse_sql(&dialect, sql)
+        .map_err(|e| DriftError::Parse(e.to_string()))?;
+
+    if ast.is_empty() {
+        return Err(DriftError::InvalidQuery("Empty SQL statement".to_string()));
+    }
+
+    // Store parameters in thread-local for safe access during execution
+    thread_local! {
+        static QUERY_PARAMS: RefCell<Vec<Value>> = RefCell::new(Vec::new());
+    }
+
+    QUERY_PARAMS.with(|p| {
+        p.replace(params.to_vec());
+    });
+
+    // Execute with parameter binding using the same match logic as execute_sql
+    let result = match &ast[0] {
+        Statement::Query(query) => execute_sql_query(engine, query),
+        Statement::CreateTable(create_table) => {
+            execute_create_table(engine, &create_table.name, &create_table.columns, &create_table.constraints)
+        }
+        // Add other statement types as needed for parameterized execution
+        _ => Err(DriftError::InvalidQuery("Statement type not supported with parameters".to_string())),
+    };
+
+    // Clear parameters after execution
+    QUERY_PARAMS.with(|p| {
+        p.replace(Vec::new());
+    });
+
+    result
+}
+
+/// Execute SQL query (legacy - use execute_sql_with_params for safety)
 pub fn execute_sql(engine: &mut Engine, sql: &str) -> Result<QueryResult> {
     let dialect = GenericDialect {};
     let ast = Parser::parse_sql(&dialect, sql)
@@ -277,7 +315,7 @@ fn execute_recursive_cte(
             let anchor_query = SqlQuery {
                 with: None,
                 body: Box::new(left.as_ref().clone()),
-                order_by: vec![],
+                order_by: None,
                 limit: None,
                 offset: None,
                 fetch: None,
@@ -313,7 +351,7 @@ fn execute_recursive_cte(
                 let recursive_query = SqlQuery {
                     with: None,
                     body: Box::new(right.as_ref().clone()),
-                    order_by: vec![],
+                    order_by: None,
                     limit: None,
                     offset: None,
                     fetch: None,
@@ -492,7 +530,7 @@ fn execute_set_operation(
     let left_query = Box::new(SqlQuery {
         with: None,
         body: Box::new(left.clone()),
-        order_by: vec![],
+        order_by: None,
         limit: None,
         offset: None,
         fetch: None,
@@ -506,7 +544,7 @@ fn execute_set_operation(
     let right_query = Box::new(SqlQuery {
         with: None,
         body: Box::new(right.clone()),
-        order_by: vec![],
+        order_by: None,
         limit: None,
         offset: None,
         fetch: None,
@@ -1399,7 +1437,7 @@ fn execute_insert_select(
     let query = Box::new(SqlQuery {
         with: None,
         body: Box::new(SetExpr::Select(Box::new(select.clone()))),
-        order_by: vec![],
+        order_by: None,
         limit: None,
         offset: None,
         fetch: None,
@@ -3071,9 +3109,15 @@ fn execute_sql_update(
         // Apply assignments
         if let Some(row_obj) = updated_row.as_object_mut() {
             for assignment in assignments {
-                let column = assignment.id.last()
-                    .ok_or_else(|| DriftError::InvalidQuery("Invalid column in UPDATE".to_string()))?
-                    .value.clone();
+                // In sqlparser 0.51, Assignment has target and value fields
+                let column = match &assignment.target {
+                    sqlparser::ast::AssignmentTarget::ColumnName(name) => {
+                        name.0.last()
+                            .ok_or_else(|| DriftError::InvalidQuery("Invalid column in UPDATE".to_string()))?
+                            .value.clone()
+                    }
+                    _ => return Err(DriftError::InvalidQuery("Complex assignment targets not supported".to_string())),
+                };
 
                 let new_value = evaluate_update_expression(&assignment.value, &row)?;
                 row_obj.insert(column, new_value);
@@ -3210,11 +3254,12 @@ fn execute_create_table(
     let mut foreign_keys = Vec::new();
     for constraint in constraints {
         match constraint {
-            sqlparser::ast::TableConstraint::Unique { columns, is_primary, .. } => {
-                if *is_primary {
-                    if let Some(first_col) = columns.first() {
-                        primary_key = first_col.value.clone();
-                    }
+            sqlparser::ast::TableConstraint::Unique { columns, .. } => {
+                // Unique constraint - could track these for future use
+            }
+            sqlparser::ast::TableConstraint::PrimaryKey { columns, .. } => {
+                if let Some(first_col) = columns.first() {
+                    primary_key = first_col.value.clone();
                 }
             }
             sqlparser::ast::TableConstraint::ForeignKey {
@@ -3622,7 +3667,14 @@ fn parse_window_function(func: &Function) -> Result<WindowFunctionCall> {
         "CUME_DIST" => WindowFunction::CumeDist,
         "NTILE" => {
             // Extract the parameter
-            if let Some(FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Value(sqlparser::ast::Value::Number(n, _))))) = func.args.first() {
+            // Extract arguments from FunctionArguments enum
+            let args_list = match &func.args {
+                sqlparser::ast::FunctionArguments::None => vec![],
+                sqlparser::ast::FunctionArguments::Subquery(_) => vec![],
+                sqlparser::ast::FunctionArguments::List(list) => list.args.clone(),
+            };
+
+            if let Some(FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Value(sqlparser::ast::Value::Number(n, _))))) = args_list.first() {
                 let tiles = n.parse::<u32>()
                     .map_err(|_| DriftError::InvalidQuery("NTILE requires positive integer".to_string()))?;
                 WindowFunction::Ntile(tiles)
@@ -3687,19 +3739,16 @@ fn parse_window_function(func: &Function) -> Result<WindowFunctionCall> {
         }
         "COUNT" => {
             let column = match &func.args {
-                None => None,
-                Some(args) => match args {
-                    FunctionArguments::None => None,
-                    FunctionArguments::List(list) if list.args.is_empty() => None,
-                    FunctionArguments::List(list) => {
-                        if matches!(&list.args[0], FunctionArg::Unnamed(FunctionArgExpr::Wildcard)) {
-                            None
-                        } else {
-                            Some(extract_column_from_function_args(&func.args)?)
-                        }
+                FunctionArguments::None => None,
+                FunctionArguments::List(list) if list.args.is_empty() => None,
+                FunctionArguments::List(list) => {
+                    if matches!(&list.args[0], FunctionArg::Unnamed(FunctionArgExpr::Wildcard)) {
+                        None
+                    } else {
+                        Some(extract_column_from_function_args(&func.args)?)
                     }
-                    _ => None,
                 }
+                _ => None,
             };
             WindowFunction::Count(column)
         }

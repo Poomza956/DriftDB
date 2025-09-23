@@ -26,6 +26,9 @@ pub enum DriftError {
     #[error("Corrupt segment: {0}")]
     CorruptSegment(String),
 
+    #[error("Data corruption detected: {0}")]
+    Corruption(String),
+
     #[error("Index error: {0}")]
     Index(String),
 
@@ -58,6 +61,9 @@ pub enum DriftError {
 
     #[error("Unauthorized: {0}")]
     Unauthorized(String),
+
+    #[error("Encryption error: {0}")]
+    Encryption(String),
 
     #[error("Other error: {0}")]
     Other(String),

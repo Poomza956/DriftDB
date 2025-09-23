@@ -561,7 +561,7 @@ impl CostOptimizer {
     }
 
     /// Find best index for given predicates
-    fn find_best_index(&self, predicates: &[Predicate], indexes: &[IndexInfo]) -> Option<&IndexInfo> {
+    fn find_best_index<'a>(&self, predicates: &[Predicate], indexes: &'a [IndexInfo]) -> Option<&'a IndexInfo> {
         let mut best_index = None;
         let mut best_score = 0;
 

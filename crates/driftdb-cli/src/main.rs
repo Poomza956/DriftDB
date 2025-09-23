@@ -120,6 +120,18 @@ enum Commands {
         #[command(subcommand)]
         command: backup::BackupCommands,
     },
+    /// Enable query performance optimization
+    Optimize {
+        /// Database directory path
+        #[arg(short, long)]
+        data: PathBuf,
+        /// Enable or disable optimization
+        #[arg(long)]
+        enable: bool,
+        /// Show optimization statistics
+        #[arg(long)]
+        stats: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -365,6 +377,36 @@ fn main() -> Result<()> {
         }
         Commands::Backup { command } => {
             backup::run(command)?;
+        }
+        Commands::Optimize { data, enable, stats } => {
+            let mut engine = Engine::open(&data).context("Failed to open database")?;
+
+            if stats {
+                if let Some(optimizer) = engine.get_query_optimizer() {
+                    let stats = optimizer.get_statistics()?;
+                    println!("Query Optimization Statistics:");
+                    println!("  Queries optimized: {}", stats.queries_optimized);
+                    println!("  Cache hits: {}", stats.cache_hits);
+                    println!("  Cache misses: {}", stats.cache_misses);
+                    println!("  Avg optimization time: {:.2}ms", stats.avg_optimization_time_ms);
+                    println!("  Avg execution time: {:.2}ms", stats.avg_execution_time_ms);
+                    println!("  Joins reordered: {}", stats.joins_reordered);
+                    println!("  Subqueries flattened: {}", stats.subqueries_flattened);
+                    println!("  Indexes suggested: {}", stats.indexes_suggested);
+                    println!("  Materialized views used: {}", stats.materialized_views_used);
+                    println!("  Parallel executions: {}", stats.parallel_executions);
+                } else {
+                    println!("Query optimization is not enabled.");
+                }
+            } else if enable {
+                use driftdb_core::query_performance::OptimizationConfig;
+                let config = OptimizationConfig::default();
+                engine.enable_query_optimization(config)?;
+                println!("Query optimization enabled.");
+            } else {
+                engine.disable_query_optimization()?;
+                println!("Query optimization disabled.");
+            }
         }
     }
 

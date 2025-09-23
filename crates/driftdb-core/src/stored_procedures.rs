@@ -17,7 +17,22 @@ use serde_json::Value;
 use crate::errors::{DriftError, Result};
 use crate::engine::Engine;
 use crate::query::{QueryResult, Query};
-use sqlparser::ast::{Statement, Expr, DataType};
+use sqlparser::ast::{Statement, Expr};
+
+/// Wrapper for SQL data types that can be serialized
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum DataType {
+    Int,
+    BigInt,
+    Text,
+    Boolean,
+    Float,
+    Double,
+    Timestamp,
+    Json,
+    Blob,
+    Custom(String),
+}
 
 /// Stored procedure definition
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -383,10 +398,19 @@ impl ProcedureManager {
                 }
 
                 ProcedureStatement::OpenCursor(name) => {
+                    // Clone the query to avoid borrowing issues
+                    let query_to_execute = if let Some(cursor) = context.cursors.get(name) {
+                        cursor.query.clone()
+                    } else {
+                        return Err(DriftError::InvalidQuery(format!("Cursor {} not found", name)));
+                    };
+
+                    // Now substitute variables with clean borrow
+                    let sql = self.substitute_variables(&query_to_execute, context);
+                    let result = crate::sql_bridge::execute_sql(engine, &sql)?;
+
+                    // Finally update the cursor
                     if let Some(cursor) = context.cursors.get_mut(name) {
-                        // Execute cursor query
-                        let sql = self.substitute_variables(&cursor.query, context);
-                        let result = crate::sql_bridge::execute_sql(engine, &sql)?;
                         if let QueryResult::Rows { data } = result {
                             cursor.results = data.into_iter().collect();
                             cursor.is_open = true;
@@ -400,9 +424,10 @@ impl ProcedureManager {
                         if let Some(row) = cursor_state.results.pop_front() {
                             // Bind fetched values to variables
                             if let Value::Object(map) = row {
+                                let values: Vec<_> = map.into_iter().collect();
                                 for (i, var_name) in into.iter().enumerate() {
-                                    if let Some((_, value)) = map.into_iter().nth(i) {
-                                        context.variables.insert(var_name.clone(), value);
+                                    if let Some((_, value)) = values.get(i) {
+                                        context.variables.insert(var_name.clone(), value.clone());
                                     }
                                 }
                             }

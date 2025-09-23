@@ -65,7 +65,7 @@ enum TxnState {
 }
 
 /// Isolation levels
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum IsolationLevel {
     ReadUncommitted,
     ReadCommitted,
@@ -126,7 +126,7 @@ enum VersionData {
 }
 
 /// MVCC statistics
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct MvccStats {
     total_txns: u64,
     active_txns: usize,
@@ -200,17 +200,17 @@ impl MvccEngine {
         table: &str,
         row_id: &str,
     ) -> Result<Option<Value>> {
-        let active_txns = self.active_txns.read();
-        let txn = active_txns.get(&txn_id)
-            .ok_or_else(|| DriftError::Other("Transaction not found".to_string()))?;
+        let (snapshot, isolation) = {
+            let active_txns = self.active_txns.read();
+            let txn = active_txns.get(&txn_id)
+                .ok_or_else(|| DriftError::Other("Transaction not found".to_string()))?;
 
-        if txn.state != TxnState::Active {
-            return Err(DriftError::Other("Transaction not active".to_string()));
-        }
+            if txn.state != TxnState::Active {
+                return Err(DriftError::Other("Transaction not active".to_string()));
+            }
 
-        let snapshot = &txn.snapshot;
-        let isolation = txn.isolation_level;
-        drop(active_txns);
+            (txn.snapshot.clone(), txn.isolation_level)
+        };
 
         // Find the appropriate version
         let version_store = self.version_store.read();
@@ -219,7 +219,7 @@ impl MvccEngine {
             table,
             row_id,
             txn_id,
-            snapshot,
+            &snapshot,
             isolation,
         )?;
 

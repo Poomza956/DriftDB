@@ -159,6 +159,8 @@ impl CompressionManager {
             }
 
             CompressionAlgorithm::Lz4 { level } => {
+                use std::io::Write;
+
                 let mut compressed = Vec::new();
                 lz4::EncoderBuilder::new()
                     .level(level)

@@ -24,7 +24,7 @@ use tracing::{error, info, warn, instrument};
 use futures::future;
 
 use crate::errors::{DriftError, Result};
-use crate::wal::WalEntry;
+use crate::wal::{WalEntry, WalOperation};
 
 /// Replication configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]

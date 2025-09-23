@@ -18,7 +18,7 @@ use tracing::{debug, info, instrument};
 use rand::Rng;
 
 use crate::errors::{DriftError, Result};
-use crate::wal::WalEntry;
+use crate::wal::{WalEntry, WalOperation};
 
 /// Raft node state
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

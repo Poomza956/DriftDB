@@ -52,6 +52,14 @@ pub struct Metrics {
     pub connection_rate_limit_hits: AtomicU64,
     pub query_rate_limit_hits: AtomicU64,
     pub global_rate_limit_hits: AtomicU64,
+
+    // Cache metrics
+    pub cache_hits: AtomicU64,
+    pub cache_misses: AtomicU64,
+
+    // Transaction metrics
+    pub active_transactions: AtomicU64,
+    pub deadlocks_detected: AtomicU64,
 }
 
 impl Metrics {
@@ -98,6 +106,12 @@ impl Default for Metrics {
             connection_rate_limit_hits: AtomicU64::new(0),
             query_rate_limit_hits: AtomicU64::new(0),
             global_rate_limit_hits: AtomicU64::new(0),
+
+            cache_hits: AtomicU64::new(0),
+            cache_misses: AtomicU64::new(0),
+
+            active_transactions: AtomicU64::new(0),
+            deadlocks_detected: AtomicU64::new(0),
         }
     }
 }

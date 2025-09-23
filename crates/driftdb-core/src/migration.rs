@@ -529,7 +529,7 @@ impl MigrationManager {
         // If there's a default value, backfill existing records
         if let Some(default) = default_value {
             // Create a patch event for each existing record
-            let storage = crate::storage::TableStorage::open(&self.data_dir, table)?;
+            let storage = crate::storage::TableStorage::open(&self.data_dir, table, None)?;
             let current_state = storage.reconstruct_state_at(None)?;
 
             debug!("Backfilling {} existing records with default value for column {}", current_state.len(), column.name);
@@ -635,7 +635,7 @@ impl MigrationManager {
         std::fs::write(&schema_path, updated_schema)?;
 
         // Create migration events to update existing data
-        let storage = crate::storage::TableStorage::open(&self.data_dir, table)?;
+        let storage = crate::storage::TableStorage::open(&self.data_dir, table, None)?;
         let current_state = storage.reconstruct_state_at(None)?;
 
         for (key, mut value) in current_state {
