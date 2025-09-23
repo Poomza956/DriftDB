@@ -2,7 +2,7 @@
 mod subquery_tests {
     use super::*;
     use std::sync::Arc;
-    use tokio::sync::RwLock;
+    use parking_lot::RwLock;
     use driftdb_core::Engine;
 
     fn create_test_executor() -> QueryExecutor<'static> {

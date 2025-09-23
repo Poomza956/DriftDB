@@ -13,7 +13,7 @@ use axum::{
     Router,
 };
 use serde_json::{json, Value};
-use tokio::sync::RwLock;
+use parking_lot::RwLock;
 use tracing::{debug, error, info};
 
 use driftdb_core::Engine;
@@ -22,13 +22,13 @@ use crate::session::SessionManager;
 /// Application state for health check endpoints
 #[derive(Clone)]
 pub struct HealthState {
-    pub engine: Arc<tokio::sync::RwLock<Engine>>,
+    pub engine: Arc<RwLock<Engine>>,
     pub session_manager: Arc<SessionManager>,
     pub start_time: Instant,
 }
 
 impl HealthState {
-    pub fn new(engine: Arc<tokio::sync::RwLock<Engine>>, session_manager: Arc<SessionManager>) -> Self {
+    pub fn new(engine: Arc<RwLock<Engine>>, session_manager: Arc<SessionManager>) -> Self {
         Self {
             engine,
             session_manager,
@@ -120,7 +120,7 @@ async fn readiness_check(State(state): State<HealthState>) -> Result<Json<Value>
 /// Perform a basic health check on the engine
 async fn perform_engine_health_check(engine: &Arc<RwLock<Engine>>) -> anyhow::Result<()> {
     // Try to acquire a read lock and perform a basic operation
-    let engine_guard = engine.read().await;
+    let engine_guard = engine.read();
 
     // Check if we can list tables (basic engine functionality)
     let _tables = engine_guard.list_tables();

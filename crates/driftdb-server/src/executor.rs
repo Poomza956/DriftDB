@@ -8,7 +8,7 @@ use serde_json::Value;
 use std::sync::Arc;
 use std::collections::HashMap;
 use tokio::sync::Mutex;
-use parking_lot::Mutex as ParkingMutex;
+use parking_lot::{Mutex as ParkingMutex, RwLock as SyncRwLock};
 use tracing::{debug, info, warn};
 use time;
 
@@ -387,7 +387,7 @@ pub enum ParamType {
 
 pub struct QueryExecutor<'a> {
     engine_guard: Option<&'a EngineGuard>,
-    engine: Option<Arc<tokio::sync::RwLock<Engine>>>,
+    engine: Option<Arc<SyncRwLock<Engine>>>,
     subquery_cache: Arc<Mutex<HashMap<String, QueryResult>>>, // Cache for non-correlated subqueries
     use_indexes: bool, // Enable/disable index optimization
     prepared_statements: Arc<ParkingMutex<HashMap<String, PreparedStatement>>>, // Prepared statements cache
@@ -415,7 +415,7 @@ impl<'a> QueryExecutor<'a> {
         }
     }
 
-    pub fn new(engine: Arc<tokio::sync::RwLock<Engine>>) -> QueryExecutor<'static> {
+    pub fn new(engine: Arc<SyncRwLock<Engine>>) -> QueryExecutor<'static> {
         let transaction_manager = Arc::new(TransactionManager::new(engine.clone()));
         QueryExecutor {
             engine_guard: None,
@@ -450,22 +450,26 @@ impl<'a> QueryExecutor<'a> {
     }
 
     /// Get read access to the engine
-    async fn engine_read(&self) -> Result<tokio::sync::RwLockReadGuard<Engine>> {
-        if let Some(guard) = &self.engine_guard {
-            Ok(guard.read().await)
+    fn engine_read(&self) -> Result<parking_lot::RwLockReadGuard<Engine>> {
+        if let Some(_guard) = &self.engine_guard {
+            // For EngineGuard, we need to get the engine differently
+            // For now, return error as EngineGuard needs refactoring
+            Err(anyhow!("EngineGuard not yet supported with parking_lot"))
         } else if let Some(engine) = &self.engine {
-            Ok(engine.read().await)
+            Ok(engine.read())
         } else {
             Err(anyhow!("No engine available"))
         }
     }
 
     /// Get write access to the engine
-    async fn engine_write(&self) -> Result<tokio::sync::RwLockWriteGuard<Engine>> {
-        if let Some(guard) = &self.engine_guard {
-            Ok(guard.write().await)
+    fn engine_write(&self) -> Result<parking_lot::RwLockWriteGuard<Engine>> {
+        if let Some(_guard) = &self.engine_guard {
+            // For EngineGuard, we need to get the engine differently
+            // For now, return error as EngineGuard needs refactoring
+            Err(anyhow!("EngineGuard not yet supported with parking_lot"))
         } else if let Some(engine) = &self.engine {
-            Ok(engine.write().await)
+            Ok(engine.write())
         } else {
             Err(anyhow!("No engine available"))
         }
@@ -1156,9 +1160,9 @@ impl<'a> QueryExecutor<'a> {
             return self.execute_legacy(sql).await;
         }
 
-        // For SQL commands, we'll use the bridge but need to handle async/sync properly
-        // Simple approach: get a write lock and execute synchronously
-        let mut engine = self.engine_write().await?;
+        // For SQL commands, we'll use the bridge with sync locks
+        // No more deadlock since we're using parking_lot!
+        let mut engine = self.engine_write()?;
         let result = driftdb_core::sql_bridge::execute_sql(&mut *engine, sql);
 
         match result {
@@ -1648,7 +1652,7 @@ impl<'a> QueryExecutor<'a> {
     }
 
     async fn execute_insert(&self, sql: &str) -> Result<QueryResult> {
-        let mut engine = self.engine_write().await?;
+        let mut engine = self.engine_write()?;
 
         // Parse INSERT INTO table_name (columns) VALUES (values)
         let sql_clean = sql.trim().trim_end_matches(';');
@@ -1761,7 +1765,7 @@ impl<'a> QueryExecutor<'a> {
     }
 
     async fn execute_update(&self, sql: &str) -> Result<QueryResult> {
-        let mut engine = self.engine_write().await?;
+        let mut engine = self.engine_write()?;
 
         // Parse UPDATE table_name SET column = value [WHERE condition]
         let sql_clean = sql.trim().trim_end_matches(';');
@@ -1851,7 +1855,7 @@ impl<'a> QueryExecutor<'a> {
     }
 
     async fn execute_delete(&self, sql: &str) -> Result<QueryResult> {
-        let mut engine = self.engine_write().await?;
+        let mut engine = self.engine_write()?;
 
         // Parse DELETE FROM table_name [WHERE condition]
         let sql_clean = sql.trim().trim_end_matches(';');
@@ -1918,7 +1922,7 @@ impl<'a> QueryExecutor<'a> {
     }
 
     async fn execute_create_table(&self, sql: &str) -> Result<QueryResult> {
-        let mut engine = self.engine_write().await?;
+        let mut engine = self.engine_write()?;
 
         // Parse CREATE TABLE name (columns...)
         let lower = sql.to_lowercase();
@@ -1943,7 +1947,7 @@ impl<'a> QueryExecutor<'a> {
     }
 
     async fn execute_show(&self, sql: &str) -> Result<QueryResult> {
-        let engine = self.engine_read().await?;
+        let engine = self.engine_read()?;
         let lower = sql.to_lowercase();
 
         if lower.starts_with("show tables") {
@@ -2350,7 +2354,7 @@ impl<'a> QueryExecutor<'a> {
             FromClause::Single(table_ref) => {
                 // Check if we can use an index
                 if self.use_indexes {
-                    if let Ok(engine) = self.engine_read().await {
+                    if let Ok(engine) = self.engine_read() {
                         let indexed_columns = engine.get_indexed_columns(&table_ref.name);
                         // For now, just note if indexes exist
                         // In a real optimizer, we'd check if WHERE conditions use these columns
@@ -3603,7 +3607,7 @@ impl<'a> QueryExecutor<'a> {
 
     /// Execute JOIN with temporal support
     async fn execute_temporal_join(&self, from_clause: &FromClause, temporal_clause: &Option<TemporalClause>) -> Result<(Vec<Value>, Vec<String>)> {
-        let engine = self.engine_read().await?;
+        let engine = self.engine_read()?;
 
         match from_clause {
             FromClause::Single(table_ref) => {
@@ -3659,7 +3663,7 @@ impl<'a> QueryExecutor<'a> {
     }
 
     async fn execute_join(&self, from_clause: &FromClause) -> Result<(Vec<Value>, Vec<String>)> {
-        let engine = self.engine_read().await?;
+        let engine = self.engine_read()?;
 
         match from_clause {
             FromClause::Single(table_ref) => {
@@ -3707,7 +3711,7 @@ impl<'a> QueryExecutor<'a> {
 
     /// Execute implicit JOIN (cross product of multiple tables)
     async fn execute_implicit_join(&self, tables: &[TableRef]) -> Result<(Vec<Value>, Vec<String>)> {
-        let engine = self.engine_read().await?;
+        let engine = self.engine_read()?;
 
         if tables.is_empty() {
             return Err(anyhow!("No tables specified for implicit JOIN"));
@@ -3743,7 +3747,7 @@ impl<'a> QueryExecutor<'a> {
         base_table: &TableRef,
         joins: &[Join]
     ) -> Result<(Vec<Value>, Vec<String>)> {
-        let engine = self.engine_read().await?;
+        let engine = self.engine_read()?;
 
         // Start with base table
         let mut current_data = engine.get_table_data(&base_table.name)
@@ -3777,7 +3781,7 @@ impl<'a> QueryExecutor<'a> {
         left_columns: &[String],
         join: &Join
     ) -> Result<(Vec<Value>, Vec<String>)> {
-        let engine = self.engine_read().await?;
+        let engine = self.engine_read()?;
 
         // Get right table data
         let right_data = engine.get_table_data(&join.table)
@@ -4117,7 +4121,7 @@ impl<'a> QueryExecutor<'a> {
         table_name: &str,
         conditions: &[(String, String, Value)]
     ) -> Result<Vec<Value>> {
-        let engine = self.engine_read().await?;
+        let engine = self.engine_read()?;
 
         // Check if we should use indexes
         if !self.use_indexes || conditions.is_empty() {

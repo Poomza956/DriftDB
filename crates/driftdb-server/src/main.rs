@@ -21,6 +21,7 @@ use tracing::{error, info};
 
 use driftdb_core::{Engine, EnginePool, PoolConfig, RateLimitConfig, RateLimitManager};
 use session::SessionManager;
+use parking_lot::RwLock as SyncRwLock;
 
 #[derive(Parser, Debug)]
 #[command(name = "driftdb-server")]
@@ -136,7 +137,7 @@ async fn main() -> Result<()> {
         Engine::init(&args.data_path)?
     };
 
-    let engine = Arc::new(tokio::sync::RwLock::new(engine));
+    let engine = Arc::new(SyncRwLock::new(engine));
 
     // Create metrics for the pool
     let pool_metrics = Arc::new(driftdb_core::observability::Metrics::new());
@@ -331,7 +332,7 @@ async fn main() -> Result<()> {
 /// Start the HTTP server for health checks and metrics
 async fn start_http_server(
     addr: SocketAddr,
-    engine: Arc<tokio::sync::RwLock<Engine>>,
+    engine: Arc<SyncRwLock<Engine>>,
     session_manager: Arc<SessionManager>,
     _engine_pool: EnginePool,
     enable_metrics: bool,

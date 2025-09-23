@@ -16,7 +16,7 @@ use prometheus::{
     Counter, CounterVec, Gauge, GaugeVec, HistogramVec, Registry, TextEncoder, Encoder,
     HistogramOpts, Opts,
 };
-use tokio::sync::RwLock;
+use parking_lot::RwLock;
 use tracing::{debug, error};
 use sysinfo::{System, Pid};
 
@@ -148,14 +148,14 @@ pub fn init_metrics() -> anyhow::Result<()> {
 /// Application state for metrics endpoints
 #[derive(Clone)]
 pub struct MetricsState {
-    pub engine: Arc<tokio::sync::RwLock<Engine>>,
+    pub engine: Arc<RwLock<Engine>>,
     #[allow(dead_code)]
     pub session_manager: Arc<SessionManager>,
     pub start_time: std::time::Instant,
 }
 
 impl MetricsState {
-    pub fn new(engine: Arc<tokio::sync::RwLock<Engine>>, session_manager: Arc<SessionManager>) -> Self {
+    pub fn new(engine: Arc<RwLock<Engine>>, session_manager: Arc<SessionManager>) -> Self {
         Self {
             engine,
             session_manager,
@@ -260,7 +260,7 @@ async fn collect_database_size_metrics(engine: &Engine) -> anyhow::Result<()> {
 /// Update system metrics (memory and CPU)
 async fn update_system_metrics() {
     // Get or update system information
-    let mut sys = SYSTEM.write().await;
+    let mut sys = SYSTEM.write();
     sys.refresh_all();
     sys.refresh_cpu();
 
@@ -391,7 +391,7 @@ mod tests {
         let _ = init_metrics();
         let temp_dir = TempDir::new().unwrap();
         let engine = Engine::init(temp_dir.path()).unwrap();
-        let engine = Arc::new(tokio::sync::RwLock::new(engine));
+        let engine = Arc::new(RwLock::new(engine));
 
         // Create metrics and engine pool
         let pool_metrics = Arc::new(driftdb_core::observability::Metrics::new());

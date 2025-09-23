@@ -146,11 +146,11 @@ pub struct TransactionManager {
     lock_manager: Arc<LockManager>,
 
     /// Reference to the engine for applying commits
-    engine: Arc<tokio::sync::RwLock<Engine>>,
+    engine: Arc<parking_lot::RwLock<Engine>>,
 }
 
 impl TransactionManager {
-    pub fn new(engine: Arc<tokio::sync::RwLock<Engine>>) -> Self {
+    pub fn new(engine: Arc<parking_lot::RwLock<Engine>>) -> Self {
         Self {
             transactions: Arc::new(RwLock::new(HashMap::new())),
             lock_manager: Arc::new(LockManager::new()),
@@ -166,7 +166,7 @@ impl TransactionManager {
         is_read_only: bool
     ) -> Result<u64> {
         // Get current sequence from engine
-        let engine = self.engine.read().await;
+        let engine = self.engine.read();
         let current_sequence = engine.get_current_sequence();
         drop(engine);
 
@@ -199,7 +199,7 @@ impl TransactionManager {
 
         // Apply all pending writes to the engine
         if !state.pending_writes.is_empty() {
-            let mut engine = self.engine.write().await;
+            let mut engine = self.engine.write();
 
             for write in state.pending_writes {
                 match write.operation {
