@@ -139,11 +139,15 @@ impl Session {
 
                     Message::StartupMessage { parameters, .. } => {
                         self.handle_startup(stream, parameters).await?;
-                        startup_done = true;
+                        // Only mark startup done if we're not waiting for authentication
+                        if self.authenticated || !self.auth_db.config().require_auth {
+                            startup_done = true;
+                        }
                     }
 
                     Message::PasswordMessage { password } => {
                         if self.handle_password(stream, password).await? {
+                            startup_done = true;  // Authentication complete
                             self.send_ready_for_query(stream).await?;
                         } else {
                             break;
