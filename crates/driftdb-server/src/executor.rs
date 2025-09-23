@@ -1148,15 +1148,75 @@ impl<'a> QueryExecutor<'a> {
             });
         }
 
-        // TODO: Fix SQL bridge integration - currently causes deadlock
-        // The issue is that engine_write() takes an async lock but execute_sql is sync
-        // This causes the executor to hang when SQL queries are executed
-        // For now, use legacy parser until we can refactor the locking mechanism
+        // Use SQL bridge for real SQL execution
 
-        // Temporarily disabled SQL bridge to avoid deadlock
-        // match driftdb_core::sql_bridge::execute_sql(&mut *engine, sql) { ... }
+        // First check if this is a legacy command
+        let lower = sql.to_lowercase();
+        if lower.starts_with("show ") || lower.starts_with("explain ") || lower.starts_with("set ") {
+            return self.execute_legacy(sql).await;
+        }
 
-        self.execute_legacy(sql).await
+        // For SQL commands, we'll use the bridge but need to handle async/sync properly
+        // Simple approach: get a write lock and execute synchronously
+        let mut engine = self.engine_write().await?;
+        let result = driftdb_core::sql_bridge::execute_sql(&mut *engine, sql);
+
+        match result {
+            Ok(core_result) => {
+                // Convert core QueryResult to server QueryResult
+                match core_result {
+                    driftdb_core::query::QueryResult::Success { message } => {
+                        debug!("SQL execution success: {}", message);
+                        Ok(QueryResult::Empty)
+                    }
+                    driftdb_core::query::QueryResult::Rows { data } => {
+                        // Convert data: Vec<Value> to columnar format
+                        if data.is_empty() {
+                            Ok(QueryResult::Select {
+                                columns: vec![],
+                                rows: vec![],
+                            })
+                        } else {
+                            // Extract columns from first row
+                            let columns: Vec<String> = if let Some(Value::Object(first_row)) = data.first() {
+                                first_row.keys().cloned().collect()
+                            } else {
+                                vec![]
+                            };
+
+                            // Convert rows
+                            let rows: Vec<Vec<Value>> = data.iter()
+                                .filter_map(|row| {
+                                    if let Value::Object(obj) = row {
+                                        Some(columns.iter()
+                                            .map(|col| obj.get(col).cloned().unwrap_or(Value::Null))
+                                            .collect())
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .collect();
+
+                            Ok(QueryResult::Select { columns, rows })
+                        }
+                    }
+                    driftdb_core::query::QueryResult::DriftHistory { events } => {
+                        // Convert history events to rows
+                        Ok(QueryResult::Select {
+                            columns: vec!["event".to_string()],
+                            rows: events.into_iter().map(|e| vec![e]).collect(),
+                        })
+                    }
+                    driftdb_core::query::QueryResult::Error { message } => {
+                        Err(anyhow!("SQL error: {}", message))
+                    }
+                }
+            }
+            Err(e) => {
+                debug!("SQL execution failed: {}", e);
+                Err(anyhow!("SQL execution failed: {}", e))
+            }
+        }
     }
 
     // Legacy execution path for backward compatibility
