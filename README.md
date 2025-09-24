@@ -557,8 +557,8 @@ MIT
 
 ## Production Readiness
 
-### ⚠️ Beta Stage - Near Production Ready
-DriftDB is currently in **beta** stage and approaching production readiness.
+### ⚠️ Alpha Stage - Development/Testing Use
+DriftDB is currently in **alpha** stage with significant recent improvements but requires additional testing and validation.
 
 **Current Status:**
 - Core functionality implemented and working well
@@ -582,9 +582,9 @@ DriftDB is currently in **beta** stage and approaching production readiness.
 
 ### Feature Maturity
 
-| Component | Status | Production Ready |
+| Component | Status | Development Ready |
 |-----------|--------|------------------|
-| Core Storage Engine | 🟡 Beta | Almost |
+| Core Storage Engine | 🟡 Alpha | For Testing |
 | SQL Execution | 🟢 Working | Yes |
 | Time Travel Queries | 🟢 Working | Yes |
 | PostgreSQL Protocol | 🟢 Working | Yes |
@@ -649,9 +649,10 @@ DriftDB is currently in **beta** stage and approaching production readiness.
 - 📋 Stress testing
 - 📋 Cloud deployment support
 
-### v1.0 (Production Ready)
-- 📋 Battle-tested in production
-- 📋 Full documentation
+### v1.0 (Future Production Consideration)
+- 📋 Extensive testing and validation
+- 📋 Full production documentation
+- 📋 Security audits and performance testing
 - 📋 Performance guarantees
 - 📋 High availability
 - 📋 Enterprise features

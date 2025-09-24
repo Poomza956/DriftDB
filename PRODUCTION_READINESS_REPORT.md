@@ -59,7 +59,7 @@ DriftDB has undergone comprehensive evaluation and critical fixes. Major archite
 - **Transaction support**: BEGIN, COMMIT (ROLLBACK pending)
 - Prepared statements and query optimization
 
-### Security & Authentication ✅ **PRODUCTION GRADE**
+### Security & Authentication ✅ **IMPROVED FOR ALPHA**
 - MD5 password authentication
 - Connection rate limiting (30 connections/min)
 - Query rate limiting (100 queries/sec, adaptive)

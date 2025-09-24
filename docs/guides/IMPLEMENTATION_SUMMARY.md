@@ -159,4 +159,4 @@ python3 test_explain_plan.py
 
 ## Summary
 
-DriftDB has evolved from a basic time-travel database to a production-ready system with near-complete SQL support. The implementation prioritizes correctness, compatibility with PostgreSQL clients, and production reliability over raw performance. The event-sourced architecture provides unique time-travel capabilities while maintaining ACID properties.
+DriftDB has evolved from a basic time-travel database to a significantly improved alpha system with enhanced SQL support. The implementation prioritizes correctness and PostgreSQL compatibility for development/testing use. The event-sourced architecture provides unique time-travel capabilities while maintaining ACID properties for basic operations.
