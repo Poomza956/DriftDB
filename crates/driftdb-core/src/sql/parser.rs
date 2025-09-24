@@ -5,7 +5,7 @@
 use sqlparser::dialect::GenericDialect;
 use sqlparser::parser::Parser;
 
-use super::{SystemTimeClause, TemporalStatement, TemporalPoint};
+use super::{SystemTimeClause, TemporalPoint, TemporalStatement};
 use crate::errors::{DriftError, Result};
 
 pub struct TemporalSqlParser {
@@ -94,9 +94,10 @@ impl TemporalSqlParser {
         } else if upper.contains("ALL") {
             Ok(SystemTimeClause::All)
         } else {
-            Err(DriftError::InvalidQuery(
-                format!("Invalid FOR SYSTEM_TIME clause: {}", clause)
-            ))
+            Err(DriftError::InvalidQuery(format!(
+                "Invalid FOR SYSTEM_TIME clause: {}",
+                clause
+            )))
         }
     }
 
@@ -108,11 +109,14 @@ impl TemporalSqlParser {
             Ok(SystemTimeClause::AsOf(TemporalPoint::CurrentTimestamp))
         } else if upper.contains("@SEQ:") {
             // DriftDB extension: sequence numbers
-            let seq_str = clause.split("@SEQ:").nth(1)
+            let seq_str = clause
+                .split("@SEQ:")
+                .nth(1)
                 .and_then(|s| s.split_whitespace().next())
                 .ok_or_else(|| DriftError::InvalidQuery("Invalid sequence number".to_string()))?;
 
-            let sequence = seq_str.parse::<u64>()
+            let sequence = seq_str
+                .parse::<u64>()
                 .map_err(|_| DriftError::InvalidQuery("Invalid sequence number".to_string()))?;
 
             Ok(SystemTimeClause::AsOf(TemporalPoint::Sequence(sequence)))
@@ -128,14 +132,20 @@ impl TemporalSqlParser {
         // Extract start and end timestamps
         let parts: Vec<&str> = clause.split_whitespace().collect();
 
-        let between_idx = parts.iter().position(|&s| s.to_uppercase() == "BETWEEN")
+        let between_idx = parts
+            .iter()
+            .position(|&s| s.to_uppercase() == "BETWEEN")
             .ok_or_else(|| DriftError::InvalidQuery("Missing BETWEEN".to_string()))?;
 
-        let and_idx = parts.iter().position(|&s| s.to_uppercase() == "AND")
+        let and_idx = parts
+            .iter()
+            .position(|&s| s.to_uppercase() == "AND")
             .ok_or_else(|| DriftError::InvalidQuery("Missing AND".to_string()))?;
 
         if between_idx >= and_idx {
-            return Err(DriftError::InvalidQuery("Invalid BETWEEN...AND syntax".to_string()));
+            return Err(DriftError::InvalidQuery(
+                "Invalid BETWEEN...AND syntax".to_string(),
+            ));
         }
 
         let start_str = parts[between_idx + 1..and_idx].join(" ");
@@ -151,14 +161,20 @@ impl TemporalSqlParser {
     fn parse_from_to(&self, clause: &str) -> Result<SystemTimeClause> {
         let parts: Vec<&str> = clause.split_whitespace().collect();
 
-        let from_idx = parts.iter().position(|&s| s.to_uppercase() == "FROM")
+        let from_idx = parts
+            .iter()
+            .position(|&s| s.to_uppercase() == "FROM")
             .ok_or_else(|| DriftError::InvalidQuery("Missing FROM".to_string()))?;
 
-        let to_idx = parts.iter().position(|&s| s.to_uppercase() == "TO")
+        let to_idx = parts
+            .iter()
+            .position(|&s| s.to_uppercase() == "TO")
             .ok_or_else(|| DriftError::InvalidQuery("Missing TO".to_string()))?;
 
         if from_idx >= to_idx {
-            return Err(DriftError::InvalidQuery("Invalid FROM...TO syntax".to_string()));
+            return Err(DriftError::InvalidQuery(
+                "Invalid FROM...TO syntax".to_string(),
+            ));
         }
 
         let start_str = parts[from_idx + 1..to_idx].join(" ");
@@ -177,7 +193,8 @@ impl TemporalSqlParser {
         if trimmed.to_uppercase() == "CURRENT_TIMESTAMP" {
             Ok(TemporalPoint::CurrentTimestamp)
         } else if trimmed.starts_with("@SEQ:") {
-            let seq = trimmed[5..].parse::<u64>()
+            let seq = trimmed[5..]
+                .parse::<u64>()
                 .map_err(|_| DriftError::InvalidQuery("Invalid sequence number".to_string()))?;
             Ok(TemporalPoint::Sequence(seq))
         } else {
@@ -205,7 +222,10 @@ impl TemporalSqlParser {
             return Ok(chrono::DateTime::from_naive_utc_and_offset(dt, chrono::Utc));
         }
 
-        Err(DriftError::InvalidQuery(format!("Invalid timestamp: {}", s)))
+        Err(DriftError::InvalidQuery(format!(
+            "Invalid timestamp: {}",
+            s
+        )))
     }
 }
 
@@ -216,9 +236,9 @@ mod tests {
     #[test]
     fn test_parse_as_of_current() {
         let parser = TemporalSqlParser::new();
-        let result = parser.parse(
-            "SELECT * FROM users FOR SYSTEM_TIME AS OF CURRENT_TIMESTAMP"
-        ).unwrap();
+        let result = parser
+            .parse("SELECT * FROM users FOR SYSTEM_TIME AS OF CURRENT_TIMESTAMP")
+            .unwrap();
 
         assert!(matches!(
             result.system_time,
@@ -239,9 +259,9 @@ mod tests {
     #[test]
     fn test_parse_as_of_sequence() {
         let parser = TemporalSqlParser::new();
-        let result = parser.parse(
-            "SELECT * FROM events FOR SYSTEM_TIME AS OF @SEQ:12345"
-        ).unwrap();
+        let result = parser
+            .parse("SELECT * FROM events FOR SYSTEM_TIME AS OF @SEQ:12345")
+            .unwrap();
 
         assert!(matches!(
             result.system_time,
@@ -252,14 +272,11 @@ mod tests {
     #[test]
     fn test_parse_all() {
         let parser = TemporalSqlParser::new();
-        let result = parser.parse(
-            "SELECT * FROM audit_log FOR SYSTEM_TIME ALL"
-        ).unwrap();
+        let result = parser
+            .parse("SELECT * FROM audit_log FOR SYSTEM_TIME ALL")
+            .unwrap();
 
-        assert!(matches!(
-            result.system_time,
-            Some(SystemTimeClause::All)
-        ));
+        assert!(matches!(result.system_time, Some(SystemTimeClause::All)));
     }
 
     #[test]

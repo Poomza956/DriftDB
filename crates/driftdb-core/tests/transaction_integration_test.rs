@@ -1,9 +1,9 @@
-use tempfile::TempDir;
 use serde_json::json;
+use tempfile::TempDir;
 use time::OffsetDateTime;
 
-use driftdb_core::{Engine, Query, QueryResult, Event, EventType};
 use driftdb_core::transaction::IsolationLevel;
+use driftdb_core::{Engine, Event, EventType, Query, QueryResult};
 
 #[test]
 fn test_transaction_commit_persists_data() {
@@ -11,14 +11,18 @@ fn test_transaction_commit_persists_data() {
     let mut engine = Engine::init(temp_dir.path()).unwrap();
 
     // Create a table
-    engine.execute_query(Query::CreateTable {
-        name: "accounts".to_string(),
-        primary_key: "id".to_string(),
-        indexed_columns: vec![],
-    }).unwrap();
+    engine
+        .execute_query(Query::CreateTable {
+            name: "accounts".to_string(),
+            primary_key: "id".to_string(),
+            indexed_columns: vec![],
+        })
+        .unwrap();
 
     // Begin transaction
-    let txn_id = engine.begin_transaction(IsolationLevel::ReadCommitted).unwrap();
+    let txn_id = engine
+        .begin_transaction(IsolationLevel::ReadCommitted)
+        .unwrap();
 
     // Insert data within transaction
     let event = Event {
@@ -36,12 +40,14 @@ fn test_transaction_commit_persists_data() {
     engine.apply_event_in_transaction(txn_id, event).unwrap();
 
     // Data should not be visible before commit
-    let result = engine.execute_query(Query::Select {
-        table: "accounts".to_string(),
-        conditions: vec![],
-        as_of: None,
-        limit: None,
-    }).unwrap();
+    let result = engine
+        .execute_query(Query::Select {
+            table: "accounts".to_string(),
+            conditions: vec![],
+            as_of: None,
+            limit: None,
+        })
+        .unwrap();
 
     match result {
         QueryResult::Rows { data } => {
@@ -54,12 +60,14 @@ fn test_transaction_commit_persists_data() {
     engine.commit_transaction(txn_id).unwrap();
 
     // Data should now be visible
-    let result = engine.execute_query(Query::Select {
-        table: "accounts".to_string(),
-        conditions: vec![],
-        as_of: None,
-        limit: None,
-    }).unwrap();
+    let result = engine
+        .execute_query(Query::Select {
+            table: "accounts".to_string(),
+            conditions: vec![],
+            as_of: None,
+            limit: None,
+        })
+        .unwrap();
 
     match result {
         QueryResult::Rows { data } => {
@@ -77,23 +85,29 @@ fn test_transaction_rollback() {
     let mut engine = Engine::init(temp_dir.path()).unwrap();
 
     // Create a table and insert initial data
-    engine.execute_query(Query::CreateTable {
-        name: "inventory".to_string(),
-        primary_key: "id".to_string(),
-        indexed_columns: vec![],
-    }).unwrap();
+    engine
+        .execute_query(Query::CreateTable {
+            name: "inventory".to_string(),
+            primary_key: "id".to_string(),
+            indexed_columns: vec![],
+        })
+        .unwrap();
 
-    engine.execute_query(Query::Insert {
-        table: "inventory".to_string(),
-        data: json!({
-            "id": "item1",
-            "name": "Widget",
-            "quantity": 100
-        }),
-    }).unwrap();
+    engine
+        .execute_query(Query::Insert {
+            table: "inventory".to_string(),
+            data: json!({
+                "id": "item1",
+                "name": "Widget",
+                "quantity": 100
+            }),
+        })
+        .unwrap();
 
     // Begin transaction
-    let txn_id = engine.begin_transaction(IsolationLevel::ReadCommitted).unwrap();
+    let txn_id = engine
+        .begin_transaction(IsolationLevel::ReadCommitted)
+        .unwrap();
 
     // Update within transaction
     let update_event = Event {
@@ -106,23 +120,31 @@ fn test_transaction_rollback() {
             "quantity": 50
         }),
     };
-    engine.apply_event_in_transaction(txn_id, update_event).unwrap();
+    engine
+        .apply_event_in_transaction(txn_id, update_event)
+        .unwrap();
 
     // Rollback transaction
     engine.rollback_transaction(txn_id).unwrap();
 
     // Original data should be unchanged
-    let result = engine.execute_query(Query::Select {
-        table: "inventory".to_string(),
-        conditions: vec![],
-        as_of: None,
-        limit: None,
-    }).unwrap();
+    let result = engine
+        .execute_query(Query::Select {
+            table: "inventory".to_string(),
+            conditions: vec![],
+            as_of: None,
+            limit: None,
+        })
+        .unwrap();
 
     match result {
         QueryResult::Rows { data } => {
             assert_eq!(data.len(), 1);
-            assert_eq!(data[0]["quantity"], json!(100), "Rollback should revert changes");
+            assert_eq!(
+                data[0]["quantity"],
+                json!(100),
+                "Rollback should revert changes"
+            );
         }
         _ => panic!("Expected Rows result"),
     }
@@ -134,14 +156,18 @@ fn test_read_your_writes() {
     let mut engine = Engine::init(temp_dir.path()).unwrap();
 
     // Create table
-    engine.execute_query(Query::CreateTable {
-        name: "posts".to_string(),
-        primary_key: "id".to_string(),
-        indexed_columns: vec![],
-    }).unwrap();
+    engine
+        .execute_query(Query::CreateTable {
+            name: "posts".to_string(),
+            primary_key: "id".to_string(),
+            indexed_columns: vec![],
+        })
+        .unwrap();
 
     // Begin transaction
-    let txn_id = engine.begin_transaction(IsolationLevel::ReadCommitted).unwrap();
+    let txn_id = engine
+        .begin_transaction(IsolationLevel::ReadCommitted)
+        .unwrap();
 
     // Insert within transaction
     let event = Event {
@@ -159,7 +185,9 @@ fn test_read_your_writes() {
     engine.apply_event_in_transaction(txn_id, event).unwrap();
 
     // Transaction should be able to read its own writes
-    let value = engine.read_in_transaction(txn_id, "posts", "post1").unwrap();
+    let value = engine
+        .read_in_transaction(txn_id, "posts", "post1")
+        .unwrap();
     assert!(value.is_some(), "Transaction should read its own writes");
 
     let data = value.unwrap();
@@ -178,23 +206,31 @@ fn test_concurrent_transactions() {
     let mut engine = Engine::init(temp_dir.path()).unwrap();
 
     // Create table with initial balance
-    engine.execute_query(Query::CreateTable {
-        name: "balances".to_string(),
-        primary_key: "id".to_string(),
-        indexed_columns: vec![],
-    }).unwrap();
+    engine
+        .execute_query(Query::CreateTable {
+            name: "balances".to_string(),
+            primary_key: "id".to_string(),
+            indexed_columns: vec![],
+        })
+        .unwrap();
 
-    engine.execute_query(Query::Insert {
-        table: "balances".to_string(),
-        data: json!({
-            "id": "user1",
-            "amount": 1000
-        }),
-    }).unwrap();
+    engine
+        .execute_query(Query::Insert {
+            table: "balances".to_string(),
+            data: json!({
+                "id": "user1",
+                "amount": 1000
+            }),
+        })
+        .unwrap();
 
     // Start two concurrent transactions
-    let txn1 = engine.begin_transaction(IsolationLevel::ReadCommitted).unwrap();
-    let txn2 = engine.begin_transaction(IsolationLevel::ReadCommitted).unwrap();
+    let txn1 = engine
+        .begin_transaction(IsolationLevel::ReadCommitted)
+        .unwrap();
+    let txn2 = engine
+        .begin_transaction(IsolationLevel::ReadCommitted)
+        .unwrap();
 
     // Both transactions modify different records
     let event1 = Event {
@@ -228,19 +264,22 @@ fn test_concurrent_transactions() {
     engine.commit_transaction(txn2).unwrap();
 
     // Verify both changes are persisted
-    let result = engine.execute_query(Query::Select {
-        table: "balances".to_string(),
-        conditions: vec![],
-        as_of: None,
-        limit: None,
-    }).unwrap();
+    let result = engine
+        .execute_query(Query::Select {
+            table: "balances".to_string(),
+            conditions: vec![],
+            as_of: None,
+            limit: None,
+        })
+        .unwrap();
 
     match result {
         QueryResult::Rows { data } => {
             assert_eq!(data.len(), 3, "All three records should exist");
 
             // Check that all records exist
-            let amounts: Vec<i64> = data.iter()
+            let amounts: Vec<i64> = data
+                .iter()
                 .map(|row| row["amount"].as_i64().unwrap())
                 .collect();
             assert!(amounts.contains(&1000));
@@ -257,28 +296,38 @@ fn test_transaction_isolation_levels() {
     let mut engine = Engine::init(temp_dir.path()).unwrap();
 
     // Setup
-    engine.execute_query(Query::CreateTable {
-        name: "test_isolation".to_string(),
-        primary_key: "id".to_string(),
-        indexed_columns: vec![],
-    }).unwrap();
+    engine
+        .execute_query(Query::CreateTable {
+            name: "test_isolation".to_string(),
+            primary_key: "id".to_string(),
+            indexed_columns: vec![],
+        })
+        .unwrap();
 
-    engine.execute_query(Query::Insert {
-        table: "test_isolation".to_string(),
-        data: json!({
-            "id": "record1",
-            "value": 100
-        }),
-    }).unwrap();
+    engine
+        .execute_query(Query::Insert {
+            table: "test_isolation".to_string(),
+            data: json!({
+                "id": "record1",
+                "value": 100
+            }),
+        })
+        .unwrap();
 
     // Test ReadCommitted isolation
-    let txn_rc = engine.begin_transaction(IsolationLevel::ReadCommitted).unwrap();
+    let txn_rc = engine
+        .begin_transaction(IsolationLevel::ReadCommitted)
+        .unwrap();
 
     // Test RepeatableRead isolation
-    let txn_rr = engine.begin_transaction(IsolationLevel::RepeatableRead).unwrap();
+    let txn_rr = engine
+        .begin_transaction(IsolationLevel::RepeatableRead)
+        .unwrap();
 
     // Test Serializable isolation
-    let txn_ser = engine.begin_transaction(IsolationLevel::Serializable).unwrap();
+    let txn_ser = engine
+        .begin_transaction(IsolationLevel::Serializable)
+        .unwrap();
 
     // All should be able to begin successfully
     engine.rollback_transaction(txn_rc).unwrap();
@@ -295,13 +344,17 @@ fn test_transaction_persistence_across_restart() {
     {
         let mut engine = Engine::init(&db_path).unwrap();
 
-        engine.execute_query(Query::CreateTable {
-            name: "persistent".to_string(),
-            primary_key: "id".to_string(),
-            indexed_columns: vec![],
-        }).unwrap();
+        engine
+            .execute_query(Query::CreateTable {
+                name: "persistent".to_string(),
+                primary_key: "id".to_string(),
+                indexed_columns: vec![],
+            })
+            .unwrap();
 
-        let txn = engine.begin_transaction(IsolationLevel::ReadCommitted).unwrap();
+        let txn = engine
+            .begin_transaction(IsolationLevel::ReadCommitted)
+            .unwrap();
 
         let event = Event {
             sequence: 0,
@@ -322,12 +375,14 @@ fn test_transaction_persistence_across_restart() {
     {
         let mut engine = Engine::open(&db_path).unwrap();
 
-        let result = engine.execute_query(Query::Select {
-            table: "persistent".to_string(),
-            conditions: vec![],
-            as_of: None,
-            limit: None,
-        }).unwrap();
+        let result = engine
+            .execute_query(Query::Select {
+                table: "persistent".to_string(),
+                conditions: vec![],
+                as_of: None,
+                limit: None,
+            })
+            .unwrap();
 
         match result {
             QueryResult::Rows { data } => {

@@ -8,13 +8,13 @@
 //! - Subquery optimization
 //! - Materialized view matching
 
+use parking_lot::RwLock;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use parking_lot::RwLock;
 
 use crate::errors::{DriftError, Result};
-use crate::optimizer::TableStatistics;
 use crate::index_strategies::IndexType;
+use crate::optimizer::TableStatistics;
 
 /// Query plan node
 #[derive(Debug, Clone)]
@@ -87,10 +87,7 @@ pub enum PlanNode {
         cost: Cost,
     },
     /// Materialize (force materialization point)
-    Materialize {
-        input: Box<PlanNode>,
-        cost: Cost,
-    },
+    Materialize { input: Box<PlanNode>, cost: Cost },
 }
 
 /// Cost model
@@ -294,7 +291,8 @@ impl CostOptimizer {
     /// Register an index
     #[allow(dead_code)]
     pub fn register_index(&self, info: IndexInfo) {
-        self.indexes.write()
+        self.indexes
+            .write()
             .entry(info.table.clone())
             .or_insert_with(Vec::new)
             .push(info);
@@ -334,10 +332,18 @@ impl CostOptimizer {
     /// Push predicates down the plan tree
     fn push_down_predicates(&self, plan: PlanNode) -> Result<PlanNode> {
         match plan {
-            PlanNode::Filter { input, predicates, .. } => {
+            PlanNode::Filter {
+                input, predicates, ..
+            } => {
                 // Try to push filter below joins
                 match *input {
-                    PlanNode::HashJoin { left, right, condition, build_side, cost } => {
+                    PlanNode::HashJoin {
+                        left,
+                        right,
+                        condition,
+                        build_side,
+                        cost,
+                    } => {
                         let (left_preds, right_preds, remaining) =
                             self.split_join_predicates(&predicates, &left, &right);
 
@@ -379,10 +385,14 @@ impl CostOptimizer {
                             })
                         }
                     }
-                    _ => Ok(PlanNode::Filter { input: Box::new(*input), predicates, cost: Cost::default() })
+                    _ => Ok(PlanNode::Filter {
+                        input: Box::new(*input),
+                        predicates,
+                        cost: Cost::default(),
+                    }),
                 }
             }
-            _ => Ok(plan)
+            _ => Ok(plan),
         }
     }
 
@@ -403,11 +413,7 @@ impl CostOptimizer {
     }
 
     /// Find optimal join order using dynamic programming
-    fn find_best_join_order(
-        &self,
-        tables: &[String],
-        joins: &[JoinInfo],
-    ) -> Result<Vec<String>> {
+    fn find_best_join_order(&self, tables: &[String], joins: &[JoinInfo]) -> Result<Vec<String>> {
         let n = tables.len();
         if n > 12 {
             // Fall back to greedy for large joins
@@ -438,14 +444,17 @@ impl CostOptimizer {
         // Build up subsets
         for size in 2..=n {
             for subset in BitSet::subsets_of_size(n, size) {
-                let mut best_cost = Cost { io_cost: f64::INFINITY, ..Default::default() };
+                let mut best_cost = Cost {
+                    io_cost: f64::INFINITY,
+                    ..Default::default()
+                };
                 let mut best_order = vec![];
 
                 // Try all ways to split this subset
                 for split in subset.splits() {
                     if let (Some((left_cost, left_order)), Some((right_cost, right_order))) =
-                        (dp.get(&split.0), dp.get(&split.1)) {
-
+                        (dp.get(&split.0), dp.get(&split.1))
+                    {
                         // Calculate join cost
                         let join_cost = self.estimate_join_cost(
                             left_cost,
@@ -457,7 +466,8 @@ impl CostOptimizer {
 
                         if join_cost.total() < best_cost.total() {
                             best_cost = join_cost;
-                            best_order = left_order.iter()
+                            best_order = left_order
+                                .iter()
                                 .chain(right_order.iter())
                                 .cloned()
                                 .collect();
@@ -514,10 +524,12 @@ impl CostOptimizer {
         } else {
             // Sort-merge for large joins
             Cost {
-                io_cost: left_cost.io_cost + right_cost.io_cost +
-                         (left_cost.rows.log2() + right_cost.rows.log2()) * 0.1,
-                cpu_cost: (left_cost.rows * left_cost.rows.log2() +
-                          right_cost.rows * right_cost.rows.log2()) * self.params.cpu_operator_cost,
+                io_cost: left_cost.io_cost
+                    + right_cost.io_cost
+                    + (left_cost.rows.log2() + right_cost.rows.log2()) * 0.1,
+                cpu_cost: (left_cost.rows * left_cost.rows.log2()
+                    + right_cost.rows * right_cost.rows.log2())
+                    * self.params.cpu_operator_cost,
                 rows: output_rows,
                 size: output_rows * 100.0,
                 ..Default::default()
@@ -528,7 +540,9 @@ impl CostOptimizer {
     /// Select appropriate indexes
     fn select_indexes(&self, plan: PlanNode) -> Result<PlanNode> {
         match plan {
-            PlanNode::TableScan { table, predicates, .. } => {
+            PlanNode::TableScan {
+                table, predicates, ..
+            } => {
                 // Check available indexes
                 let indexes = self.indexes.read();
                 if let Some(table_indexes) = indexes.get(&table) {
@@ -563,14 +577,22 @@ impl CostOptimizer {
                 }
 
                 // No suitable index, keep table scan
-                Ok(PlanNode::TableScan { table, predicates, cost: Cost::default() })
+                Ok(PlanNode::TableScan {
+                    table,
+                    predicates,
+                    cost: Cost::default(),
+                })
             }
-            _ => Ok(plan)
+            _ => Ok(plan),
         }
     }
 
     /// Find best index for given predicates
-    fn find_best_index<'a>(&self, predicates: &[Predicate], indexes: &'a [IndexInfo]) -> Option<&'a IndexInfo> {
+    fn find_best_index<'a>(
+        &self,
+        predicates: &[Predicate],
+        indexes: &'a [IndexInfo],
+    ) -> Option<&'a IndexInfo> {
         let mut best_index = None;
         let mut best_score = 0;
 
@@ -618,7 +640,12 @@ impl CostOptimizer {
     /// Choose optimal join algorithms
     fn choose_join_algorithms(&self, plan: PlanNode) -> Result<PlanNode> {
         match plan {
-            PlanNode::NestedLoopJoin { left, right, condition, .. } => {
+            PlanNode::NestedLoopJoin {
+                left,
+                right,
+                condition,
+                ..
+            } => {
                 let left_cost = self.estimate_cost(&left)?;
                 let right_cost = self.estimate_cost(&right)?;
 
@@ -650,7 +677,7 @@ impl CostOptimizer {
                     })
                 }
             }
-            _ => Ok(plan)
+            _ => Ok(plan),
         }
     }
 
@@ -670,12 +697,12 @@ impl CostOptimizer {
     /// Estimate cost of a plan node
     fn estimate_cost(&self, plan: &PlanNode) -> Result<Cost> {
         match plan {
-            PlanNode::TableScan { cost, .. } |
-            PlanNode::IndexScan { cost, .. } |
-            PlanNode::HashJoin { cost, .. } |
-            PlanNode::NestedLoopJoin { cost, .. } |
-            PlanNode::SortMergeJoin { cost, .. } => Ok(*cost),
-            _ => Ok(Cost::default())
+            PlanNode::TableScan { cost, .. }
+            | PlanNode::IndexScan { cost, .. }
+            | PlanNode::HashJoin { cost, .. }
+            | PlanNode::NestedLoopJoin { cost, .. }
+            | PlanNode::SortMergeJoin { cost, .. } => Ok(*cost),
+            _ => Ok(Cost::default()),
         }
     }
 
@@ -707,7 +734,11 @@ impl CostOptimizer {
     }
 
     /// Estimate predicate selectivity
-    fn estimate_predicate_selectivity(&self, predicates: &[Predicate], stats: &TableStatistics) -> f64 {
+    fn estimate_predicate_selectivity(
+        &self,
+        predicates: &[Predicate],
+        stats: &TableStatistics,
+    ) -> f64 {
         let mut selectivity = 1.0;
 
         for pred in predicates {
@@ -807,14 +838,12 @@ mod tests {
 
         optimizer.register_index(index);
 
-        let predicates = vec![
-            Predicate {
-                column: "email".to_string(),
-                op: ComparisonOp::Eq,
-                value: PredicateValue::Constant(serde_json::json!("test@example.com")),
-                selectivity: 0.001,
-            }
-        ];
+        let predicates = vec![Predicate {
+            column: "email".to_string(),
+            op: ComparisonOp::Eq,
+            value: PredicateValue::Constant(serde_json::json!("test@example.com")),
+            selectivity: 0.001,
+        }];
 
         let indexes = optimizer.indexes.read();
         let table_indexes = indexes.get("users").unwrap();

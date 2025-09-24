@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info, instrument, warn};
 
 use crate::errors::{DriftError, Result};
-use crate::schema::{Schema, ColumnDef};
+use crate::schema::{ColumnDef, Schema};
 
 /// Migration version using semantic versioning
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -27,10 +27,14 @@ pub struct Version {
 
 impl Version {
     pub fn new(major: u32, minor: u32, patch: u32) -> Self {
-        Self { major, minor, patch }
+        Self {
+            major,
+            minor,
+            patch,
+        }
     }
 
-    #[allow(clippy::should_implement_trait)]  // Not implementing FromStr trait intentionally
+    #[allow(clippy::should_implement_trait)] // Not implementing FromStr trait intentionally
     pub fn from_str(s: &str) -> Result<Self> {
         let parts: Vec<&str> = s.split('.').collect();
         if parts.len() != 3 {
@@ -38,9 +42,15 @@ impl Version {
         }
 
         Ok(Self {
-            major: parts[0].parse().map_err(|_| DriftError::Other("Invalid major version".into()))?,
-            minor: parts[1].parse().map_err(|_| DriftError::Other("Invalid minor version".into()))?,
-            patch: parts[2].parse().map_err(|_| DriftError::Other("Invalid patch version".into()))?,
+            major: parts[0]
+                .parse()
+                .map_err(|_| DriftError::Other("Invalid major version".into()))?,
+            minor: parts[1]
+                .parse()
+                .map_err(|_| DriftError::Other("Invalid minor version".into()))?,
+            patch: parts[2]
+                .parse()
+                .map_err(|_| DriftError::Other("Invalid patch version".into()))?,
         })
     }
 }
@@ -61,10 +71,7 @@ pub enum MigrationType {
         default_value: Option<serde_json::Value>,
     },
     /// Remove a column
-    DropColumn {
-        table: String,
-        column: String,
-    },
+    DropColumn { table: String, column: String },
     /// Rename a column
     RenameColumn {
         table: String,
@@ -72,24 +79,13 @@ pub enum MigrationType {
         new_name: String,
     },
     /// Add an index
-    AddIndex {
-        table: String,
-        column: String,
-    },
+    AddIndex { table: String, column: String },
     /// Remove an index
-    DropIndex {
-        table: String,
-        column: String,
-    },
+    DropIndex { table: String, column: String },
     /// Create a new table
-    CreateTable {
-        name: String,
-        schema: Schema,
-    },
+    CreateTable { name: String, schema: Schema },
     /// Drop a table
-    DropTable {
-        name: String,
-    },
+    DropTable { name: String },
     /// Custom migration with SQL or code
     Custom {
         description: String,
@@ -117,7 +113,7 @@ impl Migration {
         description: String,
         migration_type: MigrationType,
     ) -> Self {
-        #[allow(clippy::match_like_matches_macro)]  // More readable this way
+        #[allow(clippy::match_like_matches_macro)] // More readable this way
         let requires_downtime = match &migration_type {
             MigrationType::DropColumn { .. } => true,
             MigrationType::DropTable { .. } => true,
@@ -140,7 +136,7 @@ impl Migration {
     }
 
     fn calculate_checksum(&self) -> String {
-        use sha2::{Sha256, Digest};
+        use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
         hasher.update(self.version.to_string());
         hasher.update(&self.name);
@@ -236,7 +232,8 @@ impl MigrationManager {
                 }
 
                 if !self.history.contains_key(&migration.version) {
-                    self.pending_migrations.insert(migration.version.clone(), migration);
+                    self.pending_migrations
+                        .insert(migration.version.clone(), migration);
                 }
             }
         }
@@ -261,13 +258,15 @@ impl MigrationManager {
         }
 
         // Save to pending directory
-        let file_path = self.migrations_dir
+        let file_path = self
+            .migrations_dir
             .join("pending")
             .join(format!("{}.json", migration.version));
         let content = serde_json::to_string_pretty(&migration)?;
         fs::write(file_path, content)?;
 
-        self.pending_migrations.insert(migration.version.clone(), migration);
+        self.pending_migrations
+            .insert(migration.version.clone(), migration);
         Ok(())
     }
 
@@ -283,14 +282,20 @@ impl MigrationManager {
 
     /// Apply a migration with Engine
     #[instrument(skip(self, engine))]
-    pub fn apply_migration_with_engine(&mut self, version: &Version, engine: &mut crate::engine::Engine, dry_run: bool) -> Result<()> {
+    pub fn apply_migration_with_engine(
+        &mut self,
+        version: &Version,
+        engine: &mut crate::engine::Engine,
+        dry_run: bool,
+    ) -> Result<()> {
         // Check if already applied
         if self.history.contains_key(version) {
             info!("Migration {} already applied, skipping", version);
             return Ok(());
         }
 
-        let migration = self.pending_migrations
+        let migration = self
+            .pending_migrations
             .get(version)
             .ok_or_else(|| DriftError::Other(format!("Migration {} not found", version)))?
             .clone();
@@ -325,7 +330,8 @@ impl MigrationManager {
         if result.is_ok() {
             self.pending_migrations.remove(version);
             // Remove from pending directory
-            let file_path = self.migrations_dir
+            let file_path = self
+                .migrations_dir
                 .join("pending")
                 .join(format!("{}.json", version));
             let _ = fs::remove_file(file_path);
@@ -343,7 +349,8 @@ impl MigrationManager {
             return Ok(());
         }
 
-        let migration = self.pending_migrations
+        let migration = self
+            .pending_migrations
             .get(version)
             .ok_or_else(|| DriftError::Other(format!("Migration {} not found", version)))?
             .clone();
@@ -378,7 +385,8 @@ impl MigrationManager {
         if result.is_ok() {
             self.pending_migrations.remove(version);
             // Remove from pending directory
-            let file_path = self.migrations_dir
+            let file_path = self
+                .migrations_dir
                 .join("pending")
                 .join(format!("{}.json", version));
             let _ = fs::remove_file(file_path);
@@ -388,20 +396,28 @@ impl MigrationManager {
     }
 
     /// Execute the actual migration using the Engine
-    pub fn execute_migration_with_engine(&self, migration: &Migration, engine: &mut crate::engine::Engine) -> Result<()> {
+    pub fn execute_migration_with_engine(
+        &self,
+        migration: &Migration,
+        engine: &mut crate::engine::Engine,
+    ) -> Result<()> {
         // Begin a transaction for the migration
         let txn_id = engine.begin_migration_transaction()?;
 
         let result = match &migration.migration_type {
-            MigrationType::AddColumn { table, column, default_value } => {
-                engine.migrate_add_column(table, column, default_value.clone())
-            }
+            MigrationType::AddColumn {
+                table,
+                column,
+                default_value,
+            } => engine.migrate_add_column(table, column, default_value.clone()),
             MigrationType::DropColumn { table, column } => {
                 engine.migrate_drop_column(table, column)
             }
-            MigrationType::RenameColumn { table, old_name, new_name } => {
-                engine.migrate_rename_column(table, old_name, new_name)
-            }
+            MigrationType::RenameColumn {
+                table,
+                old_name,
+                new_name,
+            } => engine.migrate_rename_column(table, old_name, new_name),
             _ => {
                 // For other migration types, fall back to the old implementation
                 self.execute_migration(migration)
@@ -425,37 +441,30 @@ impl MigrationManager {
     /// Execute the actual migration (legacy - without Engine)
     fn execute_migration(&self, migration: &Migration) -> Result<()> {
         match &migration.migration_type {
-            MigrationType::AddColumn { table, column, default_value } => {
-                self.add_column(table, column, default_value.as_ref())
-            }
-            MigrationType::DropColumn { table, column } => {
-                self.drop_column(table, column)
-            }
-            MigrationType::RenameColumn { table, old_name, new_name } => {
-                self.rename_column(table, old_name, new_name)
-            }
-            MigrationType::AddIndex { table, column } => {
-                self.add_index(table, column)
-            }
-            MigrationType::DropIndex { table, column } => {
-                self.drop_index(table, column)
-            }
-            MigrationType::CreateTable { name, schema } => {
-                self.create_table(name, schema)
-            }
-            MigrationType::DropTable { name } => {
-                self.drop_table(name)
-            }
-            MigrationType::Custom { up_script, .. } => {
-                self.execute_custom_script(up_script)
-            }
+            MigrationType::AddColumn {
+                table,
+                column,
+                default_value,
+            } => self.add_column(table, column, default_value.as_ref()),
+            MigrationType::DropColumn { table, column } => self.drop_column(table, column),
+            MigrationType::RenameColumn {
+                table,
+                old_name,
+                new_name,
+            } => self.rename_column(table, old_name, new_name),
+            MigrationType::AddIndex { table, column } => self.add_index(table, column),
+            MigrationType::DropIndex { table, column } => self.drop_index(table, column),
+            MigrationType::CreateTable { name, schema } => self.create_table(name, schema),
+            MigrationType::DropTable { name } => self.drop_table(name),
+            MigrationType::Custom { up_script, .. } => self.execute_custom_script(up_script),
         }
     }
 
     /// Rollback a migration
     #[instrument(skip(self))]
     pub fn rollback_migration(&mut self, version: &Version) -> Result<()> {
-        let applied = self.history
+        let applied = self
+            .history
             .get(version)
             .ok_or_else(|| DriftError::Other(format!("Migration {} not in history", version)))?;
 
@@ -499,7 +508,12 @@ impl MigrationManager {
 
     // Migration implementation helpers
 
-    fn add_column(&self, table: &str, column: &ColumnDef, default_value: Option<&serde_json::Value>) -> Result<()> {
+    fn add_column(
+        &self,
+        table: &str,
+        column: &ColumnDef,
+        default_value: Option<&serde_json::Value>,
+    ) -> Result<()> {
         debug!("Adding column {} to table {}", column.name, table);
 
         // Load the current table schema
@@ -516,7 +530,10 @@ impl MigrationManager {
 
         // Check if column already exists
         if schema.columns.iter().any(|c| c.name == column.name) {
-            return Err(DriftError::Other(format!("Column {} already exists", column.name)));
+            return Err(DriftError::Other(format!(
+                "Column {} already exists",
+                column.name
+            )));
         }
 
         // Add the new column
@@ -532,7 +549,11 @@ impl MigrationManager {
             let storage = crate::storage::TableStorage::open(&self.data_dir, table, None)?;
             let current_state = storage.reconstruct_state_at(None)?;
 
-            debug!("Backfilling {} existing records with default value for column {}", current_state.len(), column.name);
+            debug!(
+                "Backfilling {} existing records with default value for column {}",
+                current_state.len(),
+                column.name
+            );
 
             for (key, _) in current_state {
                 let patch_event = crate::events::Event::new_patch(
@@ -540,9 +561,12 @@ impl MigrationManager {
                     serde_json::json!(key),
                     serde_json::json!({
                         &column.name: default
-                    })
+                    }),
                 );
-                debug!("Creating patch event for key: {} with value: {:?}", key, default);
+                debug!(
+                    "Creating patch event for key: {} with value: {:?}",
+                    key, default
+                );
                 storage.append_event(patch_event)?;
             }
 
@@ -571,7 +595,9 @@ impl MigrationManager {
 
         // Check if column is primary key
         if schema.primary_key == column {
-            return Err(DriftError::Other("Cannot drop primary key column".to_string()));
+            return Err(DriftError::Other(
+                "Cannot drop primary key column".to_string(),
+            ));
         }
 
         // Remove column from schema
@@ -595,7 +621,10 @@ impl MigrationManager {
     }
 
     fn rename_column(&self, table: &str, old_name: &str, new_name: &str) -> Result<()> {
-        debug!("Renaming column {} to {} in table {}", old_name, new_name, table);
+        debug!(
+            "Renaming column {} to {} in table {}",
+            old_name, new_name, table
+        );
 
         // Load the current table schema
         let table_path = self.data_dir.join("tables").join(table);
@@ -647,14 +676,17 @@ impl MigrationManager {
                     let patch_event = crate::events::Event::new_patch(
                         table.to_string(),
                         serde_json::json!(key),
-                        serde_json::Value::Object(map.clone())
+                        serde_json::Value::Object(map.clone()),
                     );
                     storage.append_event(patch_event)?;
                 }
             }
         }
 
-        info!("Renamed column {} to {} in table {}", old_name, new_name, table);
+        info!(
+            "Renamed column {} to {} in table {}",
+            old_name, new_name, table
+        );
         Ok(())
     }
 
@@ -742,7 +774,9 @@ mod tests {
         assert_eq!(manager.pending_migrations().len(), 1);
 
         // Apply migration
-        manager.apply_migration(&Version::new(1, 0, 0), false).unwrap();
+        manager
+            .apply_migration(&Version::new(1, 0, 0), false)
+            .unwrap();
         assert_eq!(manager.pending_migrations().len(), 0);
         assert_eq!(manager.current_version(), Some(Version::new(1, 0, 0)));
     }

@@ -24,40 +24,57 @@ impl PostgresCodec {
 /// Decode a message from bytes
 pub fn decode_message(buf: &mut BytesMut, startup_done: bool) -> io::Result<Option<Message>> {
     if !startup_done {
-        // Check for startup message or SSL request
-        if buf.len() < 8 {
-            return Ok(None);
-        }
+        // During the startup phase, we could get:
+        // 1. Startup message (no type byte, starts with length)
+        // 2. SSL request (no type byte, special version number)
+        // 3. Password response (has type byte 'p') after auth challenge
 
-        let len = read_i32(buf) as usize;
-        if buf.len() < len - 4 {
-            // Not enough data
-            buf.reserve(len - 4 - buf.len());
-            return Ok(None);
-        }
+        // First check if this might be a regular message with a type byte (like password)
+        if buf.len() >= 5 {
+            // Peek at the first byte to see if it's a message type
+            let first_byte = buf[0];
+            if first_byte == b'p' {
+                // This is a password message, handle it like a regular message
+                // Fall through to normal message handling below
+            } else {
+                // Check for startup message or SSL request
+                if buf.len() < 8 {
+                    return Ok(None);
+                }
 
-        let version = read_i32(buf);
+                let len = read_i32(buf) as usize;
+                if buf.len() < len - 4 {
+                    // Not enough data
+                    buf.reserve(len - 4 - buf.len());
+                    return Ok(None);
+                }
 
-        if version == 80877103 {
-            // SSL request
-            return Ok(Some(Message::SSLRequest));
-        }
+                let version = read_i32(buf);
 
-        // Startup message
-        let mut params = HashMap::new();
-        while buf.remaining() > 0 {
-            let key = read_cstring(buf)?;
-            if key.is_empty() {
-                break;
+                if version == 80877103 {
+                    // SSL request
+                    return Ok(Some(Message::SSLRequest));
+                }
+
+                // Startup message
+                let mut params = HashMap::new();
+                while buf.remaining() > 0 {
+                    let key = read_cstring(buf)?;
+                    if key.is_empty() {
+                        break;
+                    }
+                    let value = read_cstring(buf)?;
+                    params.insert(key, value);
+                }
+
+                return Ok(Some(Message::StartupMessage {
+                    version,
+                    parameters: params,
+                }));
             }
-            let value = read_cstring(buf)?;
-            params.insert(key, value);
+        } else {
+            return Ok(None); // Not enough data
         }
-
-        return Ok(Some(Message::StartupMessage {
-            version,
-            parameters: params,
-        }));
     }
 
     // Regular message
@@ -144,7 +161,9 @@ fn read_i32(buf: &mut BytesMut) -> i32 {
 }
 
 fn read_cstring(buf: &mut BytesMut) -> io::Result<String> {
-    let pos = buf.iter().position(|&b| b == 0)
+    let pos = buf
+        .iter()
+        .position(|&b| b == 0)
         .ok_or_else(|| io::Error::new(ErrorKind::InvalidData, "Missing null terminator"))?;
 
     let s = String::from_utf8(buf[..pos].to_vec())
@@ -155,7 +174,9 @@ fn read_cstring(buf: &mut BytesMut) -> io::Result<String> {
 }
 
 fn read_cstring_from(buf: &mut BytesMut) -> io::Result<String> {
-    let pos = buf.iter().position(|&b| b == 0)
+    let pos = buf
+        .iter()
+        .position(|&b| b == 0)
         .ok_or_else(|| io::Error::new(ErrorKind::InvalidData, "Missing null terminator"))?;
 
     let s = String::from_utf8(buf.split_to(pos).to_vec())

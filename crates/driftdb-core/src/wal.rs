@@ -3,13 +3,13 @@
 //! Provides durability guarantees by writing all changes to a WAL before
 //! applying them to the main database. Critical for crash recovery.
 
+use crc32fast::Hasher;
+use serde::{Deserialize, Serialize};
+use serde_json::{self, Value};
 use std::fs::{File, OpenOptions};
-use std::io::{BufWriter, Write, BufReader, BufRead};
+use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use serde::{Serialize, Deserialize};
-use serde_json::{self, Value};
-use crc32fast::Hasher;
 
 use crate::errors::{DriftError, Result};
 // use crate::events::Event;
@@ -39,17 +39,34 @@ pub enum WalOperation {
     /// Transaction abort/rollback
     TransactionAbort { transaction_id: u64 },
     /// Insert operation
-    Insert { table: String, row_id: String, data: Value },
+    Insert {
+        table: String,
+        row_id: String,
+        data: Value,
+    },
     /// Update operation
-    Update { table: String, row_id: String, old_data: Value, new_data: Value },
+    Update {
+        table: String,
+        row_id: String,
+        old_data: Value,
+        new_data: Value,
+    },
     /// Delete operation
-    Delete { table: String, row_id: String, data: Value },
+    Delete {
+        table: String,
+        row_id: String,
+        data: Value,
+    },
     /// Create table
     CreateTable { table: String, schema: Value },
     /// Drop table
     DropTable { table: String },
     /// Create index
-    CreateIndex { table: String, index_name: String, columns: Vec<String> },
+    CreateIndex {
+        table: String,
+        index_name: String,
+        columns: Vec<String>,
+    },
     /// Drop index
     DropIndex { table: String, index_name: String },
     /// Checkpoint marker
@@ -83,7 +100,7 @@ impl Default for WalConfig {
     fn default() -> Self {
         Self {
             max_file_size: 100 * 1024 * 1024, // 100MB
-            sync_on_write: true, // Critical for durability
+            sync_on_write: true,              // Critical for durability
             verify_checksums: true,
         }
     }
@@ -198,7 +215,9 @@ impl WalManager {
                     writer.get_ref().sync_all()?; // Force to disk
                 }
             } else {
-                return Err(DriftError::Internal("WAL writer not initialized".to_string()));
+                return Err(DriftError::Internal(
+                    "WAL writer not initialized".to_string(),
+                ));
             }
         }
 
@@ -223,10 +242,10 @@ impl WalManager {
     fn verify_entry_checksum(&self, entry: &WalEntry) -> Result<()> {
         let calculated = self.calculate_checksum(entry)?;
         if calculated != entry.checksum {
-            return Err(DriftError::Corruption(
-                format!("WAL entry checksum mismatch: expected {}, got {}",
-                        entry.checksum, calculated)
-            ));
+            return Err(DriftError::Corruption(format!(
+                "WAL entry checksum mismatch: expected {}, got {}",
+                entry.checksum, calculated
+            )));
         }
         Ok(())
     }
@@ -255,9 +274,10 @@ impl WalManager {
                     }
                 }
                 Err(e) => {
-                    return Err(DriftError::Corruption(
-                        format!("Failed to parse WAL entry: {}", e)
-                    ));
+                    return Err(DriftError::Corruption(format!(
+                        "Failed to parse WAL entry: {}",
+                        e
+                    )));
                 }
             }
         }
@@ -268,7 +288,9 @@ impl WalManager {
     /// Create a checkpoint (truncate WAL up to this point)
     pub fn checkpoint(&self, up_to_sequence: u64) -> Result<()> {
         // Log the checkpoint operation first
-        self.log_operation(WalOperation::Checkpoint { sequence: up_to_sequence })?;
+        self.log_operation(WalOperation::Checkpoint {
+            sequence: up_to_sequence,
+        })?;
 
         // Read all entries after the checkpoint
         let entries_to_keep = self.replay_from_sequence(up_to_sequence + 1)?;
@@ -320,13 +342,19 @@ mod tests {
         let wal = WalManager::new(&wal_path, WalConfig::default()).unwrap();
 
         // Log some operations
-        let seq1 = wal.log_operation(WalOperation::TransactionBegin { transaction_id: 1 }).unwrap();
-        let seq2 = wal.log_operation(WalOperation::Insert {
-            table: "users".to_string(),
-            row_id: "1".to_string(),
-            data: serde_json::json!({"name": "Alice", "age": 30}),
-        }).unwrap();
-        let seq3 = wal.log_operation(WalOperation::TransactionCommit { transaction_id: 1 }).unwrap();
+        let seq1 = wal
+            .log_operation(WalOperation::TransactionBegin { transaction_id: 1 })
+            .unwrap();
+        let seq2 = wal
+            .log_operation(WalOperation::Insert {
+                table: "users".to_string(),
+                row_id: "1".to_string(),
+                data: serde_json::json!({"name": "Alice", "age": 30}),
+            })
+            .unwrap();
+        let seq3 = wal
+            .log_operation(WalOperation::TransactionCommit { transaction_id: 1 })
+            .unwrap();
 
         assert_eq!(seq1, 1);
         assert_eq!(seq2, 2);
@@ -366,7 +394,8 @@ mod tests {
             table: "test".to_string(),
             row_id: "1".to_string(),
             data: serde_json::json!({"data": "test"}),
-        }).unwrap();
+        })
+        .unwrap();
 
         // Replay should succeed with valid checksums
         let entries = wal.replay_from_sequence(1).unwrap();

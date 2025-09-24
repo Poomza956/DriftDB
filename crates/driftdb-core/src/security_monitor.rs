@@ -1,13 +1,13 @@
+use crate::audit::{AuditAction, AuditEvent, AuditEventType, RiskLevel};
 use crate::errors::{DriftError, Result};
-use crate::audit::{AuditEvent, AuditAction, AuditEventType, RiskLevel};
-use serde::{Serialize, Deserialize};
+use chrono::Timelike;
+use parking_lot::{Mutex, RwLock};
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
-use parking_lot::{RwLock, Mutex};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
-use tracing::{warn, info, debug};
-use chrono::Timelike;
 
 /// Advanced security monitoring and intrusion detection system
 pub struct SecurityMonitor {
@@ -56,7 +56,7 @@ struct ThreatDetector {
     login_attempts: HashMap<String, VecDeque<SystemTime>>, // IP -> attempts
     #[allow(dead_code)]
     failed_queries: HashMap<String, VecDeque<SystemTime>>, // User -> failed queries
-    blocked_ips: HashMap<String, SystemTime>, // IP -> block time
+    blocked_ips: HashMap<String, SystemTime>,              // IP -> block time
     #[allow(dead_code)]
     suspicious_patterns: Vec<ThreatPattern>,
     active_threats: HashMap<Uuid, ThreatEvent>,
@@ -174,7 +174,7 @@ pub struct SuspiciousActivity {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserBehaviorBaseline {
     pub user: String,
-    pub typical_login_times: Vec<u8>, // Hours 0-23
+    pub typical_login_times: Vec<u8>,         // Hours 0-23
     pub typical_access_patterns: Vec<String>, // Tables accessed
     pub avg_queries_per_session: f64,
     pub avg_session_duration: Duration,
@@ -441,9 +441,11 @@ impl SecurityMonitor {
             if let Some(ref ip) = event.client_address {
                 detector.record_failed_login(ip, event.timestamp);
 
-                if detector.is_brute_force_attack(ip, self.config.brute_force_threshold,
-                    Duration::from_secs(self.config.brute_force_window_secs)) {
-
+                if detector.is_brute_force_attack(
+                    ip,
+                    self.config.brute_force_threshold,
+                    Duration::from_secs(self.config.brute_force_window_secs),
+                ) {
                     let threat = ThreatEvent {
                         id: Uuid::new_v4(),
                         timestamp: event.timestamp,
@@ -452,13 +454,11 @@ impl SecurityMonitor {
                         source_ip: Some(ip.clone()),
                         user: event.user.as_ref().map(|u| u.username.clone()),
                         description: format!("Brute force attack detected from IP: {}", ip),
-                        indicators: vec![
-                            ThreatIndicator {
-                                indicator_type: "failed_logins".to_string(),
-                                value: ip.clone(),
-                                confidence: 0.9,
-                            }
-                        ],
+                        indicators: vec![ThreatIndicator {
+                            indicator_type: "failed_logins".to_string(),
+                            value: ip.clone(),
+                            confidence: 0.9,
+                        }],
                         mitigated: false,
                         mitigation_action: None,
                     };
@@ -479,13 +479,11 @@ impl SecurityMonitor {
                     source_ip: event.client_address.clone(),
                     user: event.user.as_ref().map(|u| u.username.clone()),
                     description: "SQL injection attempt detected".to_string(),
-                    indicators: vec![
-                        ThreatIndicator {
-                            indicator_type: "malicious_query".to_string(),
-                            value: query.clone(),
-                            confidence: 0.8,
-                        }
-                    ],
+                    indicators: vec![ThreatIndicator {
+                        indicator_type: "malicious_query".to_string(),
+                        value: query.clone(),
+                        confidence: 0.8,
+                    }],
                     mitigated: false,
                     mitigation_action: None,
                 };
@@ -496,7 +494,8 @@ impl SecurityMonitor {
 
         // Check for large data retrieval (potential exfiltration)
         if let Some(rows) = event.affected_rows {
-            if rows > 100000 { // Threshold for large data access
+            if rows > 100000 {
+                // Threshold for large data access
                 let threat = ThreatEvent {
                     id: Uuid::new_v4(),
                     timestamp: event.timestamp,
@@ -505,13 +504,11 @@ impl SecurityMonitor {
                     source_ip: event.client_address.clone(),
                     user: event.user.as_ref().map(|u| u.username.clone()),
                     description: format!("Large data retrieval detected: {} rows", rows),
-                    indicators: vec![
-                        ThreatIndicator {
-                            indicator_type: "large_data_access".to_string(),
-                            value: rows.to_string(),
-                            confidence: 0.6,
-                        }
-                    ],
+                    indicators: vec![ThreatIndicator {
+                        indicator_type: "large_data_access".to_string(),
+                        value: rows.to_string(),
+                        confidence: 0.6,
+                    }],
                     mitigated: false,
                     mitigation_action: None,
                 };
@@ -527,7 +524,11 @@ impl SecurityMonitor {
         let mut tracker = self.session_tracker.write();
 
         if let Some(ref session_id) = event.session_id {
-            let user = event.user.as_ref().map(|u| u.username.clone()).unwrap_or_default();
+            let user = event
+                .user
+                .as_ref()
+                .map(|u| u.username.clone())
+                .unwrap_or_default();
 
             tracker.update_session(
                 session_id,
@@ -546,7 +547,10 @@ impl SecurityMonitor {
                         AlertType::AnomalyDetected,
                         AlertSeverity::Medium,
                         "Suspicious session activity detected".to_string(),
-                        format!("Session {} shows suspicious activity: {:?}", session_id, suspicious.activities),
+                        format!(
+                            "Session {} shows suspicious activity: {:?}",
+                            session_id, suspicious.activities
+                        ),
                         vec![format!("session:{}", session_id)],
                     )?;
                 }
@@ -570,7 +574,8 @@ impl SecurityMonitor {
                 // Check login time anomaly
                 if matches!(event.action, AuditAction::Login) {
                     let current_hour = chrono::DateTime::<chrono::Utc>::from(event.timestamp)
-                        .time().hour() as u8;
+                        .time()
+                        .hour() as u8;
 
                     if !baseline.typical_login_times.contains(&current_hour) {
                         let anomaly = AnomalyEvent {
@@ -579,8 +584,10 @@ impl SecurityMonitor {
                             anomaly_type: AnomalyType::UnusualLoginTime,
                             user: user_info.username.clone(),
                             severity: AnomalySeverity::Minor,
-                            description: format!("User {} logged in at unusual time: {}:00",
-                                user_info.username, current_hour),
+                            description: format!(
+                                "User {} logged in at unusual time: {}:00",
+                                user_info.username, current_hour
+                            ),
                             baseline_deviation: 1.0,
                         };
 
@@ -597,8 +604,10 @@ impl SecurityMonitor {
                             anomaly_type: AnomalyType::UnexpectedTableAccess,
                             user: user_info.username.clone(),
                             severity: AnomalySeverity::Moderate,
-                            description: format!("User {} accessed unexpected table: {}",
-                                user_info.username, table),
+                            description: format!(
+                                "User {} accessed unexpected table: {}",
+                                user_info.username, table
+                            ),
                             baseline_deviation: 0.8,
                         };
 
@@ -687,7 +696,10 @@ impl SecurityMonitor {
                 warn!("SQL injection detected - manual review required");
             }
             _ => {
-                debug!("No automatic mitigation available for threat type: {:?}", threat.threat_type);
+                debug!(
+                    "No automatic mitigation available for threat type: {:?}",
+                    threat.threat_type
+                );
             }
         }
 
@@ -695,8 +707,14 @@ impl SecurityMonitor {
         Ok(())
     }
 
-    fn generate_alert(&self, alert_type: AlertType, severity: AlertSeverity, title: String,
-                     description: String, affected_resources: Vec<String>) -> Result<()> {
+    fn generate_alert(
+        &self,
+        alert_type: AlertType,
+        severity: AlertSeverity,
+        title: String,
+        description: String,
+        affected_resources: Vec<String>,
+    ) -> Result<()> {
         let alert = SecurityAlert {
             id: Uuid::new_v4(),
             timestamp: SystemTime::now(),
@@ -752,7 +770,9 @@ impl SecurityMonitor {
             "' or ''='",
         ];
 
-        injection_patterns.iter().any(|pattern| query_lower.contains(pattern))
+        injection_patterns
+            .iter()
+            .any(|pattern| query_lower.contains(pattern))
     }
 
     fn is_personal_data_table(&self, table: &str) -> bool {
@@ -790,7 +810,10 @@ impl SecurityMonitor {
     }
 
     /// Get compliance violations
-    pub fn get_compliance_violations(&self, framework: Option<ComplianceFramework>) -> Vec<ComplianceViolation> {
+    pub fn get_compliance_violations(
+        &self,
+        framework: Option<ComplianceFramework>,
+    ) -> Vec<ComplianceViolation> {
         self.compliance_monitor.read().get_violations(framework)
     }
 
@@ -801,7 +824,9 @@ impl SecurityMonitor {
 
     /// Resolve an alert
     pub fn resolve_alert(&self, alert_id: Uuid, user: &str, resolution_notes: &str) -> Result<()> {
-        self.alert_manager.lock().resolve_alert(alert_id, user, resolution_notes)?;
+        self.alert_manager
+            .lock()
+            .resolve_alert(alert_id, user, resolution_notes)?;
         self.stats.write().alerts_resolved += 1;
         Ok(())
     }
@@ -839,7 +864,10 @@ impl ThreatDetector {
     }
 
     fn record_failed_login(&mut self, ip: &str, timestamp: SystemTime) {
-        let attempts = self.login_attempts.entry(ip.to_string()).or_insert_with(VecDeque::new);
+        let attempts = self
+            .login_attempts
+            .entry(ip.to_string())
+            .or_insert_with(VecDeque::new);
         attempts.push_back(timestamp);
 
         // Keep only recent attempts (within the window)
@@ -884,12 +912,21 @@ impl SessionTracker {
         }
     }
 
-    fn update_session(&mut self, session_id: &str, user: &str, ip: Option<&String>,
-                     timestamp: SystemTime, table: Option<&String>, failed: bool,
-                     rows_accessed: u64) {
+    fn update_session(
+        &mut self,
+        session_id: &str,
+        user: &str,
+        ip: Option<&String>,
+        timestamp: SystemTime,
+        table: Option<&String>,
+        failed: bool,
+        rows_accessed: u64,
+    ) {
         // First, update session data
         {
-            let session = self.active_sessions.entry(session_id.to_string())
+            let session = self
+                .active_sessions
+                .entry(session_id.to_string())
                 .or_insert_with(|| SessionInfo {
                     session_id: session_id.to_string(),
                     user: user.to_string(),
@@ -936,7 +973,8 @@ impl SessionTracker {
         }
 
         // Large data access
-        if session.data_accessed > 1000000 { // 1M rows
+        if session.data_accessed > 1000000 {
+            // 1M rows
             risk += 0.4;
         }
 
@@ -947,7 +985,8 @@ impl SessionTracker {
 
         // Long session duration
         if let Ok(duration) = session.last_activity.duration_since(session.start_time) {
-            if duration > Duration::from_secs(3600 * 4) { // 4 hours
+            if duration > Duration::from_secs(3600 * 4) {
+                // 4 hours
                 risk += 0.1;
             }
         }
@@ -1003,7 +1042,9 @@ impl AnomalyDetector {
     }
 
     fn update_user_baseline(&mut self, user: &str, event: &AuditEvent) {
-        let baseline = self.user_baselines.entry(user.to_string())
+        let baseline = self
+            .user_baselines
+            .entry(user.to_string())
             .or_insert_with(|| UserBehaviorBaseline {
                 user: user.to_string(),
                 typical_login_times: Vec::new(),
@@ -1016,7 +1057,9 @@ impl AnomalyDetector {
 
         // Update login times
         if matches!(event.action, AuditAction::Login) {
-            let hour = chrono::DateTime::<chrono::Utc>::from(event.timestamp).time().hour() as u8;
+            let hour = chrono::DateTime::<chrono::Utc>::from(event.timestamp)
+                .time()
+                .hour() as u8;
             if !baseline.typical_login_times.contains(&hour) {
                 baseline.typical_login_times.push(hour);
             }
@@ -1101,7 +1144,8 @@ impl ComplianceMonitor {
 
     fn get_violations(&self, framework: Option<ComplianceFramework>) -> Vec<ComplianceViolation> {
         if let Some(fw) = framework {
-            self.violations.iter()
+            self.violations
+                .iter()
                 .filter(|v| v.compliance_framework == fw)
                 .cloned()
                 .collect()
@@ -1132,7 +1176,8 @@ impl AlertManager {
     }
 
     fn get_active_alerts(&self) -> Vec<SecurityAlert> {
-        self.active_alerts.values()
+        self.active_alerts
+            .values()
             .filter(|alert| !alert.resolved)
             .cloned()
             .collect()
@@ -1147,7 +1192,12 @@ impl AlertManager {
         }
     }
 
-    fn resolve_alert(&mut self, alert_id: Uuid, _user: &str, _resolution_notes: &str) -> Result<()> {
+    fn resolve_alert(
+        &mut self,
+        alert_id: Uuid,
+        _user: &str,
+        _resolution_notes: &str,
+    ) -> Result<()> {
         if let Some(alert) = self.active_alerts.get_mut(&alert_id) {
             alert.resolved = true;
             Ok(())

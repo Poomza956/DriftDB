@@ -1,13 +1,13 @@
-use crate::errors::{DriftError, Result};
 use crate::auth::AuthContext;
-use serde::{Serialize, Deserialize};
+use crate::errors::{DriftError, Result};
+use parking_lot::{Mutex, RwLock};
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::fs::{File, OpenOptions};
-use std::io::{Write, BufWriter};
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
-use parking_lot::{RwLock, Mutex};
 use uuid::Uuid;
 
 /// Comprehensive audit logging system
@@ -479,7 +479,9 @@ impl AuditSystem {
             "exec sp_",
         ];
 
-        suspicious_patterns.iter().any(|pattern| query_lower.contains(pattern))
+        suspicious_patterns
+            .iter()
+            .any(|pattern| query_lower.contains(pattern))
     }
 
     fn write_event(&self, event: &AuditEvent) -> Result<()> {
@@ -515,14 +517,15 @@ impl AuditSystem {
 
     /// Clean up old audit logs
     pub async fn cleanup_old_logs(&self) -> Result<()> {
-        let retention_period = Duration::from_secs(
-            self.config.retention_days as u64 * 24 * 3600
-        );
+        let retention_period = Duration::from_secs(self.config.retention_days as u64 * 24 * 3600);
 
         let cutoff = SystemTime::now() - retention_period;
 
         // Find and remove old log files
-        let base_dir = self.config.log_file_path.parent()
+        let base_dir = self
+            .config
+            .log_file_path
+            .parent()
             .ok_or_else(|| DriftError::Internal("Invalid log path".to_string()))?;
 
         for entry in std::fs::read_dir(base_dir)? {
@@ -585,9 +588,7 @@ impl AuditLogger {
         Ok(Self {
             current_file: Some(BufWriter::new(file)),
             current_file_path: base_path.clone(),
-            current_size: std::fs::metadata(&base_path)
-                .map(|m| m.len())
-                .unwrap_or(0),
+            current_size: std::fs::metadata(&base_path).map(|m| m.len()).unwrap_or(0),
             rotation_size,
             base_path,
             rotation_counter: 0,
@@ -827,7 +828,10 @@ mod tests {
             success: true,
             error_message: None,
             metadata: HashMap::new(),
-            risk_score: RiskScore { level: RiskLevel::None, score: 0 },
+            risk_score: RiskScore {
+                level: RiskLevel::None,
+                score: 0,
+            },
         };
 
         let risk = system.calculate_risk_score(&event);
@@ -837,8 +841,12 @@ mod tests {
 
     #[test]
     fn test_suspicious_query_detection() {
-        assert!(AuditSystem::is_suspicious_query("SELECT * FROM users WHERE id = 1 OR '1'='1'"));
+        assert!(AuditSystem::is_suspicious_query(
+            "SELECT * FROM users WHERE id = 1 OR '1'='1'"
+        ));
         assert!(AuditSystem::is_suspicious_query("'; DROP TABLE users; --"));
-        assert!(!AuditSystem::is_suspicious_query("SELECT * FROM users WHERE id = 1"));
+        assert!(!AuditSystem::is_suspicious_query(
+            "SELECT * FROM users WHERE id = 1"
+        ));
     }
 }

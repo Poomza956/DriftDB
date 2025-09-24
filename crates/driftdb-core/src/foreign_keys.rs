@@ -1,10 +1,10 @@
+use crate::engine::Engine;
 use crate::errors::{DriftError, Result};
 use crate::query::{Query, QueryResult, WhereCondition};
-use crate::engine::Engine;
-use serde::{Serialize, Deserialize};
+use parking_lot::RwLock;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use parking_lot::RwLock;
 
 /// Foreign key constraint management system
 pub struct ForeignKeyManager {
@@ -175,11 +175,13 @@ impl ForeignKeyManager {
 
         // Update reference index
         let mut index = self.reference_index.write();
-        index.parent_to_children
+        index
+            .parent_to_children
             .entry(parent_table.clone())
             .or_insert_with(HashSet::new)
             .insert(child_table.clone());
-        index.child_to_parents
+        index
+            .child_to_parents
             .entry(child_table)
             .or_insert_with(HashSet::new)
             .insert(parent_table);
@@ -189,16 +191,20 @@ impl ForeignKeyManager {
 
     /// Remove a foreign key constraint
     pub fn drop_constraint(&self, constraint_name: &str) -> Result<()> {
-        let constraint = self.constraints
+        let constraint = self
+            .constraints
             .write()
             .remove(constraint_name)
-            .ok_or_else(|| DriftError::NotFound(format!(
-                "Foreign key constraint '{}' not found",
-                constraint_name
-            )))?;
+            .ok_or_else(|| {
+                DriftError::NotFound(format!(
+                    "Foreign key constraint '{}' not found",
+                    constraint_name
+                ))
+            })?;
 
         // Update table constraints index
-        if let Some(constraints) = self.table_constraints
+        if let Some(constraints) = self
+            .table_constraints
             .write()
             .get_mut(&constraint.child_table)
         {
@@ -233,17 +239,18 @@ impl ForeignKeyManager {
         let constraints = self.get_table_constraints(table);
 
         for constraint_name in constraints {
-            let constraint = self.constraints
+            let constraint = self
+                .constraints
                 .read()
                 .get(&constraint_name)
                 .cloned()
-                .ok_or_else(|| DriftError::Internal(format!(
-                    "Constraint '{}' not found",
-                    constraint_name
-                )))?;
+                .ok_or_else(|| {
+                    DriftError::Internal(format!("Constraint '{}' not found", constraint_name))
+                })?;
 
             // Check if parent exists
-            let child_values = self.extract_column_values_from_map(row, &constraint.child_columns)?;
+            let child_values =
+                self.extract_column_values_from_map(row, &constraint.child_columns)?;
 
             // Skip if any child column is NULL and match type allows it
             if self.has_null_values(&child_values) {
@@ -264,7 +271,11 @@ impl ForeignKeyManager {
             }
 
             // Check parent existence
-            if !self.parent_exists(&constraint.parent_table, &constraint.parent_columns, &child_values)? {
+            if !self.parent_exists(
+                &constraint.parent_table,
+                &constraint.parent_columns,
+                &child_values,
+            )? {
                 return Err(DriftError::Validation(format!(
                     "Foreign key constraint '{}' violation: parent key does not exist in table '{}'",
                     constraint.name, constraint.parent_table
@@ -309,16 +320,17 @@ impl ForeignKeyManager {
         let children = self.get_child_constraints(table);
 
         for constraint_name in children {
-            let constraint = self.constraints
+            let constraint = self
+                .constraints
                 .read()
                 .get(&constraint_name)
                 .cloned()
-                .ok_or_else(|| DriftError::Internal(format!(
-                    "Constraint '{}' not found",
-                    constraint_name
-                )))?;
+                .ok_or_else(|| {
+                    DriftError::Internal(format!("Constraint '{}' not found", constraint_name))
+                })?;
 
-            let parent_values = self.extract_column_values_from_map(row, &constraint.parent_columns)?;
+            let parent_values =
+                self.extract_column_values_from_map(row, &constraint.parent_columns)?;
 
             // Check for dependent rows
             let dependent_rows = self.find_dependent_rows(
@@ -337,7 +349,8 @@ impl ForeignKeyManager {
                     }
                     ReferentialAction::Cascade => {
                         // Recursively delete children
-                        cascade_result.deleted_rows
+                        cascade_result
+                            .deleted_rows
                             .entry(constraint.child_table.clone())
                             .or_insert_with(Vec::new)
                             .extend(dependent_rows);
@@ -345,7 +358,8 @@ impl ForeignKeyManager {
                         cascade_result.affected_tables.push(constraint.child_table);
                     }
                     ReferentialAction::SetNull => {
-                        cascade_result.nullified_rows
+                        cascade_result
+                            .nullified_rows
                             .entry(constraint.child_table.clone())
                             .or_insert_with(Vec::new)
                             .extend(dependent_rows);
@@ -354,7 +368,8 @@ impl ForeignKeyManager {
                     }
                     ReferentialAction::SetDefault => {
                         // Would need default values from schema
-                        cascade_result.updated_rows
+                        cascade_result
+                            .updated_rows
                             .entry(constraint.child_table.clone())
                             .or_insert_with(Vec::new)
                             .extend(dependent_rows);
@@ -377,17 +392,19 @@ impl ForeignKeyManager {
         let children = self.get_child_constraints(table);
 
         for constraint_name in children {
-            let constraint = self.constraints
+            let constraint = self
+                .constraints
                 .read()
                 .get(&constraint_name)
                 .cloned()
-                .ok_or_else(|| DriftError::Internal(format!(
-                    "Constraint '{}' not found",
-                    constraint_name
-                )))?;
+                .ok_or_else(|| {
+                    DriftError::Internal(format!("Constraint '{}' not found", constraint_name))
+                })?;
 
-            let old_values = self.extract_column_values_from_map(old_row, &constraint.parent_columns)?;
-            let new_values = self.extract_column_values_from_map(new_row, &constraint.parent_columns)?;
+            let old_values =
+                self.extract_column_values_from_map(old_row, &constraint.parent_columns)?;
+            let new_values =
+                self.extract_column_values_from_map(new_row, &constraint.parent_columns)?;
 
             // Skip if key hasn't changed
             if old_values == new_values {
@@ -544,7 +561,8 @@ impl ForeignKeyManager {
         // Convert Value to HashMap if it's an object
         if let Some(row_obj) = row.as_object() {
             for column in columns {
-                let value = row_obj.get(column)
+                let value = row_obj
+                    .get(column)
                     .cloned()
                     .unwrap_or(serde_json::Value::Null);
                 values.push(value);
@@ -568,9 +586,7 @@ impl ForeignKeyManager {
         let mut values = Vec::new();
 
         for column in columns {
-            let value = row.get(column)
-                .cloned()
-                .unwrap_or(serde_json::Value::Null);
+            let value = row.get(column).cloned().unwrap_or(serde_json::Value::Null);
             values.push(value);
         }
 
@@ -632,7 +648,10 @@ impl ForeignKeyManager {
         // Update cache
         if self.config.use_cache {
             let key = (parent_table.to_string(), values.to_vec());
-            self.validation_cache.write().existence_cache.put(key, exists);
+            self.validation_cache
+                .write()
+                .existence_cache
+                .put(key, exists);
         }
 
         Ok(exists)
@@ -730,7 +749,8 @@ impl ForeignKeyManager {
                 Ok(QueryResult::Rows { data }) => {
                     for row in data {
                         // Extract child column values
-                        let child_values = self.extract_column_values(&row, &constraint.child_columns)?;
+                        let child_values =
+                            self.extract_column_values(&row, &constraint.child_columns)?;
 
                         // Skip rows with NULL values (handled by match type)
                         if self.has_null_values(&child_values) {
@@ -806,7 +826,10 @@ impl ForeignKeyManager {
     /// Get dependency graph
     pub fn get_dependency_graph(&self) -> HashMap<String, Vec<String>> {
         let index = self.reference_index.read();
-        index.child_to_parents.clone().into_iter()
+        index
+            .child_to_parents
+            .clone()
+            .into_iter()
             .map(|(k, v)| (k, v.into_iter().collect()))
             .collect()
     }
@@ -843,7 +866,9 @@ impl ForeignKeyManager {
         sorted: &mut Vec<String>,
     ) -> Result<()> {
         if temp_visited.contains(table) {
-            return Err(DriftError::Validation("Circular dependency detected".to_string()));
+            return Err(DriftError::Validation(
+                "Circular dependency detected".to_string(),
+            ));
         }
 
         if visited.contains(table) {
@@ -934,32 +959,36 @@ mod tests {
         let manager = ForeignKeyManager::new(ForeignKeyConfig::default());
 
         // Create A -> B
-        manager.add_constraint(ForeignKeyConstraint {
-            name: "fk_a_b".to_string(),
-            child_table: "table_a".to_string(),
-            child_columns: vec!["b_id".to_string()],
-            parent_table: "table_b".to_string(),
-            parent_columns: vec!["id".to_string()],
-            on_delete: ReferentialAction::Restrict,
-            on_update: ReferentialAction::Restrict,
-            is_deferrable: false,
-            initially_deferred: false,
-            match_type: MatchType::Simple,
-        }).unwrap();
+        manager
+            .add_constraint(ForeignKeyConstraint {
+                name: "fk_a_b".to_string(),
+                child_table: "table_a".to_string(),
+                child_columns: vec!["b_id".to_string()],
+                parent_table: "table_b".to_string(),
+                parent_columns: vec!["id".to_string()],
+                on_delete: ReferentialAction::Restrict,
+                on_update: ReferentialAction::Restrict,
+                is_deferrable: false,
+                initially_deferred: false,
+                match_type: MatchType::Simple,
+            })
+            .unwrap();
 
         // Create B -> C
-        manager.add_constraint(ForeignKeyConstraint {
-            name: "fk_b_c".to_string(),
-            child_table: "table_b".to_string(),
-            child_columns: vec!["c_id".to_string()],
-            parent_table: "table_c".to_string(),
-            parent_columns: vec!["id".to_string()],
-            on_delete: ReferentialAction::Restrict,
-            on_update: ReferentialAction::Restrict,
-            is_deferrable: false,
-            initially_deferred: false,
-            match_type: MatchType::Simple,
-        }).unwrap();
+        manager
+            .add_constraint(ForeignKeyConstraint {
+                name: "fk_b_c".to_string(),
+                child_table: "table_b".to_string(),
+                child_columns: vec!["c_id".to_string()],
+                parent_table: "table_c".to_string(),
+                parent_columns: vec!["id".to_string()],
+                on_delete: ReferentialAction::Restrict,
+                on_update: ReferentialAction::Restrict,
+                is_deferrable: false,
+                initially_deferred: false,
+                match_type: MatchType::Simple,
+            })
+            .unwrap();
 
         // Try to create C -> A (would create cycle)
         let result = manager.add_constraint(ForeignKeyConstraint {
@@ -984,31 +1013,35 @@ mod tests {
         let manager = ForeignKeyManager::new(ForeignKeyConfig::default());
 
         // Create dependencies: orders -> customers, order_items -> orders
-        manager.add_constraint(ForeignKeyConstraint {
-            name: "fk_order_customer".to_string(),
-            child_table: "orders".to_string(),
-            child_columns: vec!["customer_id".to_string()],
-            parent_table: "customers".to_string(),
-            parent_columns: vec!["id".to_string()],
-            on_delete: ReferentialAction::Restrict,
-            on_update: ReferentialAction::Restrict,
-            is_deferrable: false,
-            initially_deferred: false,
-            match_type: MatchType::Simple,
-        }).unwrap();
+        manager
+            .add_constraint(ForeignKeyConstraint {
+                name: "fk_order_customer".to_string(),
+                child_table: "orders".to_string(),
+                child_columns: vec!["customer_id".to_string()],
+                parent_table: "customers".to_string(),
+                parent_columns: vec!["id".to_string()],
+                on_delete: ReferentialAction::Restrict,
+                on_update: ReferentialAction::Restrict,
+                is_deferrable: false,
+                initially_deferred: false,
+                match_type: MatchType::Simple,
+            })
+            .unwrap();
 
-        manager.add_constraint(ForeignKeyConstraint {
-            name: "fk_item_order".to_string(),
-            child_table: "order_items".to_string(),
-            child_columns: vec!["order_id".to_string()],
-            parent_table: "orders".to_string(),
-            parent_columns: vec!["id".to_string()],
-            on_delete: ReferentialAction::Cascade,
-            on_update: ReferentialAction::Cascade,
-            is_deferrable: false,
-            initially_deferred: false,
-            match_type: MatchType::Simple,
-        }).unwrap();
+        manager
+            .add_constraint(ForeignKeyConstraint {
+                name: "fk_item_order".to_string(),
+                child_table: "order_items".to_string(),
+                child_columns: vec!["order_id".to_string()],
+                parent_table: "orders".to_string(),
+                parent_columns: vec!["id".to_string()],
+                on_delete: ReferentialAction::Cascade,
+                on_update: ReferentialAction::Cascade,
+                is_deferrable: false,
+                initially_deferred: false,
+                match_type: MatchType::Simple,
+            })
+            .unwrap();
 
         let sorted = manager.topological_sort().unwrap();
 

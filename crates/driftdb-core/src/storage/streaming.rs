@@ -17,8 +17,8 @@ pub struct StreamConfig {
 impl Default for StreamConfig {
     fn default() -> Self {
         Self {
-            event_buffer_size: 10_000,      // 10k events max in memory
-            max_state_memory: 512 * 1024 * 1024,  // 512MB max for state
+            event_buffer_size: 10_000,           // 10k events max in memory
+            max_state_memory: 512 * 1024 * 1024, // 512MB max for state
         }
     }
 }
@@ -49,7 +49,9 @@ impl EventStreamIterator {
         let mut segment_files: Vec<_> = fs::read_dir(&segments_dir)?
             .filter_map(|entry| entry.ok())
             .filter(|entry| {
-                entry.path().extension()
+                entry
+                    .path()
+                    .extension()
                     .and_then(|s| s.to_str())
                     .map(|s| s == "seg")
                     .unwrap_or(false)
@@ -154,9 +156,7 @@ pub fn reconstruct_state_streaming(
         match event.event_type {
             EventType::Insert => {
                 let key = event.primary_key.to_string();
-                let old_size = state.get(&key)
-                    .map(estimate_value_memory)
-                    .unwrap_or(0);
+                let old_size = state.get(&key).map(estimate_value_memory).unwrap_or(0);
                 state.insert(key, event.payload.clone());
                 estimated_memory = estimated_memory - old_size + event_size;
             }

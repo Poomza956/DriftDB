@@ -3,16 +3,17 @@
 //! This server allows DriftDB to be accessed using any PostgreSQL client,
 //! including psql, pgAdmin, DBeaver, and all PostgreSQL drivers.
 
-mod protocol;
-mod session;
 mod executor;
 mod health;
 mod metrics;
+mod protocol;
+mod security;
+mod session;
 mod transaction;
 
-use std::net::{SocketAddr, IpAddr};
-use std::sync::Arc;
+use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::Result;
 use clap::Parser;
@@ -20,8 +21,8 @@ use tokio::net::TcpListener;
 use tracing::{error, info};
 
 use driftdb_core::{Engine, EnginePool, PoolConfig, RateLimitConfig, RateLimitManager};
-use session::SessionManager;
 use parking_lot::RwLock as SyncRwLock;
+use session::SessionManager;
 
 #[derive(Parser, Debug)]
 #[command(name = "driftdb-server")]
@@ -40,7 +41,12 @@ struct Args {
     http_listen: SocketAddr,
 
     /// Maximum connections
-    #[arg(short = 'c', long, env = "DRIFTDB_MAX_CONNECTIONS", default_value = "100")]
+    #[arg(
+        short = 'c',
+        long,
+        env = "DRIFTDB_MAX_CONNECTIONS",
+        default_value = "100"
+    )]
     max_connections: usize,
 
     /// Minimum idle connections in pool
@@ -96,7 +102,11 @@ struct Args {
     rate_limit_global: Option<u32>,
 
     /// Rate limit: comma-separated list of exempt IP addresses
-    #[arg(long, env = "DRIFTDB_RATE_LIMIT_EXEMPT_IPS", default_value = "127.0.0.1,::1")]
+    #[arg(
+        long,
+        env = "DRIFTDB_RATE_LIMIT_EXEMPT_IPS",
+        default_value = "127.0.0.1,::1"
+    )]
     rate_limit_exempt_ips: String,
 
     /// Enable adaptive rate limiting based on server load
@@ -110,7 +120,7 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("driftdb_server=info".parse()?)
+                .add_directive("driftdb_server=info".parse()?),
         )
         .init();
 
@@ -151,13 +161,21 @@ async fn main() -> Result<()> {
         ..Default::default()
     };
 
-    info!("Creating connection pool with {} max connections", args.max_connections);
+    info!(
+        "Creating connection pool with {} max connections",
+        args.max_connections
+    );
     let engine_pool = EnginePool::new(engine.clone(), pool_config, pool_metrics.clone())?;
 
     // Parse authentication method
-    let auth_method = args.auth_method.parse::<protocol::auth::AuthMethod>()
+    let auth_method = args
+        .auth_method
+        .parse::<protocol::auth::AuthMethod>()
         .unwrap_or_else(|e| {
-            eprintln!("Invalid authentication method '{}': {}", args.auth_method, e);
+            eprintln!(
+                "Invalid authentication method '{}': {}",
+                args.auth_method, e
+            );
             std::process::exit(1);
         });
 
@@ -169,15 +187,16 @@ async fn main() -> Result<()> {
         lockout_duration_seconds: args.auth_lockout_duration,
     };
 
-    info!("Authentication: method={}, require_auth={}, max_attempts={}",
-          auth_method, args.require_auth, args.max_auth_attempts);
+    info!(
+        "Authentication: method={}, require_auth={}, max_attempts={}",
+        auth_method, args.require_auth, args.max_auth_attempts
+    );
 
     // Parse exempt IP addresses for rate limiting
-    let exempt_ips: Vec<IpAddr> = args.rate_limit_exempt_ips
+    let exempt_ips: Vec<IpAddr> = args
+        .rate_limit_exempt_ips
         .split(',')
-        .filter_map(|ip_str| {
-            ip_str.trim().parse().ok()
-        })
+        .filter_map(|ip_str| ip_str.trim().parse().ok())
         .collect();
 
     // Create rate limiting configuration
@@ -193,16 +212,25 @@ async fn main() -> Result<()> {
         superuser_multiplier: 5.0,
     };
 
-    info!("Rate limiting: connections_per_min={:?}, queries_per_sec={:?}, adaptive={}",
-          rate_limit_config.connections_per_minute,
-          rate_limit_config.queries_per_second,
-          rate_limit_config.adaptive_limiting);
+    info!(
+        "Rate limiting: connections_per_min={:?}, queries_per_sec={:?}, adaptive={}",
+        rate_limit_config.connections_per_minute,
+        rate_limit_config.queries_per_second,
+        rate_limit_config.adaptive_limiting
+    );
 
     // Create rate limit manager
-    let rate_limit_manager = Arc::new(RateLimitManager::new(rate_limit_config, pool_metrics.clone()));
+    let rate_limit_manager = Arc::new(RateLimitManager::new(
+        rate_limit_config,
+        pool_metrics.clone(),
+    ));
 
     // Create session manager with authentication and rate limiting
-    let session_manager = Arc::new(SessionManager::new(engine_pool.clone(), auth_config, rate_limit_manager.clone()));
+    let session_manager = Arc::new(SessionManager::new(
+        engine_pool.clone(),
+        auth_config,
+        rate_limit_manager.clone(),
+    ));
 
     // Start pool health checks, metrics updates, and rate limit cleanup
     let pool_tasks = {
@@ -221,10 +249,11 @@ async fn main() -> Result<()> {
                         metrics::update_pool_size(
                             stats.connection_stats.total_connections,
                             stats.connection_stats.available_connections,
-                            stats.connection_stats.active_connections
+                            stats.connection_stats.active_connections,
                         );
                         // Also update additional pool metrics
-                        metrics::POOL_CONNECTIONS_CREATED.set(stats.connection_stats.total_created as f64);
+                        metrics::POOL_CONNECTIONS_CREATED
+                            .set(stats.connection_stats.total_created as f64);
                         // Could add more metrics here for transactions and requests
                     }
                 }
@@ -260,7 +289,8 @@ async fn main() -> Result<()> {
                 session_manager_clone,
                 pool_clone,
                 args.enable_metrics,
-            ).await;
+            )
+            .await;
 
             if let Err(e) = result {
                 error!("HTTP server error: {}", e);
@@ -284,12 +314,16 @@ async fn main() -> Result<()> {
 
     info!("DriftDB PostgreSQL server listening on {}", args.listen);
     info!("DriftDB HTTP server listening on {}", args.http_listen);
-    info!("Connect with: psql -h {} -p {} -d driftdb",
-          args.listen.ip(),
-          args.listen.port());
-    info!("Health check: http://{}:{}/health/live",
-          args.http_listen.ip(),
-          args.http_listen.port());
+    info!(
+        "Connect with: psql -h {} -p {} -d driftdb",
+        args.listen.ip(),
+        args.listen.port()
+    );
+    info!(
+        "Health check: http://{}:{}/health/live",
+        args.http_listen.ip(),
+        args.http_listen.port()
+    );
 
     // Set up graceful shutdown handling
     let shutdown_signal = async {
@@ -360,9 +394,9 @@ async fn start_http_server(
     let listener = tokio::net::TcpListener::bind(addr).await?;
     info!("HTTP server bound to {}", addr);
 
-    axum::serve(listener, app).await.map_err(|e| {
-        anyhow::anyhow!("HTTP server failed: {}", e)
-    })
+    axum::serve(listener, app)
+        .await
+        .map_err(|e| anyhow::anyhow!("HTTP server failed: {}", e))
 }
 
 /// Start the PostgreSQL protocol server

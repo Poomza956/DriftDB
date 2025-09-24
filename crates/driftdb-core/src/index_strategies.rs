@@ -9,10 +9,10 @@
 //! - Adaptive Radix Trees for string keys
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::sync::Arc;
+use std::fs;
 use std::ops::Bound;
 use std::path::{Path, PathBuf};
-use std::fs;
+use std::sync::Arc;
 
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
@@ -133,7 +133,8 @@ impl BPlusTreeIndex {
         match node {
             BPlusNode::Leaf { keys, values, .. } => {
                 // Find insertion position
-                let pos = keys.binary_search_by(|k| self.compare_values(k, &key))
+                let pos = keys
+                    .binary_search_by(|k| self.compare_values(k, &key))
                     .unwrap_or_else(|i| i);
 
                 if pos < keys.len() && keys[pos] == key {
@@ -150,10 +151,15 @@ impl BPlusTreeIndex {
             }
             BPlusNode::Internal { keys, children } => {
                 // Find child to insert into
-                let pos = keys.binary_search_by(|k| self.compare_values(k, &key))
+                let pos = keys
+                    .binary_search_by(|k| self.compare_values(k, &key))
                     .unwrap_or_else(|i| i);
 
-                let child_idx = if pos < keys.len() { pos } else { children.len() - 1 };
+                let child_idx = if pos < keys.len() {
+                    pos
+                } else {
+                    children.len() - 1
+                };
 
                 // Recursively insert (drop lock before handling split)
                 let split = {
@@ -172,13 +178,24 @@ impl BPlusTreeIndex {
         }
     }
 
-    fn split_root(&self, _root_guard: parking_lot::lock_api::RwLockWriteGuard<parking_lot::RawRwLock, Option<BPlusNode>>) {
+    fn split_root(
+        &self,
+        _root_guard: parking_lot::lock_api::RwLockWriteGuard<
+            parking_lot::RawRwLock,
+            Option<BPlusNode>,
+        >,
+    ) {
         // Implementation would split the root and create new internal node
         // This is simplified for brevity
         debug!("Splitting B+ tree root");
     }
 
-    fn handle_child_split(&self, _keys: &mut Vec<Value>, _children: &mut Vec<Arc<RwLock<BPlusNode>>>, child_idx: usize) {
+    fn handle_child_split(
+        &self,
+        _keys: &mut Vec<Value>,
+        _children: &mut Vec<Arc<RwLock<BPlusNode>>>,
+        child_idx: usize,
+    ) {
         // Implementation would handle splitting of child nodes
         debug!("Handling child split at index {}", child_idx);
     }
@@ -204,9 +221,14 @@ impl BPlusTreeIndex {
                 }
             }
             BPlusNode::Internal { keys, children } => {
-                let pos = keys.binary_search_by(|k| self.compare_values(k, key))
+                let pos = keys
+                    .binary_search_by(|k| self.compare_values(k, key))
                     .unwrap_or_else(|i| i);
-                let child_idx = if pos < keys.len() { pos } else { children.len() - 1 };
+                let child_idx = if pos < keys.len() {
+                    pos
+                } else {
+                    children.len() - 1
+                };
 
                 let child = children[child_idx].read();
                 self.search_recursive(&child, key)
@@ -226,7 +248,13 @@ impl BPlusTreeIndex {
         Ok(results)
     }
 
-    fn range_search_recursive(&self, node: &BPlusNode, start: &Bound<Value>, end: &Bound<Value>, results: &mut Vec<u64>) -> Result<()> {
+    fn range_search_recursive(
+        &self,
+        node: &BPlusNode,
+        start: &Bound<Value>,
+        end: &Bound<Value>,
+        results: &mut Vec<u64>,
+    ) -> Result<()> {
         match node {
             BPlusNode::Leaf { keys, values, next } => {
                 // Scan leaf nodes for range
@@ -292,7 +320,13 @@ impl BPlusTreeIndex {
         true // Simplified
     }
 
-    fn should_traverse_child(&self, _keys: &[Value], _index: usize, _start: &Bound<Value>, _end: &Bound<Value>) -> bool {
+    fn should_traverse_child(
+        &self,
+        _keys: &[Value],
+        _index: usize,
+        _start: &Bound<Value>,
+        _end: &Bound<Value>,
+    ) -> bool {
         // Check if child might contain range values
         true // Simplified
     }
@@ -318,7 +352,9 @@ impl HashIndex {
     pub fn insert(&self, key: Value, record_id: u64) -> Result<()> {
         let key_str = serde_json::to_string(&key)?;
         let mut data = self.data.write();
-        data.entry(key_str).or_insert_with(HashSet::new).insert(record_id);
+        data.entry(key_str)
+            .or_insert_with(HashSet::new)
+            .insert(record_id);
         self.stats.write().inserts += 1;
         Ok(())
     }
@@ -326,7 +362,8 @@ impl HashIndex {
     pub fn search(&self, key: &Value) -> Result<Vec<u64>> {
         let key_str = serde_json::to_string(key)?;
         let data = self.data.read();
-        let results = data.get(&key_str)
+        let results = data
+            .get(&key_str)
             .map(|set| set.iter().cloned().collect())
             .unwrap_or_else(Vec::new);
         self.stats.write().searches += 1;
@@ -629,7 +666,10 @@ impl LSMTree {
         // Insert into memtable
         let mut memtable = self.memtable.write();
         let ordered_key = OrderedValue::from(key);
-        memtable.entry(ordered_key).or_insert_with(Vec::new).push(record_id);
+        memtable
+            .entry(ordered_key)
+            .or_insert_with(Vec::new)
+            .push(record_id);
 
         // Check if memtable is full and needs flushing
         if memtable.len() > 10000 {
@@ -759,7 +799,9 @@ impl IndexOperations for HashIndex {
 
     fn range_search(&self, _start: Bound<Value>, _end: Bound<Value>) -> Result<Vec<u64>> {
         // Hash indexes don't support range queries
-        Err(DriftError::Other("Hash indexes don't support range queries".to_string()))
+        Err(DriftError::Other(
+            "Hash indexes don't support range queries".to_string(),
+        ))
     }
 
     fn delete(&self, key: &Value, record_id: u64) -> Result<bool> {
@@ -832,19 +874,29 @@ mod tests {
         let index = BPlusTreeIndex::new(config);
 
         // Test insertions
-        index.insert(Value::Number(serde_json::Number::from(5)), 100).unwrap();
-        index.insert(Value::Number(serde_json::Number::from(3)), 101).unwrap();
-        index.insert(Value::Number(serde_json::Number::from(7)), 102).unwrap();
+        index
+            .insert(Value::Number(serde_json::Number::from(5)), 100)
+            .unwrap();
+        index
+            .insert(Value::Number(serde_json::Number::from(3)), 101)
+            .unwrap();
+        index
+            .insert(Value::Number(serde_json::Number::from(7)), 102)
+            .unwrap();
 
         // Test search
-        let results = index.search(&Value::Number(serde_json::Number::from(5))).unwrap();
+        let results = index
+            .search(&Value::Number(serde_json::Number::from(5)))
+            .unwrap();
         assert_eq!(results, vec![100]);
 
         // Test range search
-        let range_results = index.range_search(
-            Bound::Included(Value::Number(serde_json::Number::from(3))),
-            Bound::Included(Value::Number(serde_json::Number::from(7)))
-        ).unwrap();
+        let range_results = index
+            .range_search(
+                Bound::Included(Value::Number(serde_json::Number::from(3))),
+                Bound::Included(Value::Number(serde_json::Number::from(7))),
+            )
+            .unwrap();
         assert_eq!(range_results.len(), 3);
     }
 

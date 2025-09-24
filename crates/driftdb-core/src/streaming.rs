@@ -8,12 +8,12 @@
 //! - Automatic reconnection
 //! - Stream aggregations and windowing
 
+use parking_lot::RwLock;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
-use parking_lot::RwLock;
 use tokio::sync::{broadcast, mpsc, Mutex};
-use serde::{Serialize, Deserialize};
-use serde_json::Value;
 use uuid::Uuid;
 
 use crate::errors::Result;
@@ -45,9 +45,7 @@ pub enum StreamType {
         refresh_interval_ms: Option<u64>,
     },
     /// Event stream - filtered events
-    EventStream {
-        event_types: Vec<EventType>,
-    },
+    EventStream { event_types: Vec<EventType> },
     /// Aggregation stream - windowed aggregates
     Aggregation {
         table: String,
@@ -246,7 +244,9 @@ impl StreamManager {
         let (tx, rx) = mpsc::channel(options.buffer_size);
 
         // Store subscription
-        self.subscriptions.write().insert(subscription_id.clone(), subscription.clone());
+        self.subscriptions
+            .write()
+            .insert(subscription_id.clone(), subscription.clone());
 
         // Create or update client connection
         let mut clients = self.clients.write();
@@ -256,15 +256,18 @@ impl StreamManager {
             let mut subscriptions = HashSet::new();
             subscriptions.insert(subscription_id.clone());
 
-            clients.insert(client_id.clone(), ClientConnection {
-                id: client_id,
-                sender: tx.clone(),
-                subscriptions,
-                connected_at: std::time::SystemTime::now(),
-                last_activity: std::time::SystemTime::now(),
-                bytes_sent: 0,
-                events_sent: 0,
-            });
+            clients.insert(
+                client_id.clone(),
+                ClientConnection {
+                    id: client_id,
+                    sender: tx.clone(),
+                    subscriptions,
+                    connected_at: std::time::SystemTime::now(),
+                    last_activity: std::time::SystemTime::now(),
+                    bytes_sent: 0,
+                    events_sent: 0,
+                },
+            );
         }
 
         // Create stream processor
@@ -275,10 +278,13 @@ impl StreamManager {
             last_sequence: 0,
         };
 
-        self.processors.write().insert(subscription_id.clone(), processor);
+        self.processors
+            .write()
+            .insert(subscription_id.clone(), processor);
 
         // Start processing based on stream type
-        self.start_stream_processor(subscription_id.clone(), stream_type).await?;
+        self.start_stream_processor(subscription_id.clone(), stream_type)
+            .await?;
 
         // Update statistics
         let mut stats = self.stats.write();
@@ -289,19 +295,43 @@ impl StreamManager {
     }
 
     /// Start stream processor for specific stream type
-    async fn start_stream_processor(&self, subscription_id: String, stream_type: StreamType) -> Result<()> {
+    async fn start_stream_processor(
+        &self,
+        subscription_id: String,
+        stream_type: StreamType,
+    ) -> Result<()> {
         match stream_type {
-            StreamType::CDC { table, include_before, include_after } => {
-                self.start_cdc_processor(subscription_id, table, include_before, include_after).await
+            StreamType::CDC {
+                table,
+                include_before,
+                include_after,
+            } => {
+                self.start_cdc_processor(subscription_id, table, include_before, include_after)
+                    .await
             }
-            StreamType::LiveQuery { query, refresh_interval_ms } => {
-                self.start_live_query_processor(subscription_id, query, refresh_interval_ms).await
+            StreamType::LiveQuery {
+                query,
+                refresh_interval_ms,
+            } => {
+                self.start_live_query_processor(subscription_id, query, refresh_interval_ms)
+                    .await
             }
             StreamType::EventStream { event_types } => {
-                self.start_event_stream_processor(subscription_id, event_types).await
+                self.start_event_stream_processor(subscription_id, event_types)
+                    .await
             }
-            StreamType::Aggregation { table, aggregate_functions, window } => {
-                self.start_aggregation_processor(subscription_id, table, aggregate_functions, window).await
+            StreamType::Aggregation {
+                table,
+                aggregate_functions,
+                window,
+            } => {
+                self.start_aggregation_processor(
+                    subscription_id,
+                    table,
+                    aggregate_functions,
+                    window,
+                )
+                .await
             }
         }
     }
@@ -415,7 +445,8 @@ impl StreamManager {
         let clients = self.clients.clone();
 
         tokio::spawn(async move {
-            let mut interval_timer = tokio::time::interval(tokio::time::Duration::from_millis(interval));
+            let mut interval_timer =
+                tokio::time::interval(tokio::time::Duration::from_millis(interval));
 
             loop {
                 interval_timer.tick().await;
@@ -551,8 +582,8 @@ impl StreamManager {
 // WebSocket handler integration
 pub mod websocket {
     use super::*;
+    use futures_util::{SinkExt, StreamExt};
     use tokio_tungstenite::tungstenite::Message;
-    use futures_util::{StreamExt, SinkExt};
 
     /// Handle WebSocket connection for streaming
     pub async fn handle_connection(
@@ -570,29 +601,38 @@ pub mod websocket {
                     // Parse subscription request
                     if let Ok(request) = serde_json::from_str::<SubscriptionRequest>(&text) {
                         // Create subscription
-                        match stream_manager.subscribe(
-                            request.stream_type,
-                            request.filters,
-                            request.options,
-                            client_id.clone(),
-                        ).await {
+                        match stream_manager
+                            .subscribe(
+                                request.stream_type,
+                                request.filters,
+                                request.options,
+                                client_id.clone(),
+                            )
+                            .await
+                        {
                             Ok((subscription_id, mut receiver)) => {
                                 // Send subscription confirmation
                                 let response = SubscriptionResponse {
                                     subscription_id,
                                     status: "subscribed".to_string(),
                                 };
-                                let _ = tx.lock().await.send(Message::Text(
-                                    serde_json::to_string(&response).unwrap()
-                                )).await;
+                                let _ = tx
+                                    .lock()
+                                    .await
+                                    .send(Message::Text(serde_json::to_string(&response).unwrap()))
+                                    .await;
 
                                 // Forward stream events to WebSocket
                                 let tx_clone = tx.clone();
                                 tokio::spawn(async move {
                                     while let Some(event) = receiver.recv().await {
-                                        let _ = tx_clone.lock().await.send(Message::Text(
-                                            serde_json::to_string(&event).unwrap()
-                                        )).await;
+                                        let _ = tx_clone
+                                            .lock()
+                                            .await
+                                            .send(Message::Text(
+                                                serde_json::to_string(&event).unwrap(),
+                                            ))
+                                            .await;
                                     }
                                 });
                             }
@@ -602,14 +642,16 @@ pub mod websocket {
                                     sequence: 0,
                                     timestamp: 0,
                                     event_type: StreamEventType::Error {
-                                        message: e.to_string()
+                                        message: e.to_string(),
                                     },
                                     data: Value::Null,
                                     metadata: None,
                                 };
-                                let _ = tx.lock().await.send(Message::Text(
-                                    serde_json::to_string(&error).unwrap()
-                                )).await;
+                                let _ = tx
+                                    .lock()
+                                    .await
+                                    .send(Message::Text(serde_json::to_string(&error).unwrap()))
+                                    .await;
                             }
                         }
                     }
@@ -664,12 +706,10 @@ mod tests {
             auto_reconnect: true,
         };
 
-        let (subscription_id, _receiver) = manager.subscribe(
-            stream_type,
-            filters,
-            options,
-            "client123".to_string(),
-        ).await.unwrap();
+        let (subscription_id, _receiver) = manager
+            .subscribe(stream_type, filters, options, "client123".to_string())
+            .await
+            .unwrap();
 
         assert!(!subscription_id.is_empty());
 

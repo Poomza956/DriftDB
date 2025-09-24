@@ -1,6 +1,6 @@
-use tempfile::TempDir;
-use driftdb_core::storage::TableStorage;
 use driftdb_core::schema::Schema;
+use driftdb_core::storage::TableStorage;
+use tempfile::TempDir;
 
 #[test]
 fn test_exclusive_table_lock() {

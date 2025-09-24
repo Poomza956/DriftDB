@@ -1,9 +1,9 @@
-use tempfile::TempDir;
 use serde_json::json;
+use tempfile::TempDir;
 
-use driftdb_core::{Engine, Query, QueryResult};
-use driftdb_core::migration::{MigrationManager, Migration, MigrationType, Version};
+use driftdb_core::migration::{Migration, MigrationManager, MigrationType, Version};
 use driftdb_core::schema::ColumnDef;
+use driftdb_core::{Engine, Query, QueryResult};
 
 #[test]
 fn test_migration_rollback_on_error() {
@@ -11,20 +11,24 @@ fn test_migration_rollback_on_error() {
     let mut engine = Engine::init(temp_dir.path()).unwrap();
 
     // Create initial table
-    engine.execute_query(Query::CreateTable {
-        name: "users".to_string(),
-        primary_key: "id".to_string(),
-        indexed_columns: vec![],
-    }).unwrap();
+    engine
+        .execute_query(Query::CreateTable {
+            name: "users".to_string(),
+            primary_key: "id".to_string(),
+            indexed_columns: vec![],
+        })
+        .unwrap();
 
     // Insert initial data
-    engine.execute_query(Query::Insert {
-        table: "users".to_string(),
-        data: json!({
-            "id": "user1",
-            "name": "Alice"
-        }),
-    }).unwrap();
+    engine
+        .execute_query(Query::Insert {
+            table: "users".to_string(),
+            data: json!({
+                "id": "user1",
+                "name": "Alice"
+            }),
+        })
+        .unwrap();
 
     // Create a migration that will fail (trying to rename a non-existent column)
     let migration_mgr = MigrationManager::new(temp_dir.path()).unwrap();
@@ -49,12 +53,14 @@ fn test_migration_rollback_on_error() {
     assert!(result.unwrap_err().to_string().contains("not found"));
 
     // Verify that the data is still intact after the failed migration
-    let result = engine.execute_query(Query::Select {
-        table: "users".to_string(),
-        conditions: vec![],
-        as_of: None,
-        limit: None,
-    }).unwrap();
+    let result = engine
+        .execute_query(Query::Select {
+            table: "users".to_string(),
+            conditions: vec![],
+            as_of: None,
+            limit: None,
+        })
+        .unwrap();
 
     match result {
         QueryResult::Rows { data } => {
@@ -72,22 +78,26 @@ fn test_multiple_migration_steps_atomicity() {
     let mut engine = Engine::init(temp_dir.path()).unwrap();
 
     // Create initial table
-    engine.execute_query(Query::CreateTable {
-        name: "products".to_string(),
-        primary_key: "id".to_string(),
-        indexed_columns: vec![],
-    }).unwrap();
+    engine
+        .execute_query(Query::CreateTable {
+            name: "products".to_string(),
+            primary_key: "id".to_string(),
+            indexed_columns: vec![],
+        })
+        .unwrap();
 
     // Insert test data
     for i in 1..=5 {
-        engine.execute_query(Query::Insert {
-            table: "products".to_string(),
-            data: json!({
-                "id": format!("prod{}", i),
-                "name": format!("Product {}", i),
-                "price": i * 10
-            }),
-        }).unwrap();
+        engine
+            .execute_query(Query::Insert {
+                table: "products".to_string(),
+                data: json!({
+                    "id": format!("prod{}", i),
+                    "name": format!("Product {}", i),
+                    "price": i * 10
+                }),
+            })
+            .unwrap();
     }
 
     // Create a migration that adds a column with default value
@@ -115,12 +125,14 @@ fn test_multiple_migration_steps_atomicity() {
     assert!(result.is_ok());
 
     // Verify all records have the new column
-    let result = engine.execute_query(Query::Select {
-        table: "products".to_string(),
-        conditions: vec![],
-        as_of: None,
-        limit: None,
-    }).unwrap();
+    let result = engine
+        .execute_query(Query::Select {
+            table: "products".to_string(),
+            conditions: vec![],
+            as_of: None,
+            limit: None,
+        })
+        .unwrap();
 
     match result {
         QueryResult::Rows { data } => {
@@ -139,21 +151,25 @@ fn test_migration_transaction_isolation() {
     let mut engine = Engine::init(temp_dir.path()).unwrap();
 
     // Create initial table
-    engine.execute_query(Query::CreateTable {
-        name: "inventory".to_string(),
-        primary_key: "id".to_string(),
-        indexed_columns: vec![],
-    }).unwrap();
+    engine
+        .execute_query(Query::CreateTable {
+            name: "inventory".to_string(),
+            primary_key: "id".to_string(),
+            indexed_columns: vec![],
+        })
+        .unwrap();
 
     // Insert test data
-    engine.execute_query(Query::Insert {
-        table: "inventory".to_string(),
-        data: json!({
-            "id": "item1",
-            "name": "Widget",
-            "stock": 100
-        }),
-    }).unwrap();
+    engine
+        .execute_query(Query::Insert {
+            table: "inventory".to_string(),
+            data: json!({
+                "id": "item1",
+                "name": "Widget",
+                "stock": 100
+            }),
+        })
+        .unwrap();
 
     // Start a migration to add a column
     let migration_mgr = MigrationManager::new(temp_dir.path()).unwrap();
@@ -181,12 +197,14 @@ fn test_migration_transaction_isolation() {
     assert!(result.is_ok());
 
     // Verify the migration was applied successfully
-    let result = engine.execute_query(Query::Select {
-        table: "inventory".to_string(),
-        conditions: vec![],
-        as_of: None,
-        limit: None,
-    }).unwrap();
+    let result = engine
+        .execute_query(Query::Select {
+            table: "inventory".to_string(),
+            conditions: vec![],
+            as_of: None,
+            limit: None,
+        })
+        .unwrap();
 
     match result {
         QueryResult::Rows { data } => {

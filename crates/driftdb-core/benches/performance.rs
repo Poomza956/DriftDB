@@ -9,8 +9,8 @@
 //! - Memory usage
 
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
+use driftdb_core::query::{AsOf, Query, WhereCondition};
 use driftdb_core::{Engine, Event, EventType, Schema};
-use driftdb_core::query::{Query, WhereCondition, AsOf};
 use serde_json::json;
 use std::path::PathBuf;
 use tempfile::TempDir;
@@ -249,9 +249,9 @@ fn benchmark_transactions(c: &mut Criterion) {
 
         b.iter(|| {
             // Begin transaction
-            let txn_id = engine.begin_transaction(
-                driftdb_core::transaction::IsolationLevel::ReadCommitted
-            ).unwrap();
+            let txn_id = engine
+                .begin_transaction(driftdb_core::transaction::IsolationLevel::ReadCommitted)
+                .unwrap();
 
             // Perform operations
             for _ in 0..10 {
@@ -271,9 +271,9 @@ fn benchmark_transactions(c: &mut Criterion) {
 
         b.iter(|| {
             // Begin transaction
-            let txn_id = engine.begin_transaction(
-                driftdb_core::transaction::IsolationLevel::ReadCommitted
-            ).unwrap();
+            let txn_id = engine
+                .begin_transaction(driftdb_core::transaction::IsolationLevel::ReadCommitted)
+                .unwrap();
 
             // Perform operations
             for _ in 0..10 {

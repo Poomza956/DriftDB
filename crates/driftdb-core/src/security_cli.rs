@@ -1,5 +1,5 @@
-use crate::errors::{DriftError, Result};
 use crate::audit::{AuditConfig, ExportFormat};
+use crate::errors::{DriftError, Result};
 use crate::security_monitor::SecurityConfig;
 use clap::{Parser, Subcommand};
 use serde_json;
@@ -598,7 +598,7 @@ impl SecurityCli {
                 rotation_size,
                 retention_days,
                 compression,
-                encryption
+                encryption,
             } => {
                 let config = AuditConfig {
                     enabled: true,
@@ -624,7 +624,10 @@ impl SecurityCli {
                 // Here we would open the engine and enable auditing
                 // For now, just show the configuration
                 if self.verbose {
-                    println!("Audit configuration: {}", serde_json::to_string_pretty(&config)?);
+                    println!(
+                        "Audit configuration: {}",
+                        serde_json::to_string_pretty(&config)?
+                    );
                 }
 
                 println!("✓ Audit logging enabled successfully");
@@ -642,7 +645,7 @@ impl SecurityCli {
                 user,
                 table,
                 action,
-                limit
+                limit,
             } => {
                 println!("Querying audit logs...");
                 println!("Filters:");
@@ -667,8 +670,16 @@ impl SecurityCli {
                 println!("No audit events found matching criteria");
             }
 
-            AuditCommand::Export { output, format, start_time: _start_time, end_time: _end_time } => {
-                println!("Exporting audit logs to {:?} in {} format...", output, format);
+            AuditCommand::Export {
+                output,
+                format,
+                start_time: _start_time,
+                end_time: _end_time,
+            } => {
+                println!(
+                    "Exporting audit logs to {:?} in {} format...",
+                    output, format
+                );
 
                 let _export_format = match format.as_str() {
                     "json" => ExportFormat::Json,
@@ -704,7 +715,11 @@ impl SecurityCli {
 
     fn handle_monitor_command(&self, action: &MonitorCommand) -> Result<()> {
         match action {
-            MonitorCommand::Enable { config, anomaly_detection, auto_block } => {
+            MonitorCommand::Enable {
+                config,
+                anomaly_detection,
+                auto_block,
+            } => {
                 println!("Enabling security monitoring...");
 
                 let security_config = if let Some(config_path) = config {
@@ -725,7 +740,10 @@ impl SecurityCli {
                 println!("  Auto threat blocking: {}", auto_block);
 
                 if self.verbose {
-                    println!("Full configuration: {}", serde_json::to_string_pretty(&security_config)?);
+                    println!(
+                        "Full configuration: {}",
+                        serde_json::to_string_pretty(&security_config)?
+                    );
                 }
 
                 println!("✓ Security monitoring enabled");
@@ -747,7 +765,10 @@ impl SecurityCli {
                 println!("Blocked IPs: 0");
             }
 
-            MonitorCommand::Threats { min_severity, limit } => {
+            MonitorCommand::Threats {
+                min_severity,
+                limit,
+            } => {
                 println!("Active Security Threats");
                 println!("=======================");
                 if let Some(severity) = min_severity {
@@ -757,7 +778,10 @@ impl SecurityCli {
                 println!("\nNo active threats detected");
             }
 
-            MonitorCommand::Anomalies { limit, min_severity } => {
+            MonitorCommand::Anomalies {
+                limit,
+                min_severity,
+            } => {
                 println!("Recent Security Anomalies");
                 println!("=========================");
                 if let Some(severity) = min_severity {
@@ -779,7 +803,11 @@ impl SecurityCli {
                 println!("Blocked IPs: 0");
             }
 
-            MonitorCommand::BlockIp { ip, duration, reason } => {
+            MonitorCommand::BlockIp {
+                ip,
+                duration,
+                reason,
+            } => {
                 println!("Blocking IP address: {}", ip);
                 if *duration > 0 {
                     println!("Duration: {} minutes", duration);
@@ -809,7 +837,10 @@ impl SecurityCli {
     fn handle_compliance_command(&self, action: &ComplianceCommand) -> Result<()> {
         match action {
             ComplianceCommand::Enable { frameworks } => {
-                println!("Enabling compliance monitoring for frameworks: {:?}", frameworks);
+                println!(
+                    "Enabling compliance monitoring for frameworks: {:?}",
+                    frameworks
+                );
                 for framework in frameworks {
                     match framework.to_lowercase().as_str() {
                         "gdpr" => println!("  ✓ GDPR compliance monitoring enabled"),
@@ -847,7 +878,11 @@ impl SecurityCli {
                 }
             }
 
-            ComplianceCommand::Violations { framework, min_severity, limit } => {
+            ComplianceCommand::Violations {
+                framework,
+                min_severity,
+                limit,
+            } => {
                 println!("Compliance Violations");
                 println!("====================");
                 if let Some(fw) = framework {
@@ -860,15 +895,26 @@ impl SecurityCli {
                 println!("\nNo compliance violations found");
             }
 
-            ComplianceCommand::Report { framework, output, format, period } => {
-                println!("Generating {} compliance report for {} days...",
-                    framework.to_uppercase(), period);
+            ComplianceCommand::Report {
+                framework,
+                output,
+                format,
+                period,
+            } => {
+                println!(
+                    "Generating {} compliance report for {} days...",
+                    framework.to_uppercase(),
+                    period
+                );
                 println!("Output: {:?}", output);
                 println!("Format: {}", format);
                 println!("✓ Compliance report generated");
             }
 
-            ComplianceCommand::Scan { framework, auto_fix } => {
+            ComplianceCommand::Scan {
+                framework,
+                auto_fix,
+            } => {
                 if let Some(fw) = framework {
                     println!("Running compliance scan for {}...", fw.to_uppercase());
                 } else {
@@ -887,7 +933,12 @@ impl SecurityCli {
 
     fn handle_alert_command(&self, action: &AlertCommand) -> Result<()> {
         match action {
-            AlertCommand::List { alert_type, min_severity, unacknowledged, limit } => {
+            AlertCommand::List {
+                alert_type,
+                min_severity,
+                unacknowledged,
+                limit,
+            } => {
                 println!("Security Alerts");
                 println!("===============");
                 if let Some(atype) = alert_type {
@@ -903,7 +954,11 @@ impl SecurityCli {
                 println!("\nNo active alerts");
             }
 
-            AlertCommand::Acknowledge { alert_id, user, notes } => {
+            AlertCommand::Acknowledge {
+                alert_id,
+                user,
+                notes,
+            } => {
                 println!("Acknowledging alert: {}", alert_id);
                 println!("User: {}", user);
                 if let Some(notes) = notes {
@@ -912,7 +967,11 @@ impl SecurityCli {
                 println!("✓ Alert acknowledged");
             }
 
-            AlertCommand::Resolve { alert_id, user, notes } => {
+            AlertCommand::Resolve {
+                alert_id,
+                user,
+                notes,
+            } => {
                 println!("Resolving alert: {}", alert_id);
                 println!("User: {}", user);
                 println!("Resolution notes: {}", notes);
@@ -930,7 +989,12 @@ impl SecurityCli {
                 println!("High severity alerts: 0");
             }
 
-            AlertCommand::Configure { notification_type, endpoint, min_severity, enable } => {
+            AlertCommand::Configure {
+                notification_type,
+                endpoint,
+                min_severity,
+                enable,
+            } => {
                 println!("Configuring alert notification:");
                 println!("  Type: {}", notification_type);
                 println!("  Endpoint: {}", endpoint);
@@ -949,7 +1013,11 @@ impl SecurityCli {
 
     fn handle_user_command(&self, action: &UserCommand) -> Result<()> {
         match action {
-            UserCommand::Activity { user, period, suspicious_only } => {
+            UserCommand::Activity {
+                user,
+                period,
+                suspicious_only,
+            } => {
                 if let Some(username) = user {
                     println!("User Activity Analysis for: {}", username);
                 } else {
@@ -980,7 +1048,11 @@ impl SecurityCli {
                 println!("✓ User baseline updated");
             }
 
-            UserCommand::Sessions { user, high_risk, min_risk } => {
+            UserCommand::Sessions {
+                user,
+                high_risk,
+                min_risk,
+            } => {
                 println!("Active Sessions");
                 println!("===============");
                 if let Some(username) = user {
@@ -995,7 +1067,11 @@ impl SecurityCli {
                 println!("\nNo active sessions");
             }
 
-            UserCommand::TerminateSessions { user, reason, force } => {
+            UserCommand::TerminateSessions {
+                user,
+                reason,
+                force,
+            } => {
                 println!("Terminating sessions for user: {}", user);
                 println!("Reason: {}", reason);
                 if !force {
@@ -1036,12 +1112,24 @@ impl SecurityCli {
 
                 println!("\nSecurity Monitoring:");
                 println!("  Enabled: {}", security_config.enabled);
-                println!("  Anomaly detection: {}", security_config.anomaly_detection_enabled);
-                println!("  Auto threat blocking: {}", security_config.auto_block_threats);
-                println!("  Brute force threshold: {}", security_config.brute_force_threshold);
+                println!(
+                    "  Anomaly detection: {}",
+                    security_config.anomaly_detection_enabled
+                );
+                println!(
+                    "  Auto threat blocking: {}",
+                    security_config.auto_block_threats
+                );
+                println!(
+                    "  Brute force threshold: {}",
+                    security_config.brute_force_threshold
+                );
             }
 
-            ConfigCommand::Update { config_file, validate_only } => {
+            ConfigCommand::Update {
+                config_file,
+                validate_only,
+            } => {
                 println!("Updating security configuration from: {:?}", config_file);
                 if *validate_only {
                     println!("Validation mode - configuration will not be applied");
@@ -1084,7 +1172,12 @@ impl SecurityCli {
 
     fn handle_report_command(&self, action: &ReportCommand) -> Result<()> {
         match action {
-            ReportCommand::Summary { output, format, period, detailed } => {
+            ReportCommand::Summary {
+                output,
+                format,
+                period,
+                detailed,
+            } => {
                 println!("Generating security summary report...");
                 println!("Period: {} days", period);
                 println!("Format: {}", format);
@@ -1095,7 +1188,11 @@ impl SecurityCli {
                 println!("✓ Security summary report generated");
             }
 
-            ReportCommand::ThreatIntel { output, format, period } => {
+            ReportCommand::ThreatIntel {
+                output,
+                format,
+                period,
+            } => {
                 println!("Generating threat intelligence report...");
                 println!("Analysis period: {} days", period);
                 println!("Format: {}", format);
@@ -1103,7 +1200,12 @@ impl SecurityCli {
                 println!("✓ Threat intelligence report generated");
             }
 
-            ReportCommand::UserBehavior { output, user, period, format } => {
+            ReportCommand::UserBehavior {
+                output,
+                user,
+                period,
+                format,
+            } => {
                 if let Some(username) = user {
                     println!("Generating user behavior report for: {}", username);
                 } else {
@@ -1115,7 +1217,13 @@ impl SecurityCli {
                 println!("✓ User behavior report generated");
             }
 
-            ReportCommand::DataAccess { output, table, user, period, large_access_only } => {
+            ReportCommand::DataAccess {
+                output,
+                table,
+                user,
+                period,
+                large_access_only,
+            } => {
                 println!("Generating data access report...");
                 if let Some(table_name) = table {
                     println!("Table filter: {}", table_name);
@@ -1131,7 +1239,11 @@ impl SecurityCli {
                 println!("✓ Data access report generated");
             }
 
-            ReportCommand::Executive { output, period, trends } => {
+            ReportCommand::Executive {
+                output,
+                period,
+                trends,
+            } => {
                 println!("Generating executive security dashboard...");
                 println!("Period: {} days", period);
                 if *trends {

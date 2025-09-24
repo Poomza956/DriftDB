@@ -3,10 +3,10 @@ use std::io::{BufReader, BufWriter, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use crate::encryption::EncryptionService;
 use crate::errors::Result;
 use crate::events::Event;
 use crate::storage::frame::{Frame, FramedRecord};
-use crate::encryption::EncryptionService;
 
 pub struct Segment {
     path: PathBuf,
@@ -23,7 +23,11 @@ impl Segment {
         }
     }
 
-    pub fn new_with_encryption(path: PathBuf, id: u64, encryption_service: Arc<EncryptionService>) -> Self {
+    pub fn new_with_encryption(
+        path: PathBuf,
+        id: u64,
+        encryption_service: Arc<EncryptionService>,
+    ) -> Self {
         Self {
             path,
             id,
@@ -40,7 +44,11 @@ impl Segment {
             .write(true)
             .truncate(true)
             .open(&self.path)?;
-        Ok(SegmentWriter::new(file, self.encryption_service.clone(), self.id))
+        Ok(SegmentWriter::new(
+            file,
+            self.encryption_service.clone(),
+            self.id,
+        ))
     }
 
     pub fn open_writer(&self) -> Result<SegmentWriter> {
@@ -48,12 +56,20 @@ impl Segment {
             .create(true)
             .append(true)
             .open(&self.path)?;
-        Ok(SegmentWriter::new(file, self.encryption_service.clone(), self.id))
+        Ok(SegmentWriter::new(
+            file,
+            self.encryption_service.clone(),
+            self.id,
+        ))
     }
 
     pub fn open_reader(&self) -> Result<SegmentReader> {
         let file = File::open(&self.path)?;
-        Ok(SegmentReader::new(file, self.encryption_service.clone(), self.id))
+        Ok(SegmentReader::new(
+            file,
+            self.encryption_service.clone(),
+            self.id,
+        ))
     }
 
     pub fn size(&self) -> Result<u64> {
@@ -87,7 +103,11 @@ pub struct SegmentWriter {
 }
 
 impl SegmentWriter {
-    fn new(file: File, encryption_service: Option<Arc<EncryptionService>>, segment_id: u64) -> Self {
+    fn new(
+        file: File,
+        encryption_service: Option<Arc<EncryptionService>>,
+        segment_id: u64,
+    ) -> Self {
         let pos = file.metadata().map(|m| m.len()).unwrap_or(0);
         Self {
             writer: BufWriter::new(file),
@@ -141,7 +161,11 @@ pub struct SegmentReader {
 }
 
 impl SegmentReader {
-    fn new(file: File, encryption_service: Option<Arc<EncryptionService>>, segment_id: u64) -> Self {
+    fn new(
+        file: File,
+        encryption_service: Option<Arc<EncryptionService>>,
+        segment_id: u64,
+    ) -> Self {
         Self {
             reader: BufReader::new(file),
             encryption_service,

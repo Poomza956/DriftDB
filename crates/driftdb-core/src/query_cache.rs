@@ -1,11 +1,11 @@
 use crate::errors::{DriftError, Result};
-use serde::{Serialize, Deserialize};
+use lru::LruCache;
+use parking_lot::RwLock;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
-use parking_lot::RwLock;
-use lru::LruCache;
 
 /// Advanced query result caching system
 pub struct QueryCacheManager {
@@ -46,19 +46,19 @@ impl Default for CacheConfig {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CacheStrategy {
-    LRU,    // Least Recently Used
-    LFU,    // Least Frequently Used
-    FIFO,   // First In First Out
-    ARC,    // Adaptive Replacement Cache
-    SLRU,   // Segmented LRU
+    LRU,  // Least Recently Used
+    LFU,  // Least Frequently Used
+    FIFO, // First In First Out
+    ARC,  // Adaptive Replacement Cache
+    SLRU, // Segmented LRU
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum InvalidationStrategy {
-    Immediate,      // Invalidate immediately on write
-    Lazy,          // Mark stale, refresh on next access
-    TimeToLive,    // TTL-based expiration only
-    Smart,         // Intelligent invalidation based on query patterns
+    Immediate,  // Invalidate immediately on write
+    Lazy,       // Mark stale, refresh on next access
+    TimeToLive, // TTL-based expiration only
+    Smart,      // Intelligent invalidation based on query patterns
 }
 
 /// Cache storage implementation
@@ -215,7 +215,9 @@ impl QueryCacheManager {
             }
 
             // Check staleness
-            if entry.metadata.is_stale && self.config.invalidation_strategy == InvalidationStrategy::Lazy {
+            if entry.metadata.is_stale
+                && self.config.invalidation_strategy == InvalidationStrategy::Lazy
+            {
                 cache.remove(&key);
                 stats.cache_misses += 1;
                 stats.invalidations += 1;
@@ -388,9 +390,9 @@ impl QueryCacheManager {
     fn should_cache(&self, query: &str, execution_time_ms: u64) -> bool {
         // Simple heuristic: cache queries that take more than 100ms
         // In production, would use more sophisticated prediction
-        execution_time_ms > 100 ||
-        query.to_lowercase().contains("group by") ||
-        query.to_lowercase().contains("join")
+        execution_time_ms > 100
+            || query.to_lowercase().contains("group by")
+            || query.to_lowercase().contains("join")
     }
 
     fn estimate_size(&self, result: &QueryResult) -> usize {
@@ -449,7 +451,8 @@ impl QueryCacheManager {
             max_entries: self.config.max_entries,
             memory_usage_mb: cache.memory_usage / (1024 * 1024),
             max_memory_mb: self.config.max_memory_mb,
-            utilization_percent: (cache.entry_count() as f64 / self.config.max_entries as f64) * 100.0,
+            utilization_percent: (cache.entry_count() as f64 / self.config.max_entries as f64)
+                * 100.0,
         }
     }
 
@@ -458,8 +461,8 @@ impl QueryCacheManager {
         let stats = self.stats.read();
 
         let effectiveness_score = if stats.total_requests > 0 {
-            (stats.hit_ratio * 100.0) *
-            (stats.total_computation_saved_ms as f64 / stats.total_requests as f64)
+            (stats.hit_ratio * 100.0)
+                * (stats.total_computation_saved_ms as f64 / stats.total_requests as f64)
         } else {
             0.0
         };
@@ -484,7 +487,8 @@ impl QueryCacheManager {
             recommendations.push("Cache thrashing detected - increase memory limit".to_string());
         }
 
-        if stats.avg_entry_size > 1024 * 1024 { // 1MB
+        if stats.avg_entry_size > 1024 * 1024 {
+            // 1MB
             recommendations.push("Large cache entries detected - consider compression".to_string());
         }
 
@@ -518,7 +522,7 @@ impl Cache {
                 frequency_map: HashMap::new(),
                 segment_hot: None,
                 segment_cold: None,
-            }
+            },
         }
     }
 
@@ -597,7 +601,8 @@ impl Cache {
                     return self.entries.pop_lru();
                 }
 
-                let min_key = self.frequency_map
+                let min_key = self
+                    .frequency_map
                     .iter()
                     .min_by_key(|(_, freq)| *freq)
                     .map(|(k, _)| k.clone())?;
@@ -637,15 +642,15 @@ impl Cache {
     }
 
     fn is_empty(&self) -> bool {
-        self.entries.is_empty() &&
-        self.segment_hot.as_ref().map_or(true, |h| h.is_empty()) &&
-        self.segment_cold.as_ref().map_or(true, |c| c.is_empty())
+        self.entries.is_empty()
+            && self.segment_hot.as_ref().map_or(true, |h| h.is_empty())
+            && self.segment_cold.as_ref().map_or(true, |c| c.is_empty())
     }
 
     fn entry_count(&self) -> usize {
-        self.entries.len() +
-        self.segment_hot.as_ref().map_or(0, |h| h.len()) +
-        self.segment_cold.as_ref().map_or(0, |c| c.len())
+        self.entries.len()
+            + self.segment_hot.as_ref().map_or(0, |h| h.len())
+            + self.segment_cold.as_ref().map_or(0, |c| c.len())
     }
 }
 
@@ -674,7 +679,8 @@ impl InvalidationManager {
     fn get_dependent_keys(&self, table: &str) -> Result<Vec<CacheKey>> {
         let deps = self.table_dependencies.read();
 
-        Ok(deps.get(table)
+        Ok(deps
+            .get(table)
             .map(|keys| keys.iter().cloned().collect())
             .unwrap_or_default())
     }
@@ -732,7 +738,9 @@ mod tests {
 
         let result = QueryResult {
             rows: vec![
-                vec![("id".to_string(), serde_json::Value::Number(1.into()))].into_iter().collect(),
+                vec![("id".to_string(), serde_json::Value::Number(1.into()))]
+                    .into_iter()
+                    .collect(),
             ],
             row_count: 1,
             execution_time_ms: 150,
@@ -740,21 +748,19 @@ mod tests {
         };
 
         // Put in cache
-        manager.put(
-            "SELECT * FROM users WHERE id = 1",
-            &["1".to_string()],
-            None,
-            result.clone(),
-            150,
-            vec!["users".to_string()],
-        ).unwrap();
+        manager
+            .put(
+                "SELECT * FROM users WHERE id = 1",
+                &["1".to_string()],
+                None,
+                result.clone(),
+                150,
+                vec!["users".to_string()],
+            )
+            .unwrap();
 
         // Get from cache
-        let cached = manager.get(
-            "SELECT * FROM users WHERE id = 1",
-            &["1".to_string()],
-            None,
-        );
+        let cached = manager.get("SELECT * FROM users WHERE id = 1", &["1".to_string()], None);
 
         assert!(cached.is_some());
         assert!(cached.unwrap().cached);
@@ -772,23 +778,29 @@ mod tests {
         };
 
         // Cache a query
-        manager.put(
-            "SELECT COUNT(*) FROM orders",
-            &[],
-            None,
-            result,
-            100,
-            vec!["orders".to_string()],
-        ).unwrap();
+        manager
+            .put(
+                "SELECT COUNT(*) FROM orders",
+                &[],
+                None,
+                result,
+                100,
+                vec!["orders".to_string()],
+            )
+            .unwrap();
 
         // Should be in cache
-        assert!(manager.get("SELECT COUNT(*) FROM orders", &[], None).is_some());
+        assert!(manager
+            .get("SELECT COUNT(*) FROM orders", &[], None)
+            .is_some());
 
         // Invalidate table
         manager.invalidate_table("orders").unwrap();
 
         // Should not be in cache after invalidation
-        assert!(manager.get("SELECT COUNT(*) FROM orders", &[], None).is_none());
+        assert!(manager
+            .get("SELECT COUNT(*) FROM orders", &[], None)
+            .is_none());
     }
 
     #[test]
@@ -805,14 +817,16 @@ mod tests {
             cached: false,
         };
 
-        manager.put(
-            "SELECT * FROM temp",
-            &[],
-            None,
-            result,
-            100,
-            vec!["temp".to_string()],
-        ).unwrap();
+        manager
+            .put(
+                "SELECT * FROM temp",
+                &[],
+                None,
+                result,
+                100,
+                vec!["temp".to_string()],
+            )
+            .unwrap();
 
         // Should be expired immediately
         std::thread::sleep(Duration::from_millis(10));

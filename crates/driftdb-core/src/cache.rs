@@ -7,14 +7,14 @@
 //! - Query fingerprinting for cache keys
 //! - Cache statistics and monitoring
 
+use std::hash::Hash;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use std::hash::Hash;
 
-use parking_lot::RwLock;
 use lru::LruCache;
-use sha2::{Sha256, Digest};
+use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tracing::{debug, trace};
 
 use crate::errors::Result;
@@ -40,9 +40,9 @@ impl Default for CacheConfig {
         Self {
             max_entries: 1000,
             default_ttl: Duration::from_secs(300), // 5 minutes
-            cache_temporal: false, // Don't cache temporal queries by default
-            cache_transactional: false, // Don't cache within transactions
-            max_result_size: 10 * 1024 * 1024, // 10MB
+            cache_temporal: false,                 // Don't cache temporal queries by default
+            cache_transactional: false,            // Don't cache within transactions
+            max_result_size: 10 * 1024 * 1024,     // 10MB
         }
     }
 }
@@ -104,7 +104,8 @@ impl QueryCache {
     /// Create a new query cache
     pub fn new(config: CacheConfig) -> Self {
         use std::num::NonZeroUsize;
-        let capacity = NonZeroUsize::new(config.max_entries).unwrap_or_else(|| NonZeroUsize::new(1000).unwrap());
+        let capacity = NonZeroUsize::new(config.max_entries)
+            .unwrap_or_else(|| NonZeroUsize::new(1000).unwrap());
         let cache = LruCache::new(capacity);
         Self {
             config,
@@ -131,19 +132,21 @@ impl QueryCache {
     pub fn should_cache(&self, query: &str, in_transaction: bool) -> bool {
         // Don't cache writes
         let query_upper = query.trim().to_uppercase();
-        if query_upper.starts_with("INSERT") ||
-           query_upper.starts_with("UPDATE") ||
-           query_upper.starts_with("DELETE") ||
-           query_upper.starts_with("CREATE") ||
-           query_upper.starts_with("DROP") ||
-           query_upper.starts_with("ALTER") {
+        if query_upper.starts_with("INSERT")
+            || query_upper.starts_with("UPDATE")
+            || query_upper.starts_with("DELETE")
+            || query_upper.starts_with("CREATE")
+            || query_upper.starts_with("DROP")
+            || query_upper.starts_with("ALTER")
+        {
             return false;
         }
 
         // Don't cache transaction control commands
-        if query_upper.starts_with("BEGIN") ||
-           query_upper.starts_with("COMMIT") ||
-           query_upper.starts_with("ROLLBACK") {
+        if query_upper.starts_with("BEGIN")
+            || query_upper.starts_with("COMMIT")
+            || query_upper.starts_with("ROLLBACK")
+        {
             return false;
         }
 
@@ -233,7 +236,10 @@ impl QueryCache {
             0
         };
 
-        debug!("Cached result with key: {:?}, size: {} bytes", key, size_bytes);
+        debug!(
+            "Cached result with key: {:?}, size: {} bytes",
+            key, size_bytes
+        );
         Ok(())
     }
 
@@ -251,8 +257,10 @@ impl QueryCache {
             cache.pop(&key);
         }
 
-        debug!("Invalidated {} cache entries matching pattern: {}",
-               count, pattern);
+        debug!(
+            "Invalidated {} cache entries matching pattern: {}",
+            count, pattern
+        );
     }
 
     /// Clear all cache entries
@@ -361,9 +369,7 @@ mod tests {
         let cache = QueryCache::new(config);
         let key = cache.generate_key("SELECT * FROM users", "testdb", None);
 
-        let result = QueryResult::Rows {
-            data: vec![],
-        };
+        let result = QueryResult::Rows { data: vec![] };
 
         cache.put(key.clone(), result).unwrap();
 

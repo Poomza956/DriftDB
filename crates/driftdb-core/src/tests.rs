@@ -6,8 +6,8 @@ mod tests {
     use crate::storage::frame::{Frame, FramedRecord};
     use crate::storage::segment::Segment;
     use serde_json::json;
-    use tempfile::TempDir;
     use std::io::{Seek, Write};
+    use tempfile::TempDir;
 
     #[test]
     fn test_frame_crc_verification() -> Result<()> {
@@ -87,11 +87,7 @@ mod tests {
         let segment = Segment::new(segment_path.clone(), 1);
 
         let mut writer = segment.create()?;
-        let event = Event::new_insert(
-            "test".to_string(),
-            json!("key1"),
-            json!({"data": "valid"}),
-        );
+        let event = Event::new_insert("test".to_string(), json!("key1"), json!({"data": "valid"}));
         writer.append_event(&event)?;
         writer.sync()?;
         drop(writer);
@@ -142,13 +138,11 @@ mod tests {
         let invalid_schema = Schema::new(
             "invalid".to_string(),
             "missing_pk".to_string(),
-            vec![
-                ColumnDef {
-                    name: "id".to_string(),
-                    col_type: "string".to_string(),
-                    index: false,
-                },
-            ],
+            vec![ColumnDef {
+                name: "id".to_string(),
+                col_type: "string".to_string(),
+                index: false,
+            }],
         );
 
         assert!(invalid_schema.validate().is_err());
@@ -201,10 +195,7 @@ mod tests {
         let seq2 = storage.append_event(event2)?;
         assert_eq!(seq2, 2);
 
-        let event3 = Event::new_soft_delete(
-            "products".to_string(),
-            json!("SKU001"),
-        );
+        let event3 = Event::new_soft_delete("products".to_string(), json!("SKU001"));
 
         let seq3 = storage.append_event(event3)?;
         assert_eq!(seq3, 3);
@@ -281,7 +272,6 @@ mod tests {
         Ok(())
     }
 
-
     #[test]
     fn test_engine_end_to_end() -> Result<()> {
         use crate::Engine;
@@ -317,7 +307,6 @@ mod tests {
         Ok(())
     }
 }
-
 
 #[test]
 fn test_frame_roundtrip() {

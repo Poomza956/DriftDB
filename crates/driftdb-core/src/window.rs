@@ -8,11 +8,11 @@
 //! - PERCENT_RANK(), CUME_DIST(), NTILE()
 //! - Custom window frame specifications (ROWS/RANGE)
 
-use std::collections::HashMap;
 use std::cmp::Ordering;
+use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, Number};
+use serde_json::{Number, Value};
 use tracing::{debug, trace};
 
 use crate::errors::Result;
@@ -24,7 +24,8 @@ struct PartitionKey(String);
 impl PartitionKey {
     fn from_values(values: &[Value]) -> Self {
         // Convert to a stable string representation
-        let serialized = values.iter()
+        let serialized = values
+            .iter()
             .map(|v| serde_json::to_string(v).unwrap_or_else(|_| "null".to_string()))
             .collect::<Vec<_>>()
             .join("|");
@@ -44,18 +45,18 @@ pub enum WindowFunction {
     Ntile(u32),
 
     /// Value functions
-    FirstValue(String),  // column name
-    LastValue(String),   // column name
-    NthValue(String, u32), // column name, n
-    Lag(String, Option<u32>, Option<Value>), // column, offset, default
+    FirstValue(String), // column name
+    LastValue(String),                        // column name
+    NthValue(String, u32),                    // column name, n
+    Lag(String, Option<u32>, Option<Value>),  // column, offset, default
     Lead(String, Option<u32>, Option<Value>), // column, offset, default
 
     /// Aggregate functions
-    Sum(String),         // column name
-    Avg(String),         // column name
+    Sum(String), // column name
+    Avg(String),           // column name
     Count(Option<String>), // column name (None for COUNT(*))
-    Min(String),         // column name
-    Max(String),         // column name
+    Min(String),           // column name
+    Max(String),           // column name
 }
 
 /// Window frame specification
@@ -157,7 +158,10 @@ struct Partition {
 impl WindowExecutor {
     /// Execute window functions on data
     pub fn execute(&self, query: WindowQuery) -> Result<Vec<Value>> {
-        debug!("Executing window query with {} functions", query.functions.len());
+        debug!(
+            "Executing window query with {} functions",
+            query.functions.len()
+        );
 
         let mut result_rows = query.data.clone();
 
@@ -210,7 +214,11 @@ impl WindowExecutor {
     }
 
     /// Create partitions based on PARTITION BY columns
-    fn create_partitions(&self, data: &[Value], partition_columns: &[String]) -> Result<Vec<Partition>> {
+    fn create_partitions(
+        &self,
+        data: &[Value],
+        partition_columns: &[String],
+    ) -> Result<Vec<Partition>> {
         let mut partitions: HashMap<PartitionKey, Vec<(usize, Value)>> = HashMap::new();
 
         for (idx, row) in data.iter().enumerate() {
@@ -222,7 +230,10 @@ impl WindowExecutor {
             }
 
             let key = PartitionKey::from_values(&key_values);
-            partitions.entry(key).or_insert_with(Vec::new).push((idx, row.clone()));
+            partitions
+                .entry(key)
+                .or_insert_with(Vec::new)
+                .push((idx, row.clone()));
         }
 
         // Convert to Partition structs
@@ -230,11 +241,15 @@ impl WindowExecutor {
             .into_iter()
             .map(|(partition_key, rows)| {
                 // Reconstruct the Vec<Value> key from the partition key string
-                let key_values: Vec<Value> = partition_key.0
+                let key_values: Vec<Value> = partition_key
+                    .0
                     .split('|')
                     .map(|s| serde_json::from_str(s).unwrap_or(Value::Null))
                     .collect();
-                Partition { key: key_values, rows }
+                Partition {
+                    key: key_values,
+                    rows,
+                }
             })
             .collect();
 
@@ -248,9 +263,9 @@ impl WindowExecutor {
         order_columns: &[OrderColumn],
     ) -> Result<Vec<Partition>> {
         for partition in &mut partitions {
-            partition.rows.sort_by(|a, b| {
-                self.compare_rows(&a.1, &b.1, order_columns)
-            });
+            partition
+                .rows
+                .sort_by(|a, b| self.compare_rows(&a.1, &b.1, order_columns));
         }
 
         Ok(partitions)
@@ -282,8 +297,20 @@ impl WindowExecutor {
     fn compare_values(&self, a: &Value, b: &Value, nulls_first: bool) -> Ordering {
         match (a, b) {
             (Value::Null, Value::Null) => Ordering::Equal,
-            (Value::Null, _) => if nulls_first { Ordering::Less } else { Ordering::Greater },
-            (_, Value::Null) => if nulls_first { Ordering::Greater } else { Ordering::Less },
+            (Value::Null, _) => {
+                if nulls_first {
+                    Ordering::Less
+                } else {
+                    Ordering::Greater
+                }
+            }
+            (_, Value::Null) => {
+                if nulls_first {
+                    Ordering::Greater
+                } else {
+                    Ordering::Less
+                }
+            }
             (Value::Number(n1), Value::Number(n2)) => {
                 let f1 = n1.as_f64().unwrap_or(0.0);
                 let f2 = n2.as_f64().unwrap_or(0.0);
@@ -317,7 +344,13 @@ impl WindowExecutor {
                 let mut same_rank_count = 0;
 
                 for i in 0..row_count {
-                    if i > 0 && self.rows_equal_for_ordering(&partition.rows[i-1].1, &partition.rows[i].1, &window.order_by) {
+                    if i > 0
+                        && self.rows_equal_for_ordering(
+                            &partition.rows[i - 1].1,
+                            &partition.rows[i].1,
+                            &window.order_by,
+                        )
+                    {
                         same_rank_count += 1;
                     } else {
                         current_rank += same_rank_count;
@@ -331,7 +364,13 @@ impl WindowExecutor {
                 let mut current_rank = 1;
 
                 for i in 0..row_count {
-                    if i > 0 && !self.rows_equal_for_ordering(&partition.rows[i-1].1, &partition.rows[i].1, &window.order_by) {
+                    if i > 0
+                        && !self.rows_equal_for_ordering(
+                            &partition.rows[i - 1].1,
+                            &partition.rows[i].1,
+                            &window.order_by,
+                        )
+                    {
                         current_rank += 1;
                     }
                     result[i] = Value::Number(Number::from(current_rank));
@@ -348,7 +387,8 @@ impl WindowExecutor {
                     } else {
                         (rank - 1.0) / (row_count as f64 - 1.0)
                     };
-                    result[i] = Value::Number(Number::from_f64(percent_rank).unwrap_or(Number::from(0)));
+                    result[i] =
+                        Value::Number(Number::from_f64(percent_rank).unwrap_or(Number::from(0)));
                 }
             }
 
@@ -357,12 +397,18 @@ impl WindowExecutor {
                     // Count rows <= current row
                     let mut count = 0;
                     for j in 0..row_count {
-                        if self.compare_rows(&partition.rows[j].1, &partition.rows[i].1, &window.order_by) != Ordering::Greater {
+                        if self.compare_rows(
+                            &partition.rows[j].1,
+                            &partition.rows[i].1,
+                            &window.order_by,
+                        ) != Ordering::Greater
+                        {
                             count += 1;
                         }
                     }
                     let cume_dist = count as f64 / row_count as f64;
-                    result[i] = Value::Number(Number::from_f64(cume_dist).unwrap_or(Number::from(0)));
+                    result[i] =
+                        Value::Number(Number::from_f64(cume_dist).unwrap_or(Number::from(0)));
                 }
             }
 
@@ -376,7 +422,11 @@ impl WindowExecutor {
 
             WindowFunction::FirstValue(column) => {
                 if !partition.rows.is_empty() {
-                    let first_value = partition.rows[0].1.get(column).cloned().unwrap_or(Value::Null);
+                    let first_value = partition.rows[0]
+                        .1
+                        .get(column)
+                        .cloned()
+                        .unwrap_or(Value::Null);
                     for i in 0..row_count {
                         result[i] = first_value.clone();
                     }
@@ -385,7 +435,11 @@ impl WindowExecutor {
 
             WindowFunction::LastValue(column) => {
                 if !partition.rows.is_empty() {
-                    let last_value = partition.rows[row_count-1].1.get(column).cloned().unwrap_or(Value::Null);
+                    let last_value = partition.rows[row_count - 1]
+                        .1
+                        .get(column)
+                        .cloned()
+                        .unwrap_or(Value::Null);
                     for i in 0..row_count {
                         result[i] = last_value.clone();
                     }
@@ -395,7 +449,11 @@ impl WindowExecutor {
             WindowFunction::NthValue(column, n) => {
                 let nth_index = (*n as usize).saturating_sub(1);
                 let nth_value = if nth_index < row_count {
-                    partition.rows[nth_index].1.get(column).cloned().unwrap_or(Value::Null)
+                    partition.rows[nth_index]
+                        .1
+                        .get(column)
+                        .cloned()
+                        .unwrap_or(Value::Null)
                 } else {
                     Value::Null
                 };
@@ -409,7 +467,11 @@ impl WindowExecutor {
                 let offset = offset.unwrap_or(1) as usize;
                 for i in 0..row_count {
                     if i >= offset {
-                        result[i] = partition.rows[i - offset].1.get(column).cloned().unwrap_or(Value::Null);
+                        result[i] = partition.rows[i - offset]
+                            .1
+                            .get(column)
+                            .cloned()
+                            .unwrap_or(Value::Null);
                     } else {
                         result[i] = default.clone().unwrap_or(Value::Null);
                     }
@@ -420,7 +482,11 @@ impl WindowExecutor {
                 let offset = offset.unwrap_or(1) as usize;
                 for i in 0..row_count {
                     if i + offset < row_count {
-                        result[i] = partition.rows[i + offset].1.get(column).cloned().unwrap_or(Value::Null);
+                        result[i] = partition.rows[i + offset]
+                            .1
+                            .get(column)
+                            .cloned()
+                            .unwrap_or(Value::Null);
                     } else {
                         result[i] = default.clone().unwrap_or(Value::Null);
                     }
@@ -502,7 +568,13 @@ impl WindowExecutor {
         let mut same_rank_count = 0;
 
         for i in 0..row_count {
-            if i > 0 && self.rows_equal_for_ordering(&partition.rows[i-1].1, &partition.rows[i].1, order_columns) {
+            if i > 0
+                && self.rows_equal_for_ordering(
+                    &partition.rows[i - 1].1,
+                    &partition.rows[i].1,
+                    order_columns,
+                )
+            {
                 same_rank_count += 1;
             } else {
                 current_rank += same_rank_count;
@@ -515,7 +587,12 @@ impl WindowExecutor {
     }
 
     /// Get frame row indices for a given current row
-    fn get_frame_rows(&self, current_row: usize, total_rows: usize, frame: &WindowFrame) -> Vec<usize> {
+    fn get_frame_rows(
+        &self,
+        current_row: usize,
+        total_rows: usize,
+        frame: &WindowFrame,
+    ) -> Vec<usize> {
         let start_idx = match frame.start {
             FrameBoundary::Unbounded => 0,
             FrameBoundary::CurrentRow => current_row,
@@ -576,10 +653,18 @@ impl WindowExecutor {
     }
 
     /// Count values in frame rows
-    fn count_values(&self, rows: &[(usize, Value)], frame_indices: &[usize], column: Option<&str>) -> usize {
+    fn count_values(
+        &self,
+        rows: &[(usize, Value)],
+        frame_indices: &[usize],
+        column: Option<&str>,
+    ) -> usize {
         if let Some(col) = column {
-            frame_indices.iter()
-                .filter(|&&idx| rows[idx].1.get(col).is_some() && !rows[idx].1.get(col).unwrap().is_null())
+            frame_indices
+                .iter()
+                .filter(|&&idx| {
+                    rows[idx].1.get(col).is_some() && !rows[idx].1.get(col).unwrap().is_null()
+                })
                 .count()
         } else {
             frame_indices.len() // COUNT(*)
@@ -647,21 +732,19 @@ mod tests {
         ];
 
         let query = WindowQuery {
-            functions: vec![
-                WindowFunctionCall {
-                    function: WindowFunction::RowNumber,
-                    window: WindowSpec {
-                        partition_by: vec!["department".to_string()],
-                        order_by: vec![OrderColumn {
-                            column: "salary".to_string(),
-                            ascending: true,
-                            nulls_first: false,
-                        }],
-                        frame: None,
-                    },
-                    alias: "row_num".to_string(),
-                }
-            ],
+            functions: vec![WindowFunctionCall {
+                function: WindowFunction::RowNumber,
+                window: WindowSpec {
+                    partition_by: vec!["department".to_string()],
+                    order_by: vec![OrderColumn {
+                        column: "salary".to_string(),
+                        ascending: true,
+                        nulls_first: false,
+                    }],
+                    frame: None,
+                },
+                alias: "row_num".to_string(),
+            }],
             data: data.clone(),
         };
 
@@ -711,7 +794,7 @@ mod tests {
                         frame: None,
                     },
                     alias: "next_value".to_string(),
-                }
+                },
             ],
             data: data.clone(),
         };
@@ -743,25 +826,23 @@ mod tests {
         ];
 
         let query = WindowQuery {
-            functions: vec![
-                WindowFunctionCall {
-                    function: WindowFunction::Sum("value".to_string()),
-                    window: WindowSpec {
-                        partition_by: vec![],
-                        order_by: vec![OrderColumn {
-                            column: "id".to_string(),
-                            ascending: true,
-                            nulls_first: false,
-                        }],
-                        frame: Some(WindowFrame {
-                            frame_type: FrameType::Rows,
-                            start: FrameBoundary::Preceding(1),
-                            end: FrameBoundary::Following(1),
-                        }),
-                    },
-                    alias: "rolling_sum".to_string(),
-                }
-            ],
+            functions: vec![WindowFunctionCall {
+                function: WindowFunction::Sum("value".to_string()),
+                window: WindowSpec {
+                    partition_by: vec![],
+                    order_by: vec![OrderColumn {
+                        column: "id".to_string(),
+                        ascending: true,
+                        nulls_first: false,
+                    }],
+                    frame: Some(WindowFrame {
+                        frame_type: FrameType::Rows,
+                        start: FrameBoundary::Preceding(1),
+                        end: FrameBoundary::Following(1),
+                    }),
+                },
+                alias: "rolling_sum".to_string(),
+            }],
             data: data.clone(),
         };
 
@@ -812,7 +893,7 @@ mod tests {
                         frame: None,
                     },
                     alias: "dense_rank".to_string(),
-                }
+                },
             ],
             data: data.clone(),
         };

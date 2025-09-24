@@ -8,18 +8,18 @@
 //! - Distributed aggregation
 
 use std::collections::{HashMap, HashSet};
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
-use std::net::SocketAddr;
 
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::{debug, info, instrument};
 
+use crate::engine::Engine;
 use crate::errors::{DriftError, Result};
 use crate::query::{Query, QueryResult};
-use crate::engine::Engine;
 
 /// Distributed cluster configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -100,7 +100,7 @@ pub struct NodeInfo {
     pub rack: Option<String>,
     pub tokens: Vec<u64>,
     pub status: NodeStatus,
-    pub last_seen: u64,  // Unix timestamp
+    pub last_seen: u64, // Unix timestamp
     pub load: NodeLoad,
 }
 
@@ -162,8 +162,12 @@ struct ConsistentHashRing {
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 enum ReplicationStrategy {
-    SimpleStrategy { replication_factor: usize },
-    NetworkTopologyStrategy { dc_replication: HashMap<String, usize> },
+    SimpleStrategy {
+        replication_factor: usize,
+    },
+    NetworkTopologyStrategy {
+        dc_replication: HashMap<String, usize>,
+    },
 }
 
 /// Partition management
@@ -207,7 +211,9 @@ impl QueryRouter {
             Some(key) => {
                 // Route to specific partition
                 let token = self.hash_key(key);
-                let nodes = topology.ring.get_nodes_for_token(token, self.config.replication_factor);
+                let nodes = topology
+                    .ring
+                    .get_nodes_for_token(token, self.config.replication_factor);
                 Ok(nodes)
             }
             None => {
@@ -236,7 +242,9 @@ impl ConsistentHashRing {
         let mut seen = HashSet::new();
 
         // Find position in ring
-        let pos = self.tokens.binary_search_by_key(&token, |&(t, _)| t)
+        let pos = self
+            .tokens
+            .binary_search_by_key(&token, |&(t, _)| t)
             .unwrap_or_else(|i| i);
 
         // Collect nodes clockwise from position
@@ -275,16 +283,25 @@ struct ReplicationManager {
 struct ReplicationEntry {
     id: String,
     operation: ReplicationOp,
-    timestamp: u64,  // Unix timestamp
+    timestamp: u64, // Unix timestamp
     status: ReplicationStatus,
 }
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 enum ReplicationOp {
-    Write { table: String, key: Value, data: Value },
-    Delete { table: String, key: Value },
-    Schema { change: SchemaChange },
+    Write {
+        table: String,
+        key: Value,
+        data: Value,
+    },
+    Delete {
+        table: String,
+        key: Value,
+    },
+    Schema {
+        change: SchemaChange,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -318,7 +335,7 @@ struct DistributedTransaction {
     participants: Vec<String>,
     state: TransactionState,
     operations: Vec<TransactionOp>,
-    timestamp: u64,  // Unix timestamp
+    timestamp: u64, // Unix timestamp
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -347,15 +364,23 @@ struct PendingOperation {
     id: String,
     operation: ClusterOp,
     initiated_by: String,
-    timestamp: u64,  // Unix timestamp
+    timestamp: u64, // Unix timestamp
 }
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 enum ClusterOp {
-    AddNode { node: NodeInfo },
-    RemoveNode { node_id: String },
-    MoveToken { from: String, to: String, token: u64 },
+    AddNode {
+        node: NodeInfo,
+    },
+    RemoveNode {
+        node_id: String,
+    },
+    MoveToken {
+        from: String,
+        to: String,
+        token: u64,
+    },
     Rebalance,
 }
 
@@ -440,7 +465,7 @@ impl QueryCoordinator {
             ConsistencyLevel::Quorum => total / 2 + 1,
             ConsistencyLevel::All => total,
             ConsistencyLevel::LocalQuorum => total / 2 + 1, // Simplified
-            ConsistencyLevel::EachQuorum => total, // Simplified
+            ConsistencyLevel::EachQuorum => total,          // Simplified
         }
     }
 
@@ -455,12 +480,16 @@ impl QueryCoordinator {
             if node == self.config.node_id {
                 // Execute locally
                 // This would integrate with the local engine
-                let result = QueryResult::Success { message: "Query executed".to_string() };
+                let result = QueryResult::Success {
+                    message: "Query executed".to_string(),
+                };
                 results.push(result);
             } else {
                 // Execute remotely (simplified)
                 // In reality, this would use RPC or similar
-                let result = QueryResult::Success { message: "Query executed".to_string() };
+                let result = QueryResult::Success {
+                    message: "Query executed".to_string(),
+                };
                 results.push(result);
             }
         }
@@ -470,7 +499,9 @@ impl QueryCoordinator {
 
     fn merge_results(&self, results: Vec<QueryResult>) -> Result<QueryResult> {
         if results.is_empty() {
-            return Ok(QueryResult::Success { message: "No results".to_string() });
+            return Ok(QueryResult::Success {
+                message: "No results".to_string(),
+            });
         }
 
         // Simplified merge logic
@@ -537,7 +568,9 @@ impl QueryCoordinator {
         // Update data center mapping
         state.topology.data_centers.clear();
         for (node_id, node_info) in &state.nodes {
-            state.topology.data_centers
+            state
+                .topology
+                .data_centers
                 .entry(node_info.data_center.clone())
                 .or_insert_with(Vec::new)
                 .push(node_id.clone());
@@ -553,8 +586,10 @@ impl QueryCoordinator {
             if info.primary_node == from_node {
                 // Migrate partition to first replica
                 if let Some(new_primary) = info.replicas.first() {
-                    info!("Migrating partition {} from {} to {}",
-                          partition_id, from_node, new_primary);
+                    info!(
+                        "Migrating partition {} from {} to {}",
+                        partition_id, from_node, new_primary
+                    );
                     // Actual migration logic would go here
                 }
             }
@@ -570,7 +605,9 @@ impl QueryCoordinator {
         ClusterStats {
             cluster_name: self.config.cluster_name.clone(),
             node_count: state.nodes.len(),
-            active_nodes: state.nodes.values()
+            active_nodes: state
+                .nodes
+                .values()
                 .filter(|n| n.status == NodeStatus::Up)
                 .count(),
             total_partitions: self.partition_manager.partitions.read().len(),
@@ -620,8 +657,17 @@ mod tests {
             Arc::new(Engine::new("/tmp/test").unwrap()),
         );
 
-        assert_eq!(coordinator.calculate_required_nodes(ConsistencyLevel::One, 3), 1);
-        assert_eq!(coordinator.calculate_required_nodes(ConsistencyLevel::Quorum, 3), 2);
-        assert_eq!(coordinator.calculate_required_nodes(ConsistencyLevel::All, 3), 3);
+        assert_eq!(
+            coordinator.calculate_required_nodes(ConsistencyLevel::One, 3),
+            1
+        );
+        assert_eq!(
+            coordinator.calculate_required_nodes(ConsistencyLevel::Quorum, 3),
+            2
+        );
+        assert_eq!(
+            coordinator.calculate_required_nodes(ConsistencyLevel::All, 3),
+            3
+        );
     }
 }

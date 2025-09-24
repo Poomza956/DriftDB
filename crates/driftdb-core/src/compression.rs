@@ -1,8 +1,8 @@
 use crate::errors::{DriftError, Result};
-use serde::{Serialize, Deserialize};
+use parking_lot::RwLock;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
-use parking_lot::RwLock;
 
 /// Compression algorithms supported by the system
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -147,14 +147,13 @@ impl CompressionManager {
         let result = match algorithm {
             CompressionAlgorithm::None => Ok(data.to_vec()),
 
-            CompressionAlgorithm::Zstd { level } => {
-                zstd::encode_all(data, level)
-                    .map_err(|e| DriftError::Internal(format!("Zstd compression failed: {}", e)))
-            }
+            CompressionAlgorithm::Zstd { level } => zstd::encode_all(data, level)
+                .map_err(|e| DriftError::Internal(format!("Zstd compression failed: {}", e))),
 
             CompressionAlgorithm::Snappy => {
                 let mut encoder = snap::raw::Encoder::new();
-                encoder.compress_vec(data)
+                encoder
+                    .compress_vec(data)
                     .map_err(|e| DriftError::Internal(format!("Snappy compression failed: {}", e)))
             }
 
@@ -179,7 +178,8 @@ impl CompressionManager {
                 use std::io::Write;
 
                 let mut encoder = GzEncoder::new(Vec::new(), Compression::new(level));
-                encoder.write_all(data)
+                encoder
+                    .write_all(data)
                     .and_then(|_| encoder.finish())
                     .map_err(|e| DriftError::Internal(format!("Gzip compression failed: {}", e)))
             }
@@ -192,8 +192,9 @@ impl CompressionManager {
                     &brotli::enc::BrotliEncoderParams {
                         quality: quality as i32,
                         ..Default::default()
-                    }
-                ).map_err(|e| DriftError::Internal(format!("Brotli compression failed: {}", e)))?;
+                    },
+                )
+                .map_err(|e| DriftError::Internal(format!("Brotli compression failed: {}", e)))?;
                 Ok(compressed)
             }
         };
@@ -228,15 +229,14 @@ impl CompressionManager {
         let result = match algorithm {
             CompressionAlgorithm::None => Ok(data.to_vec()),
 
-            CompressionAlgorithm::Zstd { .. } => {
-                zstd::decode_all(data)
-                    .map_err(|e| DriftError::Internal(format!("Zstd decompression failed: {}", e)))
-            }
+            CompressionAlgorithm::Zstd { .. } => zstd::decode_all(data)
+                .map_err(|e| DriftError::Internal(format!("Zstd decompression failed: {}", e))),
 
             CompressionAlgorithm::Snappy => {
                 let mut decoder = snap::raw::Decoder::new();
-                decoder.decompress_vec(data)
-                    .map_err(|e| DriftError::Internal(format!("Snappy decompression failed: {}", e)))
+                decoder.decompress_vec(data).map_err(|e| {
+                    DriftError::Internal(format!("Snappy decompression failed: {}", e))
+                })
             }
 
             CompressionAlgorithm::Lz4 { .. } => {
@@ -255,17 +255,18 @@ impl CompressionManager {
 
                 let mut decoder = GzDecoder::new(data);
                 let mut decompressed = Vec::new();
-                decoder.read_to_end(&mut decompressed)
-                    .map_err(|e| DriftError::Internal(format!("Gzip decompression failed: {}", e)))?;
+                decoder.read_to_end(&mut decompressed).map_err(|e| {
+                    DriftError::Internal(format!("Gzip decompression failed: {}", e))
+                })?;
                 Ok(decompressed)
             }
 
             CompressionAlgorithm::Brotli { .. } => {
                 let mut decompressed = Vec::new();
-                brotli::BrotliDecompress(
-                    &mut std::io::Cursor::new(data),
-                    &mut decompressed
-                ).map_err(|e| DriftError::Internal(format!("Brotli decompression failed: {}", e)))?;
+                brotli::BrotliDecompress(&mut std::io::Cursor::new(data), &mut decompressed)
+                    .map_err(|e| {
+                        DriftError::Internal(format!("Brotli decompression failed: {}", e))
+                    })?;
                 Ok(decompressed)
             }
         };
@@ -340,7 +341,11 @@ impl CompressionManager {
     }
 
     /// Compress data in parallel chunks
-    pub async fn compress_parallel(&self, data: Vec<u8>, algorithm: CompressionAlgorithm) -> Result<Vec<u8>> {
+    pub async fn compress_parallel(
+        &self,
+        data: Vec<u8>,
+        algorithm: CompressionAlgorithm,
+    ) -> Result<Vec<u8>> {
         if data.len() < 1_000_000 {
             // For small data, use regular compression
             return self.compress(&data, algorithm);
@@ -415,12 +420,15 @@ impl CompressionManager {
                 let _ = self.decompress(&compressed_data, algo);
                 let decompress_time = start.elapsed();
 
-                results.insert(name.to_string(), BenchmarkResult {
-                    compressed_size: compressed_data.len(),
-                    compression_ratio: compressed_data.len() as f64 / data.len() as f64,
-                    compress_time_ms: compress_time.as_millis() as u64,
-                    decompress_time_ms: decompress_time.as_millis() as u64,
-                });
+                results.insert(
+                    name.to_string(),
+                    BenchmarkResult {
+                        compressed_size: compressed_data.len(),
+                        compression_ratio: compressed_data.len() as f64 / data.len() as f64,
+                        compress_time_ms: compress_time.as_millis() as u64,
+                        decompress_time_ms: decompress_time.as_millis() as u64,
+                    },
+                );
             }
         }
 
@@ -481,7 +489,10 @@ mod tests {
 
         // Small data - no compression
         let small = vec![1u8; 50];
-        assert_eq!(manager.choose_algorithm(&small, None), CompressionAlgorithm::None);
+        assert_eq!(
+            manager.choose_algorithm(&small, None),
+            CompressionAlgorithm::None
+        );
 
         // Highly compressible - Zstd
         let repetitive = vec![0u8; 10000];

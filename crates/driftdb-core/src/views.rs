@@ -12,17 +12,17 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::{SystemTime, Duration};
+use std::time::{Duration, SystemTime};
 
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::{debug, info};
 
-use crate::errors::{DriftError, Result};
-use crate::query::{Query, QueryResult, AsOf};
-use crate::cache::{QueryCache, CacheConfig};
+use crate::cache::{CacheConfig, QueryCache};
 use crate::engine::Engine;
+use crate::errors::{DriftError, Result};
+use crate::query::{AsOf, Query, QueryResult};
 use crate::sql_bridge;
 
 /// View definition
@@ -250,10 +250,7 @@ impl ViewManager {
     }
 
     /// Create a new view
-    pub fn create_view(
-        &self,
-        definition: ViewDefinition,
-    ) -> Result<()> {
+    pub fn create_view(&self, definition: ViewDefinition) -> Result<()> {
         let view_name = definition.name.clone();
 
         debug!("Creating view: {}", view_name);
@@ -261,18 +258,20 @@ impl ViewManager {
         // Check for circular dependencies
         let dep_graph = self.dependency_graph.read();
         if dep_graph.has_circular_dependency(&view_name, &definition.dependencies) {
-            return Err(DriftError::InvalidQuery(
-                format!("Circular dependency detected for view '{}'", view_name)
-            ));
+            return Err(DriftError::InvalidQuery(format!(
+                "Circular dependency detected for view '{}'",
+                view_name
+            )));
         }
         drop(dep_graph);
 
         // Add view definition
         let mut views = self.views.write();
         if views.contains_key(&view_name) {
-            return Err(DriftError::InvalidQuery(
-                format!("View '{}' already exists", view_name)
-            ));
+            return Err(DriftError::InvalidQuery(format!(
+                "View '{}' already exists",
+                view_name
+            )));
         }
         views.insert(view_name.clone(), definition.clone());
         drop(views);
@@ -323,9 +322,10 @@ impl ViewManager {
             .unwrap_or(false);
 
         if views.remove(view_name).is_none() {
-            return Err(DriftError::InvalidQuery(
-                format!("View '{}' does not exist", view_name)
-            ));
+            return Err(DriftError::InvalidQuery(format!(
+                "View '{}' does not exist",
+                view_name
+            )));
         }
         drop(views);
 
@@ -359,10 +359,9 @@ impl ViewManager {
         limit: Option<usize>,
     ) -> Result<Vec<Value>> {
         let views = self.views.read();
-        let view = views.get(view_name)
-            .ok_or_else(|| DriftError::InvalidQuery(
-                format!("View '{}' does not exist", view_name)
-            ))?;
+        let view = views.get(view_name).ok_or_else(|| {
+            DriftError::InvalidQuery(format!("View '{}' does not exist", view_name))
+        })?;
 
         let view = view.clone();
         drop(views);
@@ -388,11 +387,9 @@ impl ViewManager {
         limit: Option<usize>,
     ) -> Result<Vec<Value>> {
         // Generate cache key
-        let cache_key = self.query_cache.generate_key(
-            &format!("VIEW:{}", view.name),
-            "default",
-            None,
-        );
+        let cache_key =
+            self.query_cache
+                .generate_key(&format!("VIEW:{}", view.name), "default", None);
 
         // Check cache
         if let Some(cached) = self.query_cache.get(&cache_key) {
@@ -420,7 +417,8 @@ impl ViewManager {
                 // For simplicity, wrap the view query in a subquery and add WHERE clause
                 let mut where_clauses = Vec::new();
                 for condition in &conditions {
-                    where_clauses.push(format!("{} {} {}",
+                    where_clauses.push(format!(
+                        "{} {} {}",
                         condition.column,
                         condition.operator,
                         if condition.value.is_string() {
@@ -432,8 +430,11 @@ impl ViewManager {
                 }
 
                 if !where_clauses.is_empty() {
-                    query_sql = format!("SELECT * FROM ({}) AS subquery WHERE {}",
-                        query_sql, where_clauses.join(" AND "));
+                    query_sql = format!(
+                        "SELECT * FROM ({}) AS subquery WHERE {}",
+                        query_sql,
+                        where_clauses.join(" AND ")
+                    );
                 }
             }
 
@@ -460,7 +461,9 @@ impl ViewManager {
         // Cache the results
         self.query_cache.put(
             cache_key,
-            QueryResult::Rows { data: results.clone() },
+            QueryResult::Rows {
+                data: results.clone(),
+            },
         )?;
 
         Ok(results)
@@ -478,13 +481,16 @@ impl ViewManager {
 
         // Get materialized data
         let materialized = self.materialized_data.read();
-        let data = materialized.get(&view.name)
-            .ok_or_else(|| DriftError::Internal(
-                format!("Materialized data not found for view '{}'", view.name)
-            ))?;
+        let data = materialized.get(&view.name).ok_or_else(|| {
+            DriftError::Internal(format!(
+                "Materialized data not found for view '{}'",
+                view.name
+            ))
+        })?;
 
         // Apply conditions and limit
-        let mut results: Vec<Value> = data.data
+        let mut results: Vec<Value> = data
+            .data
             .iter()
             .filter(|row| Self::matches_conditions(row, &conditions))
             .cloned()
@@ -530,15 +536,15 @@ impl ViewManager {
         debug!("Refreshing materialized view: {}", view_name);
 
         let views = self.views.read();
-        let view = views.get(view_name)
-            .ok_or_else(|| DriftError::InvalidQuery(
-                format!("View '{}' does not exist", view_name)
-            ))?;
+        let view = views.get(view_name).ok_or_else(|| {
+            DriftError::InvalidQuery(format!("View '{}' does not exist", view_name))
+        })?;
 
         if !view.is_materialized {
-            return Err(DriftError::InvalidQuery(
-                format!("View '{}' is not materialized", view_name)
-            ));
+            return Err(DriftError::InvalidQuery(format!(
+                "View '{}' is not materialized",
+                view_name
+            )));
         }
 
         // Execute view query and store results
@@ -574,7 +580,10 @@ impl ViewManager {
         let mut stats = self.stats.write();
         stats.refresh_count += 1;
 
-        info!("Materialized view '{}' refreshed: {} rows", view_name, row_count);
+        info!(
+            "Materialized view '{}' refreshed: {} rows",
+            view_name, row_count
+        );
         Ok(())
     }
 
@@ -610,16 +619,18 @@ impl ViewManager {
 
     /// Validate view SQL and extract metadata
     pub fn validate_view_sql(sql: &str) -> Result<(HashSet<String>, Vec<ColumnDefinition>)> {
-        use sqlparser::parser::Parser;
+        use sqlparser::ast::{SelectItem, Statement};
         use sqlparser::dialect::GenericDialect;
-        use sqlparser::ast::{Statement, SelectItem};
+        use sqlparser::parser::Parser;
 
         let dialect = GenericDialect {};
         let ast = Parser::parse_sql(&dialect, sql)
             .map_err(|e| DriftError::Parse(format!("Invalid SQL in view definition: {}", e)))?;
 
         if ast.is_empty() {
-            return Err(DriftError::InvalidQuery("Empty SQL in view definition".to_string()));
+            return Err(DriftError::InvalidQuery(
+                "Empty SQL in view definition".to_string(),
+            ));
         }
 
         let mut dependencies = HashSet::new();
@@ -630,61 +641,68 @@ impl ViewManager {
             Statement::Query(query) => {
                 // Extract table dependencies
                 if let sqlparser::ast::SetExpr::Select(select) = query.body.as_ref() {
-                        // Extract FROM tables
-                        for table_with_joins in &select.from {
-                            extract_table_name(&table_with_joins.relation, &mut dependencies);
-                            for join in &table_with_joins.joins {
-                                extract_table_name(&join.relation, &mut dependencies);
-                            }
+                    // Extract FROM tables
+                    for table_with_joins in &select.from {
+                        extract_table_name(&table_with_joins.relation, &mut dependencies);
+                        for join in &table_with_joins.joins {
+                            extract_table_name(&join.relation, &mut dependencies);
                         }
+                    }
 
-                        // Extract column information from SELECT items
-                        for (i, select_item) in select.projection.iter().enumerate() {
-                            match select_item {
-                                SelectItem::UnnamedExpr(_expr) => {
-                                    columns.push(ColumnDefinition {
-                                        name: format!("column_{}", i),
-                                        data_type: "UNKNOWN".to_string(),
-                                        nullable: true,
-                                        source_table: None,
-                                        source_column: None,
-                                    });
-                                }
-                                SelectItem::ExprWithAlias { alias, .. } => {
-                                    columns.push(ColumnDefinition {
-                                        name: alias.value.clone(),
-                                        data_type: "UNKNOWN".to_string(),
-                                        nullable: true,
-                                        source_table: None,
-                                        source_column: None,
-                                    });
-                                }
-                                SelectItem::Wildcard(_) => {
-                                    // For wildcard, we can't determine columns without schema info
-                                    columns.push(ColumnDefinition {
-                                        name: "*".to_string(),
-                                        data_type: "WILDCARD".to_string(),
-                                        nullable: true,
-                                        source_table: None,
-                                        source_column: None,
-                                    });
-                                }
-                                SelectItem::QualifiedWildcard(prefix, _) => {
-                                    let prefix_str = prefix.0.iter().map(|i| i.value.clone()).collect::<Vec<_>>().join(".");
-                                    columns.push(ColumnDefinition {
-                                        name: format!("{}.*", prefix_str),
-                                        data_type: "QUALIFIED_WILDCARD".to_string(),
-                                        nullable: true,
-                                        source_table: Some(prefix_str),
-                                        source_column: None,
-                                    });
-                                }
+                    // Extract column information from SELECT items
+                    for (i, select_item) in select.projection.iter().enumerate() {
+                        match select_item {
+                            SelectItem::UnnamedExpr(_expr) => {
+                                columns.push(ColumnDefinition {
+                                    name: format!("column_{}", i),
+                                    data_type: "UNKNOWN".to_string(),
+                                    nullable: true,
+                                    source_table: None,
+                                    source_column: None,
+                                });
+                            }
+                            SelectItem::ExprWithAlias { alias, .. } => {
+                                columns.push(ColumnDefinition {
+                                    name: alias.value.clone(),
+                                    data_type: "UNKNOWN".to_string(),
+                                    nullable: true,
+                                    source_table: None,
+                                    source_column: None,
+                                });
+                            }
+                            SelectItem::Wildcard(_) => {
+                                // For wildcard, we can't determine columns without schema info
+                                columns.push(ColumnDefinition {
+                                    name: "*".to_string(),
+                                    data_type: "WILDCARD".to_string(),
+                                    nullable: true,
+                                    source_table: None,
+                                    source_column: None,
+                                });
+                            }
+                            SelectItem::QualifiedWildcard(prefix, _) => {
+                                let prefix_str = prefix
+                                    .0
+                                    .iter()
+                                    .map(|i| i.value.clone())
+                                    .collect::<Vec<_>>()
+                                    .join(".");
+                                columns.push(ColumnDefinition {
+                                    name: format!("{}.*", prefix_str),
+                                    data_type: "QUALIFIED_WILDCARD".to_string(),
+                                    nullable: true,
+                                    source_table: Some(prefix_str),
+                                    source_column: None,
+                                });
                             }
                         }
+                    }
                 }
             }
             _ => {
-                return Err(DriftError::InvalidQuery("View definition must be a SELECT query".to_string()));
+                return Err(DriftError::InvalidQuery(
+                    "View definition must be a SELECT query".to_string(),
+                ));
             }
         }
 
@@ -693,9 +711,7 @@ impl ViewManager {
 
     /// Cache materialized view data
     pub fn cache_materialized_data(&self, view_name: &str, data: Vec<Value>) -> Result<()> {
-        let size_bytes = data.iter()
-            .map(|v| v.to_string().len())
-            .sum();
+        let size_bytes = data.iter().map(|v| v.to_string().len()).sum();
 
         let materialized = MaterializedViewData {
             row_count: data.len(),
@@ -704,7 +720,9 @@ impl ViewManager {
             size_bytes,
         };
 
-        self.materialized_data.write().insert(view_name.to_string(), materialized);
+        self.materialized_data
+            .write()
+            .insert(view_name.to_string(), materialized);
 
         // Update statistics
         let mut stats = self.stats.write();
@@ -715,7 +733,8 @@ impl ViewManager {
 
     /// Get cached data for a materialized view
     pub fn get_cached_data(&self, view_name: &str) -> Option<Vec<Value>> {
-        self.materialized_data.read()
+        self.materialized_data
+            .read()
             .get(view_name)
             .map(|data| data.data.clone())
     }
@@ -799,7 +818,10 @@ impl ViewBuilder {
 }
 
 /// Helper function to extract table name from TableFactor
-fn extract_table_name(table_factor: &sqlparser::ast::TableFactor, dependencies: &mut HashSet<String>) {
+fn extract_table_name(
+    table_factor: &sqlparser::ast::TableFactor,
+    dependencies: &mut HashSet<String>,
+) {
     use sqlparser::ast::TableFactor;
 
     match table_factor {

@@ -1,8 +1,8 @@
-use std::collections::HashMap;
-use std::sync::Arc;
+use anyhow::{anyhow, Result};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
-use anyhow::{Result, anyhow};
+use std::collections::HashMap;
+use std::sync::Arc;
 
 /// Sequence definition with configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -61,7 +61,9 @@ impl SequenceManager {
         // If this is for an auto-increment column, register it
         if let Some(ref owned_by) = sequence.owned_by {
             let key = format!("{}.{}", owned_by.table_name, owned_by.column_name);
-            self.auto_increment_map.write().insert(key, sequence.name.clone());
+            self.auto_increment_map
+                .write()
+                .insert(key, sequence.name.clone());
         }
 
         // Store sequence
@@ -123,11 +125,18 @@ impl SequenceManager {
     /// Get next value for an auto-increment column
     pub fn next_auto_increment(&self, table_name: &str, column_name: &str) -> Result<i64> {
         let key = format!("{}.{}", table_name, column_name);
-        let sequence_name = self.auto_increment_map
+        let sequence_name = self
+            .auto_increment_map
             .read()
             .get(&key)
             .cloned()
-            .ok_or_else(|| anyhow!("No auto-increment sequence for {}.{}", table_name, column_name))?;
+            .ok_or_else(|| {
+                anyhow!(
+                    "No auto-increment sequence for {}.{}",
+                    table_name,
+                    column_name
+                )
+            })?;
 
         self.next_value(&sequence_name)
     }
@@ -135,7 +144,8 @@ impl SequenceManager {
     /// Get the current value without incrementing
     pub fn current_value(&self, sequence_name: &str) -> Result<i64> {
         let sequences = self.sequences.read();
-        let sequence = sequences.get(sequence_name)
+        let sequence = sequences
+            .get(sequence_name)
             .ok_or_else(|| anyhow!("Sequence '{}' not found", sequence_name))?;
         Ok(sequence.current_value)
     }
@@ -143,7 +153,8 @@ impl SequenceManager {
     /// Set the value of a sequence
     pub fn set_value(&self, sequence_name: &str, value: i64) -> Result<()> {
         let mut sequences = self.sequences.write();
-        let sequence = sequences.get_mut(sequence_name)
+        let sequence = sequences
+            .get_mut(sequence_name)
             .ok_or_else(|| anyhow!("Sequence '{}' not found", sequence_name))?;
 
         // Validate new value
@@ -169,7 +180,8 @@ impl SequenceManager {
     /// Restart a sequence from its start value
     pub fn restart_sequence(&self, sequence_name: &str) -> Result<()> {
         let mut sequences = self.sequences.write();
-        let sequence = sequences.get_mut(sequence_name)
+        let sequence = sequences
+            .get_mut(sequence_name)
             .ok_or_else(|| anyhow!("Sequence '{}' not found", sequence_name))?;
 
         sequence.current_value = sequence.start_value - sequence.increment_by;
@@ -183,7 +195,8 @@ impl SequenceManager {
     /// Drop a sequence
     pub fn drop_sequence(&self, sequence_name: &str) -> Result<()> {
         let mut sequences = self.sequences.write();
-        let sequence = sequences.remove(sequence_name)
+        let sequence = sequences
+            .remove(sequence_name)
             .ok_or_else(|| anyhow!("Sequence '{}' not found", sequence_name))?;
 
         // Remove from auto-increment map if applicable
@@ -211,7 +224,8 @@ impl SequenceManager {
     /// Refill the cache for a sequence
     fn refill_cache(&self, sequence_name: &str) -> Result<i64> {
         let mut sequences = self.sequences.write();
-        let sequence = sequences.get_mut(sequence_name)
+        let sequence = sequences
+            .get_mut(sequence_name)
             .ok_or_else(|| anyhow!("Sequence '{}' not found", sequence_name))?;
 
         // Calculate next batch of values
@@ -223,7 +237,10 @@ impl SequenceManager {
                 if sequence.cycle {
                     next_value = sequence.min_value.unwrap_or(1);
                 } else {
-                    return Err(anyhow!("Sequence '{}' exceeded maximum value", sequence_name));
+                    return Err(anyhow!(
+                        "Sequence '{}' exceeded maximum value",
+                        sequence_name
+                    ));
                 }
             }
         }
@@ -232,7 +249,10 @@ impl SequenceManager {
                 if sequence.cycle {
                     next_value = sequence.max_value.unwrap_or(i64::MAX);
                 } else {
-                    return Err(anyhow!("Sequence '{}' fell below minimum value", sequence_name));
+                    return Err(anyhow!(
+                        "Sequence '{}' fell below minimum value",
+                        sequence_name
+                    ));
                 }
             }
         }
@@ -255,7 +275,8 @@ impl SequenceManager {
     /// Get the increment value for a sequence
     fn get_increment(&self, sequence_name: &str) -> Result<i64> {
         let sequences = self.sequences.read();
-        let sequence = sequences.get(sequence_name)
+        let sequence = sequences
+            .get(sequence_name)
             .ok_or_else(|| anyhow!("Sequence '{}' not found", sequence_name))?;
         Ok(sequence.increment_by)
     }

@@ -1,18 +1,22 @@
 use serde_json::json;
 use std::sync::Arc;
 
+use super::{AsOf, Query, QueryResult, WhereCondition};
+use crate::backup::BackupManager;
 use crate::engine::Engine;
 use crate::errors::Result;
 use crate::events::Event;
-use crate::backup::BackupManager;
 use crate::observability::Metrics;
-use crate::parallel::{ParallelExecutor, ParallelConfig};
-use super::{AsOf, Query, QueryResult, WhereCondition};
+use crate::parallel::{ParallelConfig, ParallelExecutor};
 
 impl Engine {
     pub fn execute_query(&mut self, query: Query) -> Result<QueryResult> {
         match query {
-            Query::CreateTable { name, primary_key, indexed_columns } => {
+            Query::CreateTable {
+                name,
+                primary_key,
+                indexed_columns,
+            } => {
                 self.create_table(&name, &primary_key, indexed_columns)?;
                 Ok(QueryResult::Success {
                     message: format!("Table '{}' created", name),
@@ -20,10 +24,14 @@ impl Engine {
             }
             Query::Insert { table, data } => {
                 let pk_field = self.get_table_primary_key(&table)?;
-                let primary_key = data.get(&pk_field)
-                    .ok_or_else(|| crate::errors::DriftError::InvalidQuery(
-                        format!("Missing primary key field '{}'", pk_field)
-                    ))?
+                let primary_key = data
+                    .get(&pk_field)
+                    .ok_or_else(|| {
+                        crate::errors::DriftError::InvalidQuery(format!(
+                            "Missing primary key field '{}'",
+                            pk_field
+                        ))
+                    })?
                     .clone();
 
                 // Check if primary key already exists
@@ -39,9 +47,10 @@ impl Engine {
                 )?;
 
                 if !existing.is_empty() {
-                    return Err(crate::errors::DriftError::InvalidQuery(
-                        format!("Primary key violation: {} already exists", primary_key)
-                    ));
+                    return Err(crate::errors::DriftError::InvalidQuery(format!(
+                        "Primary key violation: {} already exists",
+                        primary_key
+                    )));
                 }
 
                 let event = Event::new_insert(table.clone(), primary_key, data);
@@ -51,7 +60,11 @@ impl Engine {
                     message: format!("Inserted with sequence {}", seq),
                 })
             }
-            Query::Patch { table, primary_key, updates } => {
+            Query::Patch {
+                table,
+                primary_key,
+                updates,
+            } => {
                 let event = Event::new_patch(table.clone(), primary_key, updates);
                 let seq = self.apply_event(event)?;
 
@@ -67,7 +80,12 @@ impl Engine {
                     message: format!("Soft deleted with sequence {}", seq),
                 })
             }
-            Query::Select { table, conditions, as_of, limit } => {
+            Query::Select {
+                table,
+                conditions,
+                as_of,
+                limit,
+            } => {
                 let rows = self.select(&table, conditions, as_of, limit)?;
                 Ok(QueryResult::Rows { data: rows })
             }
@@ -87,7 +105,11 @@ impl Engine {
                     message: format!("Table '{}' compacted", table),
                 })
             }
-            Query::BackupDatabase { destination, compression: _, incremental } => {
+            Query::BackupDatabase {
+                destination,
+                compression: _,
+                incremental,
+            } => {
                 let metrics = Arc::new(Metrics::new());
                 let backup_manager = BackupManager::new(self.base_path(), metrics);
 
@@ -100,24 +122,40 @@ impl Engine {
                 }?;
 
                 Ok(QueryResult::Success {
-                    message: format!("Database backup created at '{}' with {} tables",
-                        destination, result.tables.len()),
+                    message: format!(
+                        "Database backup created at '{}' with {} tables",
+                        destination,
+                        result.tables.len()
+                    ),
                 })
             }
-            Query::BackupTable { table, destination, compression: _ } => {
+            Query::BackupTable {
+                table,
+                destination,
+                compression: _,
+            } => {
                 // Table-specific backup would be implemented by copying just that table's files
                 // For now, return a placeholder
                 Ok(QueryResult::Success {
                     message: format!("Table '{}' backup created at '{}'", table, destination),
                 })
             }
-            Query::RestoreDatabase { source: _, target: _, verify: _ } => {
+            Query::RestoreDatabase {
+                source: _,
+                target: _,
+                verify: _,
+            } => {
                 // TODO: Fix type issues with generic path handling
                 Ok(QueryResult::Success {
                     message: format!("Restore functionality pending type fixes"),
                 })
             }
-            Query::RestoreTable { table, source, target: _, verify: _ } => {
+            Query::RestoreTable {
+                table,
+                source,
+                target: _,
+                verify: _,
+            } => {
                 // Table-specific restore would be implemented similarly
                 Ok(QueryResult::Success {
                     message: format!("Table '{}' restored from '{}'", table, source),
@@ -137,7 +175,9 @@ impl Engine {
 
                             if metadata_file.exists() {
                                 if let Ok(content) = std::fs::read_to_string(&metadata_file) {
-                                    if let Ok(metadata) = serde_json::from_str::<serde_json::Value>(&content) {
+                                    if let Ok(metadata) =
+                                        serde_json::from_str::<serde_json::Value>(&content)
+                                    {
                                         backups.push(json!({
                                             "path": backup_path.to_string_lossy(),
                                             "timestamp": metadata.get("timestamp_ms"),
@@ -160,8 +200,10 @@ impl Engine {
                 let is_valid = backup_manager.verify_backup(&backup_path)?;
 
                 Ok(QueryResult::Success {
-                    message: format!("Backup verification: {}",
-                        if is_valid { "PASSED" } else { "FAILED" }),
+                    message: format!(
+                        "Backup verification: {}",
+                        if is_valid { "PASSED" } else { "FAILED" }
+                    ),
                 })
             }
         }
@@ -174,14 +216,17 @@ impl Engine {
         as_of: Option<AsOf>,
         limit: Option<usize>,
     ) -> Result<Vec<serde_json::Value>> {
-        let storage = self.tables.get(table)
+        let storage = self
+            .tables
+            .get(table)
             .ok_or_else(|| crate::errors::DriftError::TableNotFound(table.to_string()))?;
 
         let sequence = match as_of {
             Some(AsOf::Sequence(seq)) => Some(seq),
             Some(AsOf::Timestamp(ts)) => {
                 let events = storage.read_all_events()?;
-                events.iter()
+                events
+                    .iter()
                     .filter(|e| e.timestamp <= ts)
                     .map(|e| e.sequence)
                     .max()
@@ -251,49 +296,47 @@ impl Engine {
             match operator {
                 "=" | "==" => left == right,
                 "!=" | "<>" => left != right,
-            "<" => {
-                match (left.as_f64(), right.as_f64()) {
+                "<" => match (left.as_f64(), right.as_f64()) {
                     (Some(l), Some(r)) => l < r,
                     _ => match (left.as_str(), right.as_str()) {
                         (Some(l), Some(r)) => l < r,
                         _ => false,
-                    }
-                }
-            }
-            "<=" => {
-                match (left.as_f64(), right.as_f64()) {
+                    },
+                },
+                "<=" => match (left.as_f64(), right.as_f64()) {
                     (Some(l), Some(r)) => l <= r,
                     _ => match (left.as_str(), right.as_str()) {
                         (Some(l), Some(r)) => l <= r,
                         _ => false,
-                    }
-                }
-            }
-            ">" => {
-                match (left.as_f64(), right.as_f64()) {
+                    },
+                },
+                ">" => match (left.as_f64(), right.as_f64()) {
                     (Some(l), Some(r)) => l > r,
                     _ => match (left.as_str(), right.as_str()) {
                         (Some(l), Some(r)) => l > r,
                         _ => false,
-                    }
-                }
-            }
-            ">=" => {
-                match (left.as_f64(), right.as_f64()) {
+                    },
+                },
+                ">=" => match (left.as_f64(), right.as_f64()) {
                     (Some(l), Some(r)) => l >= r,
                     _ => match (left.as_str(), right.as_str()) {
                         (Some(l), Some(r)) => l >= r,
                         _ => false,
-                    }
-                }
-            }
-            _ => false, // Unknown operator
+                    },
+                },
+                _ => false, // Unknown operator
             }
         }
     }
 
-    fn get_drift_history(&self, table: &str, primary_key: serde_json::Value) -> Result<Vec<serde_json::Value>> {
-        let storage = self.tables.get(table)
+    fn get_drift_history(
+        &self,
+        table: &str,
+        primary_key: serde_json::Value,
+    ) -> Result<Vec<serde_json::Value>> {
+        let storage = self
+            .tables
+            .get(table)
             .ok_or_else(|| crate::errors::DriftError::TableNotFound(table.to_string()))?;
 
         let events = storage.read_all_events()?;
@@ -316,13 +359,17 @@ impl Engine {
     }
 
     pub fn get_table_primary_key(&self, table: &str) -> Result<String> {
-        let storage = self.tables.get(table)
+        let storage = self
+            .tables
+            .get(table)
             .ok_or_else(|| crate::errors::DriftError::TableNotFound(table.to_string()))?;
         Ok(storage.schema().primary_key.clone())
     }
 
     pub fn get_table_columns(&self, table: &str) -> Result<Vec<String>> {
-        let storage = self.tables.get(table)
+        let storage = self
+            .tables
+            .get(table)
             .ok_or_else(|| crate::errors::DriftError::TableNotFound(table.to_string()))?;
 
         // Get columns from schema

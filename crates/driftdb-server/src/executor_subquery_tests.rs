@@ -1,9 +1,9 @@
 #[cfg(test)]
 mod subquery_tests {
     use super::*;
-    use std::sync::Arc;
-    use parking_lot::RwLock;
     use driftdb_core::Engine;
+    use parking_lot::RwLock;
+    use std::sync::Arc;
 
     fn create_test_executor() -> QueryExecutor<'static> {
         // Create a simple in-memory engine for testing
@@ -20,7 +20,11 @@ mod subquery_tests {
 
         assert!(subquery_expr.is_some());
         match subquery_expr.unwrap() {
-            SubqueryExpression::In { column, subquery, negated } => {
+            SubqueryExpression::In {
+                column,
+                subquery,
+                negated,
+            } => {
                 assert_eq!(column, "id");
                 assert_eq!(subquery.sql, "SELECT user_id FROM orders");
                 assert!(!negated);
@@ -38,7 +42,11 @@ mod subquery_tests {
 
         assert!(subquery_expr.is_some());
         match subquery_expr.unwrap() {
-            SubqueryExpression::In { column, subquery, negated } => {
+            SubqueryExpression::In {
+                column,
+                subquery,
+                negated,
+            } => {
                 assert_eq!(column, "id");
                 assert_eq!(subquery.sql, "SELECT user_id FROM orders");
                 assert!(negated);
@@ -57,7 +65,10 @@ mod subquery_tests {
         assert!(subquery_expr.is_some());
         match subquery_expr.unwrap() {
             SubqueryExpression::Exists { subquery, negated } => {
-                assert_eq!(subquery.sql, "SELECT 1 FROM orders WHERE user_id = users.id");
+                assert_eq!(
+                    subquery.sql,
+                    "SELECT 1 FROM orders WHERE user_id = users.id"
+                );
                 assert!(!negated);
             }
             _ => panic!("Expected EXISTS subquery expression"),
@@ -74,7 +85,10 @@ mod subquery_tests {
         assert!(subquery_expr.is_some());
         match subquery_expr.unwrap() {
             SubqueryExpression::Exists { subquery, negated } => {
-                assert_eq!(subquery.sql, "SELECT 1 FROM orders WHERE user_id = users.id");
+                assert_eq!(
+                    subquery.sql,
+                    "SELECT 1 FROM orders WHERE user_id = users.id"
+                );
                 assert!(negated);
             }
             _ => panic!("Expected NOT EXISTS subquery expression"),
@@ -90,7 +104,12 @@ mod subquery_tests {
 
         assert!(subquery_expr.is_some());
         match subquery_expr.unwrap() {
-            SubqueryExpression::Comparison { column, operator, quantifier, subquery } => {
+            SubqueryExpression::Comparison {
+                column,
+                operator,
+                quantifier,
+                subquery,
+            } => {
                 assert_eq!(column, "price");
                 assert_eq!(operator, ">");
                 assert_eq!(quantifier, Some(SubqueryQuantifier::Any));
@@ -109,7 +128,12 @@ mod subquery_tests {
 
         assert!(subquery_expr.is_some());
         match subquery_expr.unwrap() {
-            SubqueryExpression::Comparison { column, operator, quantifier, subquery } => {
+            SubqueryExpression::Comparison {
+                column,
+                operator,
+                quantifier,
+                subquery,
+            } => {
                 assert_eq!(column, "price");
                 assert_eq!(operator, ">");
                 assert_eq!(quantifier, Some(SubqueryQuantifier::All));
@@ -128,7 +152,12 @@ mod subquery_tests {
 
         assert!(subquery_expr.is_some());
         match subquery_expr.unwrap() {
-            SubqueryExpression::Comparison { column, operator, quantifier, subquery } => {
+            SubqueryExpression::Comparison {
+                column,
+                operator,
+                quantifier,
+                subquery,
+            } => {
                 assert_eq!(column, "amount");
                 assert_eq!(operator, ">");
                 assert_eq!(quantifier, None); // No quantifier for scalar subquery
@@ -148,7 +177,10 @@ mod subquery_tests {
         assert!(derived_table.is_some());
         let dt = derived_table.unwrap();
         assert_eq!(dt.alias, "active_users");
-        assert_eq!(dt.subquery.sql, "SELECT * FROM users WHERE status = 'active'");
+        assert_eq!(
+            dt.subquery.sql,
+            "SELECT * FROM users WHERE status = 'active'"
+        );
     }
 
     #[tokio::test]
@@ -158,7 +190,10 @@ mod subquery_tests {
         let text = "(SELECT user_id FROM orders WHERE status = 'completed')";
         let extracted = executor.extract_parenthesized_subquery(text).unwrap();
 
-        assert_eq!(extracted, "SELECT user_id FROM orders WHERE status = 'completed'");
+        assert_eq!(
+            extracted,
+            "SELECT user_id FROM orders WHERE status = 'completed'"
+        );
     }
 
     #[tokio::test]
@@ -168,7 +203,10 @@ mod subquery_tests {
         let text = "(SELECT user_id FROM orders WHERE amount > (SELECT AVG(amount) FROM orders))";
         let extracted = executor.extract_parenthesized_subquery(text).unwrap();
 
-        assert_eq!(extracted, "SELECT user_id FROM orders WHERE amount > (SELECT AVG(amount) FROM orders)");
+        assert_eq!(
+            extracted,
+            "SELECT user_id FROM orders WHERE amount > (SELECT AVG(amount) FROM orders)"
+        );
     }
 
     #[tokio::test]
@@ -182,7 +220,11 @@ mod subquery_tests {
 
         // First condition should be simple
         match &conditions[0] {
-            WhereCondition::Simple { column, operator, value } => {
+            WhereCondition::Simple {
+                column,
+                operator,
+                value,
+            } => {
                 assert_eq!(column, "status");
                 assert_eq!(operator, "=");
                 assert_eq!(value, &serde_json::Value::String("active".to_string()));
@@ -192,7 +234,11 @@ mod subquery_tests {
 
         // Second condition should be subquery
         match &conditions[1] {
-            WhereCondition::Subquery(SubqueryExpression::In { column, subquery, negated }) => {
+            WhereCondition::Subquery(SubqueryExpression::In {
+                column,
+                subquery,
+                negated,
+            }) => {
                 assert_eq!(column, "id");
                 assert_eq!(subquery.sql, "SELECT user_id FROM orders");
                 assert!(!negated);

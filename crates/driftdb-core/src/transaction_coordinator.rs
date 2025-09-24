@@ -1,14 +1,14 @@
-use std::sync::Arc;
-use std::collections::HashMap;
 use parking_lot::RwLock;
-use tracing::{info, warn, debug, instrument};
+use std::collections::HashMap;
+use std::sync::Arc;
+use tracing::{debug, info, instrument, warn};
 
+use crate::distributed_coordinator::{CoordinationResult, DistributedCoordinator};
 use crate::errors::{DriftError, Result};
-use crate::transaction::IsolationLevel as TxnIsolationLevel;
-use crate::mvcc::{MVCCManager, MVCCTransaction, IsolationLevel, MVCCConfig, RecordId};
 use crate::events::Event;
+use crate::mvcc::{IsolationLevel, MVCCConfig, MVCCManager, MVCCTransaction, RecordId};
+use crate::transaction::IsolationLevel as TxnIsolationLevel;
 use crate::wal::{WalManager, WalOperation};
-use crate::distributed_coordinator::{DistributedCoordinator, CoordinationResult};
 
 /// Enhanced transaction coordinator that integrates MVCC, WAL, and distributed coordination
 pub struct TransactionCoordinator {
@@ -44,13 +44,16 @@ impl TransactionCoordinator {
 
     /// Begin a new transaction with ACID guarantees
     #[instrument(skip(self))]
-    pub fn begin_transaction(&self, isolation_level: IsolationLevel) -> Result<Arc<MVCCTransaction>> {
+    pub fn begin_transaction(
+        &self,
+        isolation_level: IsolationLevel,
+    ) -> Result<Arc<MVCCTransaction>> {
         // Check if we can accept writes (distributed coordination)
         if let Some(ref coordinator) = self.distributed_coordinator {
             let status = coordinator.cluster_status();
             if !status.can_accept_writes() {
                 return Err(DriftError::Other(
-                    "Cannot start transaction: node cannot accept writes".to_string()
+                    "Cannot start transaction: node cannot accept writes".to_string(),
                 ));
             }
         }
@@ -59,20 +62,29 @@ impl TransactionCoordinator {
         let txn = self.mvcc_manager.begin_transaction(isolation_level)?;
 
         // Log transaction begin to WAL
-        self.wal_manager.log_operation(WalOperation::TransactionBegin {
-            transaction_id: txn.id,
-        })?;
+        self.wal_manager
+            .log_operation(WalOperation::TransactionBegin {
+                transaction_id: txn.id,
+            })?;
 
         // Track active transaction
         self.active_transactions.write().insert(txn.id, txn.clone());
 
-        info!("Started transaction {} with isolation {:?}", txn.id, isolation_level);
+        info!(
+            "Started transaction {} with isolation {:?}",
+            txn.id, isolation_level
+        );
         Ok(txn)
     }
 
     /// Read a value within a transaction
     #[instrument(skip(self, txn))]
-    pub fn read(&self, txn: &MVCCTransaction, table: &str, key: &str) -> Result<Option<serde_json::Value>> {
+    pub fn read(
+        &self,
+        txn: &MVCCTransaction,
+        table: &str,
+        key: &str,
+    ) -> Result<Option<serde_json::Value>> {
         let record_id = RecordId {
             table: table.to_string(),
             key: key.to_string(),
@@ -83,7 +95,13 @@ impl TransactionCoordinator {
 
     /// Write a value within a transaction
     #[instrument(skip(self, txn, value))]
-    pub fn write(&self, txn: &MVCCTransaction, table: &str, key: &str, value: serde_json::Value) -> Result<()> {
+    pub fn write(
+        &self,
+        txn: &MVCCTransaction,
+        table: &str,
+        key: &str,
+        value: serde_json::Value,
+    ) -> Result<()> {
         let record_id = RecordId {
             table: table.to_string(),
             key: key.to_string(),
@@ -121,12 +139,14 @@ impl TransactionCoordinator {
             match coordinator.coordinate_event(&dummy_event)? {
                 CoordinationResult::ForwardToLeader(leader) => {
                     return Err(DriftError::Other(format!(
-                        "Transaction must be committed on leader: {:?}", leader
+                        "Transaction must be committed on leader: {:?}",
+                        leader
                     )));
                 }
                 CoordinationResult::Rejected(reason) => {
                     return Err(DriftError::Other(format!(
-                        "Transaction rejected by cluster: {}", reason
+                        "Transaction rejected by cluster: {}",
+                        reason
                     )));
                 }
                 CoordinationResult::Committed => {
@@ -157,9 +177,10 @@ impl TransactionCoordinator {
         }
 
         // Log commit to WAL
-        self.wal_manager.log_operation(WalOperation::TransactionCommit {
-            transaction_id: txn.id,
-        })?;
+        self.wal_manager
+            .log_operation(WalOperation::TransactionCommit {
+                transaction_id: txn.id,
+            })?;
 
         // Commit in MVCC manager
         self.mvcc_manager.commit(txn.clone())?;
@@ -177,9 +198,10 @@ impl TransactionCoordinator {
         debug!("Aborting transaction {}", txn.id);
 
         // Log abort to WAL
-        self.wal_manager.log_operation(WalOperation::TransactionAbort {
-            transaction_id: txn.id,
-        })?;
+        self.wal_manager
+            .log_operation(WalOperation::TransactionAbort {
+                transaction_id: txn.id,
+            })?;
 
         // Abort in MVCC manager
         self.mvcc_manager.abort(txn.clone())?;
@@ -193,7 +215,11 @@ impl TransactionCoordinator {
 
     /// Execute a transaction with automatic retry logic
     #[instrument(skip(self, operation))]
-    pub fn execute_transaction<F, R>(&self, isolation_level: IsolationLevel, operation: F) -> Result<R>
+    pub fn execute_transaction<F, R>(
+        &self,
+        isolation_level: IsolationLevel,
+        operation: F,
+    ) -> Result<R>
     where
         F: Fn(&Arc<MVCCTransaction>) -> Result<R> + Send + Sync,
         R: Send,
@@ -222,7 +248,10 @@ impl TransactionCoordinator {
                 }
                 Err(e) if attempt < MAX_RETRIES && self.is_retryable_error(&e) => {
                     let _ = self.abort_transaction(&txn);
-                    debug!("Operation failed with retryable error: {}, retrying (attempt {})", e, attempt);
+                    debug!(
+                        "Operation failed with retryable error: {}, retrying (attempt {})",
+                        e, attempt
+                    );
                     continue;
                 }
                 Err(e) => {
@@ -236,7 +265,7 @@ impl TransactionCoordinator {
     /// Check if an error is retryable
     fn is_retryable_error(&self, error: &DriftError) -> bool {
         match error {
-            DriftError::Lock(_) => true,  // Lock conflicts are retryable
+            DriftError::Lock(_) => true, // Lock conflicts are retryable
             DriftError::Other(msg) if msg.contains("conflict") => true,
             DriftError::Other(msg) if msg.contains("timeout") => true,
             DriftError::Other(msg) if msg.contains("validation failed") => true,
@@ -258,20 +287,25 @@ impl TransactionCoordinator {
         // Cleanup timed-out transactions
         let timeout_txns: Vec<Arc<crate::mvcc::MVCCTransaction>> = {
             let active_txns = self.active_transactions.read();
-            active_txns.iter().filter_map(|(txn_id, txn)| {
-                // Check for timeout based on configuration
-                let start_time = std::time::SystemTime::UNIX_EPOCH +
-                    std::time::Duration::from_millis(txn.start_timestamp);
-                let elapsed = std::time::SystemTime::now().duration_since(start_time)
-                    .unwrap_or(std::time::Duration::ZERO);
+            active_txns
+                .iter()
+                .filter_map(|(txn_id, txn)| {
+                    // Check for timeout based on configuration
+                    let start_time = std::time::SystemTime::UNIX_EPOCH
+                        + std::time::Duration::from_millis(txn.start_timestamp);
+                    let elapsed = std::time::SystemTime::now()
+                        .duration_since(start_time)
+                        .unwrap_or(std::time::Duration::ZERO);
 
-                if elapsed > std::time::Duration::from_millis(60000) { // 60 second timeout
-                    warn!("Transaction {} timed out, will abort", txn_id);
-                    Some(txn.clone())
-                } else {
-                    None
-                }
-            }).collect()
+                    if elapsed > std::time::Duration::from_millis(60000) {
+                        // 60 second timeout
+                        warn!("Transaction {} timed out, will abort", txn_id);
+                        Some(txn.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect()
         };
 
         // Abort timed-out transactions
@@ -306,21 +340,32 @@ pub struct TransactionStats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
     use crate::wal::WalConfig;
+    use tempfile::TempDir;
 
     #[tokio::test]
     async fn test_transaction_lifecycle() {
         let temp_dir = TempDir::new().unwrap();
-        let wal = Arc::new(WalManager::new(temp_dir.path().join("test.wal"), WalConfig::default()).unwrap());
+        let wal = Arc::new(
+            WalManager::new(temp_dir.path().join("test.wal"), WalConfig::default()).unwrap(),
+        );
 
         let coordinator = TransactionCoordinator::new(wal, None);
 
         // Begin transaction
-        let txn = coordinator.begin_transaction(IsolationLevel::ReadCommitted).unwrap();
+        let txn = coordinator
+            .begin_transaction(IsolationLevel::ReadCommitted)
+            .unwrap();
 
         // Write some data
-        coordinator.write(&txn, "users", "user1", serde_json::json!({"name": "Alice", "age": 30})).unwrap();
+        coordinator
+            .write(
+                &txn,
+                "users",
+                "user1",
+                serde_json::json!({"name": "Alice", "age": 30}),
+            )
+            .unwrap();
 
         // Read it back
         let result = coordinator.read(&txn, "users", "user1").unwrap();
@@ -333,16 +378,29 @@ mod tests {
     #[tokio::test]
     async fn test_transaction_isolation() {
         let temp_dir = TempDir::new().unwrap();
-        let wal = Arc::new(WalManager::new(temp_dir.path().join("test.wal"), WalConfig::default()).unwrap());
+        let wal = Arc::new(
+            WalManager::new(temp_dir.path().join("test.wal"), WalConfig::default()).unwrap(),
+        );
 
         let coordinator = TransactionCoordinator::new(wal, None);
 
         // Start two transactions
-        let txn1 = coordinator.begin_transaction(IsolationLevel::ReadCommitted).unwrap();
-        let txn2 = coordinator.begin_transaction(IsolationLevel::ReadCommitted).unwrap();
+        let txn1 = coordinator
+            .begin_transaction(IsolationLevel::ReadCommitted)
+            .unwrap();
+        let txn2 = coordinator
+            .begin_transaction(IsolationLevel::ReadCommitted)
+            .unwrap();
 
         // Txn1 writes data
-        coordinator.write(&txn1, "users", "user1", serde_json::json!({"name": "Alice"})).unwrap();
+        coordinator
+            .write(
+                &txn1,
+                "users",
+                "user1",
+                serde_json::json!({"name": "Alice"}),
+            )
+            .unwrap();
 
         // Txn2 shouldn't see uncommitted data
         let result = coordinator.read(&txn2, "users", "user1").unwrap();
@@ -352,7 +410,9 @@ mod tests {
         coordinator.commit_transaction(&txn1).unwrap();
 
         // Now start txn3, should see committed data
-        let txn3 = coordinator.begin_transaction(IsolationLevel::ReadCommitted).unwrap();
+        let txn3 = coordinator
+            .begin_transaction(IsolationLevel::ReadCommitted)
+            .unwrap();
         let result = coordinator.read(&txn3, "users", "user1").unwrap();
         assert!(result.is_some());
 
@@ -363,14 +423,18 @@ mod tests {
     #[tokio::test]
     async fn test_transaction_retry() {
         let temp_dir = TempDir::new().unwrap();
-        let wal = Arc::new(WalManager::new(temp_dir.path().join("test.wal"), WalConfig::default()).unwrap());
+        let wal = Arc::new(
+            WalManager::new(temp_dir.path().join("test.wal"), WalConfig::default()).unwrap(),
+        );
 
         let coordinator = TransactionCoordinator::new(wal, None);
 
-        let result = coordinator.execute_transaction(IsolationLevel::ReadCommitted, |txn| {
-            coordinator.write(txn, "users", "user1", serde_json::json!({"name": "Bob"}))?;
-            Ok("success")
-        }).unwrap();
+        let result = coordinator
+            .execute_transaction(IsolationLevel::ReadCommitted, |txn| {
+                coordinator.write(txn, "users", "user1", serde_json::json!({"name": "Bob"}))?;
+                Ok("success")
+            })
+            .unwrap();
 
         assert_eq!(result, "success");
     }

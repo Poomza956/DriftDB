@@ -1,12 +1,12 @@
-use std::sync::Arc;
-use std::collections::HashMap;
 use parking_lot::RwLock;
-use tracing::{info, warn, debug};
+use std::collections::HashMap;
+use std::sync::Arc;
+use tracing::{debug, info, warn};
 
-use crate::errors::{DriftError, Result};
-use crate::replication::{ReplicationConfig, NodeRole};
 use crate::consensus::ConsensusConfig;
+use crate::errors::{DriftError, Result};
 use crate::events::Event;
+use crate::replication::{NodeRole, ReplicationConfig};
 
 /// Distributed coordinator that manages replication and consensus
 /// This provides a simplified interface to the underlying distributed systems
@@ -60,7 +60,10 @@ impl DistributedCoordinator {
     /// Configure replication settings
     pub fn configure_replication(&mut self, config: ReplicationConfig) -> Result<()> {
         info!("Configuring replication for node: {}", self.node_id);
-        info!("Replication mode: {:?}, Role: {:?}", config.mode, config.role);
+        info!(
+            "Replication mode: {:?}, Role: {:?}",
+            config.mode, config.role
+        );
 
         self.role = config.role.clone();
         self.replication_config = Some(config);
@@ -83,17 +86,21 @@ impl DistributedCoordinator {
         // Update cluster state
         let mut cluster_state = self.cluster_state.write();
         cluster_state.total_nodes = config.peers.len() + 1; // Include self
-        cluster_state.has_quorum = cluster_state.active_nodes >= (cluster_state.total_nodes / 2) + 1;
+        cluster_state.has_quorum =
+            cluster_state.active_nodes >= (cluster_state.total_nodes / 2) + 1;
 
         // Initialize peer status
         let mut peer_status = self.peer_status.write();
         for peer in &config.peers {
-            peer_status.insert(peer.clone(), PeerStatus {
-                node_id: peer.clone(),
-                is_healthy: false, // Will be updated by health checks
-                last_seen_ms: 0,
-                replication_lag_ms: 0,
-            });
+            peer_status.insert(
+                peer.clone(),
+                PeerStatus {
+                    node_id: peer.clone(),
+                    is_healthy: false, // Will be updated by health checks
+                    last_seen_ms: 0,
+                    replication_lag_ms: 0,
+                },
+            );
         }
 
         self.consensus_config = Some(config);
@@ -105,12 +112,14 @@ impl DistributedCoordinator {
         let is_leader = *self.is_leader.read();
         let cluster_state = self.cluster_state.read();
 
-        debug!("Coordinating event {} (leader: {}, quorum: {})",
-               event.sequence, is_leader, cluster_state.has_quorum);
+        debug!(
+            "Coordinating event {} (leader: {}, quorum: {})",
+            event.sequence, is_leader, cluster_state.has_quorum
+        );
 
         if !is_leader {
             return Ok(CoordinationResult::ForwardToLeader(
-                cluster_state.leader_node.clone()
+                cluster_state.leader_node.clone(),
             ));
         }
 

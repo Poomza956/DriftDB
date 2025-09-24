@@ -125,15 +125,9 @@ pub enum SearchQuery {
     /// Phrase search (exact sequence)
     Phrase(String),
     /// Proximity search (terms within N words)
-    Proximity {
-        terms: Vec<String>,
-        distance: usize,
-    },
+    Proximity { terms: Vec<String>, distance: usize },
     /// Fuzzy search with edit distance
-    Fuzzy {
-        term: String,
-        max_distance: usize,
-    },
+    Fuzzy { term: String, max_distance: usize },
 }
 
 /// Boolean search query
@@ -227,25 +221,25 @@ impl Stemmer {
 
         // Remove common suffixes
         if word.ends_with("ing") && word.len() > 6 {
-            return word[..word.len()-3].to_string();
+            return word[..word.len() - 3].to_string();
         }
         if word.ends_with("ed") && word.len() > 5 {
-            return word[..word.len()-2].to_string();
+            return word[..word.len() - 2].to_string();
         }
         if word.ends_with("er") && word.len() > 5 {
-            return word[..word.len()-2].to_string();
+            return word[..word.len() - 2].to_string();
         }
         if word.ends_with("est") && word.len() > 6 {
-            return word[..word.len()-3].to_string();
+            return word[..word.len() - 3].to_string();
         }
         if word.ends_with("ly") && word.len() > 5 {
-            return word[..word.len()-2].to_string();
+            return word[..word.len() - 2].to_string();
         }
         if word.ends_with("tion") && word.len() > 7 {
-            return word[..word.len()-4].to_string();
+            return word[..word.len() - 4].to_string();
         }
         if word.ends_with("sion") && word.len() > 7 {
-            return word[..word.len()-4].to_string();
+            return word[..word.len() - 4].to_string();
         }
 
         word
@@ -316,10 +310,10 @@ impl Tokenizer {
     fn load_stop_words(language: &str) -> HashSet<String> {
         let stop_words = match language {
             "english" => vec![
-                "a", "an", "and", "are", "as", "at", "be", "by", "for", "from",
-                "has", "he", "in", "is", "it", "its", "of", "on", "that", "the",
-                "to", "was", "were", "will", "with", "but", "not", "or", "this",
-                "have", "had", "what", "when", "where", "who", "which", "why", "how"
+                "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "has", "he", "in",
+                "is", "it", "its", "of", "on", "that", "the", "to", "was", "were", "will", "with",
+                "but", "not", "or", "this", "have", "had", "what", "when", "where", "who", "which",
+                "why", "how",
             ],
             _ => vec![], // No stop words for unknown languages
         };
@@ -347,7 +341,10 @@ impl SearchManager {
         column: String,
         config: SearchConfig,
     ) -> Result<()> {
-        debug!("Creating full-text index '{}' on {}.{}", name, table, column);
+        debug!(
+            "Creating full-text index '{}' on {}.{}",
+            name, table, column
+        );
 
         let index = SearchIndex {
             name: name.clone(),
@@ -365,9 +362,10 @@ impl SearchManager {
         {
             let mut indexes = self.indexes.write();
             if indexes.contains_key(&name) {
-                return Err(DriftError::InvalidQuery(
-                    format!("Search index '{}' already exists", name)
-                ));
+                return Err(DriftError::InvalidQuery(format!(
+                    "Search index '{}' already exists",
+                    name
+                )));
             }
             indexes.insert(name.clone(), index);
         }
@@ -375,7 +373,10 @@ impl SearchManager {
         // Add to table indexes
         {
             let mut table_indexes = self.table_indexes.write();
-            table_indexes.entry(table).or_insert_with(Vec::new).push(name.clone());
+            table_indexes
+                .entry(table)
+                .or_insert_with(Vec::new)
+                .push(name.clone());
         }
 
         // Update statistics
@@ -394,10 +395,9 @@ impl SearchManager {
 
         let table_name = {
             let mut indexes = self.indexes.write();
-            let index = indexes.remove(name)
-                .ok_or_else(|| DriftError::InvalidQuery(
-                    format!("Search index '{}' does not exist", name)
-                ))?;
+            let index = indexes.remove(name).ok_or_else(|| {
+                DriftError::InvalidQuery(format!("Search index '{}' does not exist", name))
+            })?;
             index.table
         };
 
@@ -430,12 +430,15 @@ impl SearchManager {
         content: String,
     ) -> Result<()> {
         let mut indexes = self.indexes.write();
-        let index = indexes.get_mut(index_name)
-            .ok_or_else(|| DriftError::InvalidQuery(
-                format!("Search index '{}' does not exist", index_name)
-            ))?;
+        let index = indexes.get_mut(index_name).ok_or_else(|| {
+            DriftError::InvalidQuery(format!("Search index '{}' does not exist", index_name))
+        })?;
 
-        trace!("Indexing document '{}' in index '{}'", document_id, index_name);
+        trace!(
+            "Indexing document '{}' in index '{}'",
+            document_id,
+            index_name
+        );
 
         // Tokenize the content
         let terms = self.tokenizer.tokenize(&content, &index.config);
@@ -448,11 +451,16 @@ impl SearchManager {
         // Count term frequencies and positions
         let mut term_counts: HashMap<String, Vec<usize>> = HashMap::new();
         for (pos, term) in terms.iter().enumerate() {
-            term_counts.entry(term.clone()).or_insert_with(Vec::new).push(pos);
+            term_counts
+                .entry(term.clone())
+                .or_insert_with(Vec::new)
+                .push(pos);
         }
 
         // Add to forward index
-        index.forward_index.insert(document_id.clone(), terms.clone());
+        index
+            .forward_index
+            .insert(document_id.clone(), terms.clone());
 
         // Add document info
         let doc_info = DocumentInfo {
@@ -471,7 +479,8 @@ impl SearchManager {
                 tf_idf: 0.0, // Will be calculated later
             };
 
-            index.inverted_index
+            index
+                .inverted_index
                 .entry(term.clone())
                 .or_insert_with(|| TermInfo {
                     documents: HashMap::new(),
@@ -540,12 +549,13 @@ impl SearchManager {
         let start_time = std::time::Instant::now();
 
         let indexes = self.indexes.read();
-        let index = indexes.get(index_name)
-            .ok_or_else(|| DriftError::InvalidQuery(
-                format!("Search index '{}' does not exist", index_name)
-            ))?;
+        let index = indexes.get(index_name).ok_or_else(|| {
+            DriftError::InvalidQuery(format!("Search index '{}' does not exist", index_name))
+        })?;
 
-        let limit = limit.unwrap_or(index.config.max_results).min(index.config.max_results);
+        let limit = limit
+            .unwrap_or(index.config.max_results)
+            .min(index.config.max_results);
         let offset = offset.unwrap_or(0);
 
         let mut document_scores: HashMap<String, f64> = HashMap::new();
@@ -560,8 +570,12 @@ impl SearchManager {
                 for term in &terms {
                     if let Some(term_info) = index.inverted_index.get(term) {
                         for (doc_id, term_freq) in &term_info.documents {
-                            *document_scores.entry(doc_id.clone()).or_insert(0.0) += term_freq.tf_idf;
-                            matched_terms.entry(doc_id.clone()).or_insert_with(Vec::new).push(term.clone());
+                            *document_scores.entry(doc_id.clone()).or_insert(0.0) +=
+                                term_freq.tf_idf;
+                            matched_terms
+                                .entry(doc_id.clone())
+                                .or_insert_with(Vec::new)
+                                .push(term.clone());
                         }
                     }
                 }
@@ -588,7 +602,9 @@ impl SearchManager {
             }
             _ => {
                 // TODO: Implement other query types
-                return Err(DriftError::InvalidQuery("Query type not yet implemented".to_string()));
+                return Err(DriftError::InvalidQuery(
+                    "Query type not yet implemented".to_string(),
+                ));
             }
         }
 
@@ -598,18 +614,17 @@ impl SearchManager {
 
         // Apply pagination
         let total_matches = scored_docs.len();
-        let paginated_docs: Vec<_> = scored_docs
-            .into_iter()
-            .skip(offset)
-            .take(limit)
-            .collect();
+        let paginated_docs: Vec<_> = scored_docs.into_iter().skip(offset).take(limit).collect();
 
         // Build results
         let mut results = Vec::new();
         for (doc_id, score) in paginated_docs {
             if let Some(doc_info) = index.documents.get(&doc_id) {
-                let snippets = self.generate_snippets(&doc_info.content,
-                    matched_terms.get(&doc_id).unwrap_or(&vec![]), 150);
+                let snippets = self.generate_snippets(
+                    &doc_info.content,
+                    matched_terms.get(&doc_id).unwrap_or(&vec![]),
+                    150,
+                );
 
                 results.push(SearchResult {
                     document_id: doc_id.clone(),
@@ -628,7 +643,8 @@ impl SearchManager {
             let mut stats = self.stats.write();
             stats.total_searches += 1;
             let total_time = stats.avg_search_time_ms * (stats.total_searches - 1) as f64;
-            stats.avg_search_time_ms = (total_time + execution_time as f64) / stats.total_searches as f64;
+            stats.avg_search_time_ms =
+                (total_time + execution_time as f64) / stats.total_searches as f64;
         }
 
         Ok(SearchResults {
@@ -674,7 +690,12 @@ impl SearchManager {
     }
 
     /// Check if a document contains a phrase
-    fn document_contains_phrase(&self, index: &SearchIndex, doc_id: &str, terms: &[String]) -> bool {
+    fn document_contains_phrase(
+        &self,
+        index: &SearchIndex,
+        doc_id: &str,
+        terms: &[String],
+    ) -> bool {
         if let Some(doc_terms) = index.forward_index.get(doc_id) {
             // Look for consecutive occurrences of the phrase terms
             for i in 0..doc_terms.len().saturating_sub(terms.len() - 1) {
@@ -698,7 +719,10 @@ impl SearchManager {
             }
             BooleanQuery::Phrase(phrase) => {
                 let terms = self.tokenizer.tokenize(phrase, &index.config);
-                self.find_phrase_matches(index, &terms).keys().cloned().collect()
+                self.find_phrase_matches(index, &terms)
+                    .keys()
+                    .cloned()
+                    .collect()
             }
             BooleanQuery::And(left, right) => {
                 let left_docs = self.evaluate_boolean_query(index, left);
@@ -763,7 +787,10 @@ impl SearchManager {
             if highlighted.len() <= max_length {
                 snippets.push(highlighted);
             } else {
-                snippets.push(format!("{}...", &highlighted[..max_length.saturating_sub(3)]));
+                snippets.push(format!(
+                    "{}...",
+                    &highlighted[..max_length.saturating_sub(3)]
+                ));
             }
         }
 
@@ -802,7 +829,12 @@ impl SearchManager {
     /// Get index information
     pub fn get_index_info(&self, name: &str) -> Option<(String, String, usize, SystemTime)> {
         self.indexes.read().get(name).map(|idx| {
-            (idx.table.clone(), idx.column.clone(), idx.total_documents, idx.updated_at)
+            (
+                idx.table.clone(),
+                idx.column.clone(),
+                idx.total_documents,
+                idx.updated_at,
+            )
         })
     }
 }
@@ -838,12 +870,14 @@ mod tests {
     fn test_search_index_creation() {
         let manager = SearchManager::new();
 
-        manager.create_index(
-            "test_index".to_string(),
-            "documents".to_string(),
-            "content".to_string(),
-            SearchConfig::default(),
-        ).unwrap();
+        manager
+            .create_index(
+                "test_index".to_string(),
+                "documents".to_string(),
+                "content".to_string(),
+                SearchConfig::default(),
+            )
+            .unwrap();
 
         let indexes = manager.list_indexes();
         assert!(indexes.contains(&"test_index".to_string()));
@@ -853,18 +887,22 @@ mod tests {
     fn test_document_indexing() {
         let manager = SearchManager::new();
 
-        manager.create_index(
-            "test_index".to_string(),
-            "documents".to_string(),
-            "content".to_string(),
-            SearchConfig::default(),
-        ).unwrap();
+        manager
+            .create_index(
+                "test_index".to_string(),
+                "documents".to_string(),
+                "content".to_string(),
+                SearchConfig::default(),
+            )
+            .unwrap();
 
-        manager.index_document(
-            "test_index",
-            "doc1".to_string(),
-            "The quick brown fox jumps over the lazy dog".to_string(),
-        ).unwrap();
+        manager
+            .index_document(
+                "test_index",
+                "doc1".to_string(),
+                "The quick brown fox jumps over the lazy dog".to_string(),
+            )
+            .unwrap();
 
         let (_, _, doc_count, _) = manager.get_index_info("test_index").unwrap();
         assert_eq!(doc_count, 1);
@@ -874,31 +912,39 @@ mod tests {
     fn test_text_search() {
         let manager = SearchManager::new();
 
-        manager.create_index(
-            "test_index".to_string(),
-            "documents".to_string(),
-            "content".to_string(),
-            SearchConfig::default(),
-        ).unwrap();
+        manager
+            .create_index(
+                "test_index".to_string(),
+                "documents".to_string(),
+                "content".to_string(),
+                SearchConfig::default(),
+            )
+            .unwrap();
 
-        manager.index_document(
-            "test_index",
-            "doc1".to_string(),
-            "The quick brown fox".to_string(),
-        ).unwrap();
+        manager
+            .index_document(
+                "test_index",
+                "doc1".to_string(),
+                "The quick brown fox".to_string(),
+            )
+            .unwrap();
 
-        manager.index_document(
-            "test_index",
-            "doc2".to_string(),
-            "The lazy dog sleeps".to_string(),
-        ).unwrap();
+        manager
+            .index_document(
+                "test_index",
+                "doc2".to_string(),
+                "The lazy dog sleeps".to_string(),
+            )
+            .unwrap();
 
-        let results = manager.search(
-            "test_index",
-            SearchQuery::Text("quick".to_string()),
-            None,
-            None,
-        ).unwrap();
+        let results = manager
+            .search(
+                "test_index",
+                SearchQuery::Text("quick".to_string()),
+                None,
+                None,
+            )
+            .unwrap();
 
         assert_eq!(results.results.len(), 1);
         assert_eq!(results.results[0].document_id, "doc1");

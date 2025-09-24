@@ -10,15 +10,15 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
-use std::time::{SystemTime, Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
-use parking_lot::{RwLock, Mutex};
+use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
 use tracing::{debug, info, trace};
 
-use crate::errors::{DriftError, Result};
 use crate::connection::{EngineGuard, PoolConfig, PoolStats};
+use crate::errors::{DriftError, Result};
 
 /// Adaptive pool configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -369,7 +369,8 @@ impl AdaptiveConnectionPool {
         info!("Starting adaptive connection pool");
 
         // Initialize minimum pool size
-        self.scale_to_size(self.config.sizing_params.min_size).await?;
+        self.scale_to_size(self.config.sizing_params.min_size)
+            .await?;
 
         // Start health monitoring if enabled
         if self.config.health_check.enabled {
@@ -437,7 +438,11 @@ impl AdaptiveConnectionPool {
     }
 
     /// Return a connection to the pool
-    pub async fn return_connection(&self, connection_id: String, performance: ConnectionPerformance) {
+    pub async fn return_connection(
+        &self,
+        connection_id: String,
+        performance: ConnectionPerformance,
+    ) {
         let mut active = self.active_connections.write();
         if let Some(mut conn_info) = active.remove(&connection_id) {
             conn_info.in_use = false;
@@ -466,9 +471,7 @@ impl AdaptiveConnectionPool {
         }
 
         match self.config.load_balancing {
-            LoadBalancingStrategy::RoundRobin => {
-                available.pop_front()
-            }
+            LoadBalancingStrategy::RoundRobin => available.pop_front(),
             LoadBalancingStrategy::LeastConnections => {
                 // Find connection with lowest use count
                 let min_use_idx = available
@@ -484,7 +487,9 @@ impl AdaptiveConnectionPool {
                     .iter()
                     .enumerate()
                     .min_by(|(_, a), (_, b)| {
-                        a.performance.avg_response_time.cmp(&b.performance.avg_response_time)
+                        a.performance
+                            .avg_response_time
+                            .cmp(&b.performance.avg_response_time)
                     })
                     .map(|(idx, _)| idx)?;
                 available.remove(best_idx)
@@ -523,7 +528,9 @@ impl AdaptiveConnectionPool {
     /// Create engine guard (placeholder)
     async fn create_engine_guard(&self) -> Result<EngineGuard> {
         // TODO: Implement actual engine guard creation
-        Err(DriftError::Internal("Engine guard creation not implemented".to_string()))
+        Err(DriftError::Internal(
+            "Engine guard creation not implemented".to_string(),
+        ))
     }
 
     /// Check if connection should be retired
@@ -531,10 +538,10 @@ impl AdaptiveConnectionPool {
         let age = conn_info.created_at.elapsed();
         let idle_time = conn_info.last_used.elapsed();
 
-        age > self.config.lifetime_config.max_age ||
-        idle_time > self.config.lifetime_config.max_idle_time ||
-        conn_info.health_status == HealthStatus::Unhealthy ||
-        conn_info.performance.error_rate > 0.1
+        age > self.config.lifetime_config.max_age
+            || idle_time > self.config.lifetime_config.max_idle_time
+            || conn_info.health_status == HealthStatus::Unhealthy
+            || conn_info.performance.error_rate > 0.1
     }
 
     /// Scale pool to target size
@@ -645,10 +652,16 @@ impl AdaptiveConnectionPool {
                 // Determine if scaling is needed
                 if utilization > sizing_params.target_utilization {
                     // Scale up
-                    debug!("High utilization detected: {:.2}%, scaling up", utilization * 100.0);
+                    debug!(
+                        "High utilization detected: {:.2}%, scaling up",
+                        utilization * 100.0
+                    );
                 } else if utilization < sizing_params.target_utilization * 0.5 {
                     // Scale down (with delay)
-                    debug!("Low utilization detected: {:.2}%, considering scale down", utilization * 100.0);
+                    debug!(
+                        "Low utilization detected: {:.2}%, considering scale down",
+                        utilization * 100.0
+                    );
                 }
             }
         });
@@ -726,7 +739,11 @@ impl Drop for AdaptiveConnection {
         };
 
         // TODO: Return connection to pool
-        trace!("Connection {} dropped after {} ms", self.connection_id, duration.as_millis());
+        trace!(
+            "Connection {} dropped after {} ms",
+            self.connection_id,
+            duration.as_millis()
+        );
     }
 }
 

@@ -2,10 +2,10 @@
 //!
 //! Provides true ACID compliance with snapshot isolation
 
-use std::collections::HashMap;
-use std::sync::Arc;
 use parking_lot::RwLock;
 use serde_json::Value;
+use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::errors::Result;
 use crate::events::{Event, EventType};
@@ -30,12 +30,7 @@ impl TransactionSnapshot {
     }
 
     /// Read a value from the snapshot
-    pub fn read(
-        &self,
-        table: &str,
-        key: &str,
-        storage: &TableStorage,
-    ) -> Result<Option<Value>> {
+    pub fn read(&self, table: &str, key: &str, storage: &TableStorage) -> Result<Option<Value>> {
         // Check cache first
         {
             let cache = self.table_states.read();
@@ -89,10 +84,7 @@ impl TransactionSnapshot {
         self.ensure_table_cached(table, storage)?;
 
         let cache = self.table_states.read();
-        let mut state = cache
-            .get(table)
-            .cloned()
-            .unwrap_or_default();
+        let mut state = cache.get(table).cloned().unwrap_or_default();
 
         // Apply transaction's writes
         for (key, event) in writes {
@@ -170,9 +162,9 @@ impl SnapshotManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
-    use crate::schema::{Schema, ColumnDef};
+    use crate::schema::{ColumnDef, Schema};
     use serde_json::json;
+    use tempfile::TempDir;
 
     #[test]
     fn test_snapshot_isolation() {

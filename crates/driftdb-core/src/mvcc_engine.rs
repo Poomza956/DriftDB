@@ -7,11 +7,11 @@
 //! - Garbage collection of old versions
 //! - Serializable Snapshot Isolation (SSI)
 
-use std::collections::{HashMap, HashSet, BTreeMap};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use parking_lot::{RwLock, Mutex};
+use parking_lot::{Mutex, RwLock};
 use serde_json::Value;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use crate::errors::{DriftError, Result};
 
@@ -200,15 +200,11 @@ impl MvccEngine {
     }
 
     /// Read a row with MVCC semantics
-    pub fn read(
-        &self,
-        txn_id: TxnId,
-        table: &str,
-        row_id: &str,
-    ) -> Result<Option<Value>> {
+    pub fn read(&self, txn_id: TxnId, table: &str, row_id: &str) -> Result<Option<Value>> {
         let (snapshot, isolation) = {
             let active_txns = self.active_txns.read();
-            let txn = active_txns.get(&txn_id)
+            let txn = active_txns
+                .get(&txn_id)
                 .ok_or_else(|| DriftError::Other("Transaction not found".to_string()))?;
 
             if txn.state != TxnState::Active {
@@ -220,21 +216,17 @@ impl MvccEngine {
 
         // Find the appropriate version
         let version_store = self.version_store.read();
-        let version = self.find_visible_version(
-            &version_store,
-            table,
-            row_id,
-            txn_id,
-            &snapshot,
-            isolation,
-        )?;
+        let version =
+            self.find_visible_version(&version_store, table, row_id, txn_id, &snapshot, isolation)?;
 
         // Track read for conflict detection
         if isolation >= IsolationLevel::RepeatableRead {
-            self.active_txns.write()
+            self.active_txns
+                .write()
                 .get_mut(&txn_id)
                 .unwrap()
-                .read_set.insert(row_id.to_string());
+                .read_set
+                .insert(row_id.to_string());
         }
 
         Ok(version.and_then(|v| match &v.data {
@@ -244,16 +236,11 @@ impl MvccEngine {
     }
 
     /// Write a row with MVCC semantics
-    pub fn write(
-        &self,
-        txn_id: TxnId,
-        table: &str,
-        row_id: &str,
-        value: Value,
-    ) -> Result<()> {
+    pub fn write(&self, txn_id: TxnId, table: &str, row_id: &str, value: Value) -> Result<()> {
         // Check transaction state
         let mut active_txns = self.active_txns.write();
-        let txn = active_txns.get_mut(&txn_id)
+        let txn = active_txns
+            .get_mut(&txn_id)
             .ok_or_else(|| DriftError::Other("Transaction not found".to_string()))?;
 
         if txn.state != TxnState::Active {
@@ -279,13 +266,18 @@ impl MvccEngine {
 
         // Add to version store (as pending)
         let mut version_store = self.version_store.write();
-        let table_versions = version_store.tables
+        let table_versions = version_store
+            .tables
             .entry(table.to_string())
             .or_insert_with(HashMap::new);
 
-        let version_chain = table_versions
-            .entry(row_id.to_string())
-            .or_insert_with(|| VersionChain { head: None, length: 0 });
+        let version_chain =
+            table_versions
+                .entry(row_id.to_string())
+                .or_insert_with(|| VersionChain {
+                    head: None,
+                    length: 0,
+                });
 
         // Link to previous version
         let mut new_version = new_version;
@@ -302,11 +294,14 @@ impl MvccEngine {
     /// Commit a transaction
     pub fn commit(&self, txn_id: TxnId) -> Result<()> {
         let mut active_txns = self.active_txns.write();
-        let txn = active_txns.get_mut(&txn_id)
+        let txn = active_txns
+            .get_mut(&txn_id)
             .ok_or_else(|| DriftError::Other("Transaction not found".to_string()))?;
 
         if txn.state != TxnState::Active {
-            return Err(DriftError::Other("Transaction not in active state".to_string()));
+            return Err(DriftError::Other(
+                "Transaction not in active state".to_string(),
+            ));
         }
 
         // Validation phase for Serializable isolation
@@ -339,7 +334,8 @@ impl MvccEngine {
     /// Rollback a transaction
     pub fn rollback(&self, txn_id: TxnId) -> Result<()> {
         let mut active_txns = self.active_txns.write();
-        let txn = active_txns.get_mut(&txn_id)
+        let txn = active_txns
+            .get_mut(&txn_id)
             .ok_or_else(|| DriftError::Other("Transaction not found".to_string()))?;
 
         txn.state = TxnState::Aborted;
@@ -389,18 +385,21 @@ impl MvccEngine {
                 IsolationLevel::ReadUncommitted => true,
                 IsolationLevel::ReadCommitted => {
                     // See latest committed version
-                    version.txn_id == txn_id ||
-                    (version.begin_ts <= snapshot.ts && !snapshot.active_set.contains(&version.txn_id))
+                    version.txn_id == txn_id
+                        || (version.begin_ts <= snapshot.ts
+                            && !snapshot.active_set.contains(&version.txn_id))
                 }
                 IsolationLevel::RepeatableRead | IsolationLevel::Snapshot => {
                     // See versions committed before transaction start
-                    version.txn_id == txn_id ||
-                    (version.begin_ts < snapshot.ts && !snapshot.active_set.contains(&version.txn_id))
+                    version.txn_id == txn_id
+                        || (version.begin_ts < snapshot.ts
+                            && !snapshot.active_set.contains(&version.txn_id))
                 }
                 IsolationLevel::Serializable => {
                     // Same as Snapshot, but with additional validation
-                    version.txn_id == txn_id ||
-                    (version.begin_ts < snapshot.ts && !snapshot.active_set.contains(&version.txn_id))
+                    version.txn_id == txn_id
+                        || (version.begin_ts < snapshot.ts
+                            && !snapshot.active_set.contains(&version.txn_id))
                 }
             };
 
@@ -441,7 +440,8 @@ impl MvccEngine {
                     }
 
                     // Add to wait graph
-                    self.waits_for.lock()
+                    self.waits_for
+                        .lock()
                         .entry(txn_id)
                         .or_insert_with(HashSet::new)
                         .insert(holder);
@@ -510,7 +510,9 @@ impl MvccEngine {
             for write in write_set {
                 if other_txn.write_set.contains(write) {
                     self.stats.write().conflicts += 1;
-                    return Err(DriftError::Other("Write-write conflict detected".to_string()));
+                    return Err(DriftError::Other(
+                        "Write-write conflict detected".to_string(),
+                    ));
                 }
             }
 
@@ -518,7 +520,9 @@ impl MvccEngine {
             for read in read_set {
                 if other_txn.write_set.contains(read) {
                     self.stats.write().conflicts += 1;
-                    return Err(DriftError::Other("Read-write conflict detected".to_string()));
+                    return Err(DriftError::Other(
+                        "Read-write conflict detected".to_string(),
+                    ));
                 }
             }
         }
@@ -587,7 +591,8 @@ impl MvccEngine {
     fn calculate_min_snapshot(&self) -> Timestamp {
         let active_txns = self.active_txns.read();
 
-        active_txns.values()
+        active_txns
+            .values()
             .map(|txn| txn.start_ts)
             .min()
             .unwrap_or_else(|| self.timestamp.load(Ordering::SeqCst))
@@ -640,7 +645,8 @@ mod tests {
         let txn1 = mvcc.begin_transaction(IsolationLevel::Snapshot).unwrap();
 
         // Write data
-        mvcc.write(txn1, "users", "user1", json!({"name": "Alice"})).unwrap();
+        mvcc.write(txn1, "users", "user1", json!({"name": "Alice"}))
+            .unwrap();
 
         // Read within same transaction should see the write
         let value = mvcc.read(txn1, "users", "user1").unwrap();
@@ -657,7 +663,9 @@ mod tests {
         mvcc.commit(txn1).unwrap();
 
         // Now second transaction should see it (in Read Committed)
-        let txn3 = mvcc.begin_transaction(IsolationLevel::ReadCommitted).unwrap();
+        let txn3 = mvcc
+            .begin_transaction(IsolationLevel::ReadCommitted)
+            .unwrap();
         let value = mvcc.read(txn3, "users", "user1").unwrap();
         assert!(value.is_some());
     }
@@ -668,14 +676,20 @@ mod tests {
 
         // Create initial data
         let txn_setup = mvcc.begin_transaction(IsolationLevel::Snapshot).unwrap();
-        mvcc.write(txn_setup, "test", "row1", json!({"value": 1})).unwrap();
+        mvcc.write(txn_setup, "test", "row1", json!({"value": 1}))
+            .unwrap();
         mvcc.commit(txn_setup).unwrap();
 
         // Test Read Uncommitted
-        let txn1 = mvcc.begin_transaction(IsolationLevel::ReadUncommitted).unwrap();
-        let txn2 = mvcc.begin_transaction(IsolationLevel::ReadUncommitted).unwrap();
+        let txn1 = mvcc
+            .begin_transaction(IsolationLevel::ReadUncommitted)
+            .unwrap();
+        let txn2 = mvcc
+            .begin_transaction(IsolationLevel::ReadUncommitted)
+            .unwrap();
 
-        mvcc.write(txn1, "test", "row1", json!({"value": 2})).unwrap();
+        mvcc.write(txn1, "test", "row1", json!({"value": 2}))
+            .unwrap();
 
         // Read Uncommitted can see uncommitted changes
         let value = mvcc.read(txn2, "test", "row1").unwrap();
@@ -690,20 +704,28 @@ mod tests {
         let mvcc = MvccEngine::new();
 
         // Create initial data
-        let txn_setup = mvcc.begin_transaction(IsolationLevel::Serializable).unwrap();
-        mvcc.write(txn_setup, "test", "row1", json!({"value": 1})).unwrap();
+        let txn_setup = mvcc
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
+        mvcc.write(txn_setup, "test", "row1", json!({"value": 1}))
+            .unwrap();
         mvcc.commit(txn_setup).unwrap();
 
         // Start two serializable transactions
-        let txn1 = mvcc.begin_transaction(IsolationLevel::Serializable).unwrap();
-        let txn2 = mvcc.begin_transaction(IsolationLevel::Serializable).unwrap();
+        let txn1 = mvcc
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
+        let txn2 = mvcc
+            .begin_transaction(IsolationLevel::Serializable)
+            .unwrap();
 
         // Both read the same row
         mvcc.read(txn1, "test", "row1").unwrap();
         mvcc.read(txn2, "test", "row1").unwrap();
 
         // Both try to write
-        mvcc.write(txn1, "test", "row1", json!({"value": 2})).unwrap();
+        mvcc.write(txn1, "test", "row1", json!({"value": 2}))
+            .unwrap();
 
         // Second write should block waiting for lock
         // In real implementation, this would timeout or detect deadlock

@@ -41,7 +41,7 @@ fn json_value(input: &str) -> IResult<&str, serde_json::Value> {
     } else {
         let (input, raw) = recognize(tuple((
             opt(char('-')),
-            take_while1(|c: char| c.is_numeric() || c == '.')
+            take_while1(|c: char| c.is_numeric() || c == '.'),
         )))(input)?;
         if let Ok(num) = raw.parse::<f64>() {
             Ok((input, serde_json::json!(num)))
@@ -92,7 +92,10 @@ fn insert(input: &str) -> IResult<&str, Query> {
     // Find the JSON object starting from '{'
     let trimmed = input.trim_start();
     if !trimmed.starts_with('{') {
-        return Err(nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Tag)));
+        return Err(nom::Err::Error(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::Tag,
+        )));
     }
 
     // Find the matching closing brace
@@ -124,7 +127,10 @@ fn insert(input: &str) -> IResult<&str, Query> {
     }
 
     if depth != 0 {
-        return Err(nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Tag)));
+        return Err(nom::Err::Error(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::Tag,
+        )));
     }
 
     let json_str = &trimmed[..end_idx];
@@ -152,7 +158,10 @@ fn patch(input: &str) -> IResult<&str, Query> {
     // Parse the JSON object for updates
     let trimmed = input.trim_start();
     if !trimmed.starts_with('{') {
-        return Err(nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Tag)));
+        return Err(nom::Err::Error(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::Tag,
+        )));
     }
 
     let mut depth = 0;
@@ -183,7 +192,10 @@ fn patch(input: &str) -> IResult<&str, Query> {
     }
 
     if depth != 0 {
-        return Err(nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Tag)));
+        return Err(nom::Err::Error(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::Tag,
+        )));
     }
 
     let json_str = &trimmed[..end_idx];
@@ -239,15 +251,19 @@ fn as_of_clause(input: &str) -> IResult<&str, AsOf> {
     let (input, _) = ws(tag_no_case("OF"))(input)?;
 
     alt((
-        map(preceded(tag("@seq:"), take_while1(|c: char| c.is_numeric())), |s: &str| {
-            AsOf::Sequence(s.parse().unwrap_or(0))
-        }),
+        map(
+            preceded(tag("@seq:"), take_while1(|c: char| c.is_numeric())),
+            |s: &str| AsOf::Sequence(s.parse().unwrap_or(0)),
+        ),
         map(tag("@now"), |_| AsOf::Now),
-        map(delimited(char('"'), take_until("\""), char('"')), |s: &str| {
-            time::OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339)
-                .map(AsOf::Timestamp)
-                .unwrap_or(AsOf::Now)
-        }),
+        map(
+            delimited(char('"'), take_until("\""), char('"')),
+            |s: &str| {
+                time::OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339)
+                    .map(AsOf::Timestamp)
+                    .unwrap_or(AsOf::Now)
+            },
+        ),
     ))(input)
 }
 
@@ -259,10 +275,7 @@ fn select(input: &str) -> IResult<&str, Query> {
 
     let (input, conditions) = opt(preceded(
         ws(tag_no_case("WHERE")),
-        separated_list0(
-            ws(tag_no_case("AND")),
-            where_condition,
-        ),
+        separated_list0(ws(tag_no_case("AND")), where_condition),
     ))(input)?;
 
     let (input, as_of) = opt(as_of_clause)(input)?;
@@ -347,8 +360,8 @@ fn backup_database(input: &str) -> IResult<&str, Query> {
                 map(tag_no_case("ZSTD"), |_| "zstd".to_string()),
                 map(tag_no_case("GZIP"), |_| "gzip".to_string()),
                 map(tag_no_case("NONE"), |_| "none".to_string()),
-            )))
-        ))
+            ))),
+        )),
     ))(input)?;
 
     // Optional INCREMENTAL
@@ -380,8 +393,8 @@ fn backup_table(input: &str) -> IResult<&str, Query> {
                 map(tag_no_case("ZSTD"), |_| "zstd".to_string()),
                 map(tag_no_case("GZIP"), |_| "gzip".to_string()),
                 map(tag_no_case("NONE"), |_| "none".to_string()),
-            )))
-        ))
+            ))),
+        )),
     ))(input)?;
 
     Ok((
@@ -401,16 +414,10 @@ fn restore_database(input: &str) -> IResult<&str, Query> {
     let (input, source) = ws(quoted_path)(input)?;
 
     // Optional TO target
-    let (input, target) = opt(preceded(
-        ws(tag_no_case("TO")),
-        ws(quoted_path)
-    ))(input)?;
+    let (input, target) = opt(preceded(ws(tag_no_case("TO")), ws(quoted_path)))(input)?;
 
     // Optional WITH VERIFY
-    let (input, verify) = opt(tuple((
-        ws(tag_no_case("WITH")),
-        ws(tag_no_case("VERIFY"))
-    )))(input)?;
+    let (input, verify) = opt(tuple((ws(tag_no_case("WITH")), ws(tag_no_case("VERIFY")))))(input)?;
 
     Ok((
         input,
@@ -430,16 +437,10 @@ fn restore_table(input: &str) -> IResult<&str, Query> {
     let (input, source) = ws(quoted_path)(input)?;
 
     // Optional TO target
-    let (input, target) = opt(preceded(
-        ws(tag_no_case("TO")),
-        ws(quoted_path)
-    ))(input)?;
+    let (input, target) = opt(preceded(ws(tag_no_case("TO")), ws(quoted_path)))(input)?;
 
     // Optional WITH VERIFY
-    let (input, verify) = opt(tuple((
-        ws(tag_no_case("WITH")),
-        ws(tag_no_case("VERIFY"))
-    )))(input)?;
+    let (input, verify) = opt(tuple((ws(tag_no_case("WITH")), ws(tag_no_case("VERIFY")))))(input)?;
 
     Ok((
         input,
@@ -457,17 +458,9 @@ fn show_backups(input: &str) -> IResult<&str, Query> {
     let (input, _) = ws(tag_no_case("BACKUPS"))(input)?;
 
     // Optional FROM directory
-    let (input, directory) = opt(preceded(
-        ws(tag_no_case("FROM")),
-        ws(quoted_path)
-    ))(input)?;
+    let (input, directory) = opt(preceded(ws(tag_no_case("FROM")), ws(quoted_path)))(input)?;
 
-    Ok((
-        input,
-        Query::ShowBackups {
-            directory,
-        },
-    ))
+    Ok((input, Query::ShowBackups { directory }))
 }
 
 fn verify_backup(input: &str) -> IResult<&str, Query> {
@@ -475,12 +468,7 @@ fn verify_backup(input: &str) -> IResult<&str, Query> {
     let (input, _) = ws(tag_no_case("BACKUP"))(input)?;
     let (input, backup_path) = ws(quoted_path)(input)?;
 
-    Ok((
-        input,
-        Query::VerifyBackup {
-            backup_path,
-        },
-    ))
+    Ok((input, Query::VerifyBackup { backup_path }))
 }
 
 fn driftql_query(input: &str) -> IResult<&str, Query> {

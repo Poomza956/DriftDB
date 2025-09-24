@@ -20,20 +20,33 @@ pub enum Message {
     AuthenticationCleartextPassword,
     AuthenticationMD5Password {
         #[allow(dead_code)]
-        salt: [u8; 4]
+        salt: [u8; 4],
     },
     AuthenticationSASL {
         #[allow(dead_code)]
-        mechanisms: Vec<String>
+        mechanisms: Vec<String>,
     },
-    AuthenticationSASLContinue { data: Vec<u8> },
-    AuthenticationSASLFinal { data: Vec<u8> },
-    PasswordMessage { password: String },
-    SASLInitialResponse { mechanism: String, data: Vec<u8> },
-    SASLResponse { data: Vec<u8> },
+    AuthenticationSASLContinue {
+        data: Vec<u8>,
+    },
+    AuthenticationSASLFinal {
+        data: Vec<u8>,
+    },
+    PasswordMessage {
+        password: String,
+    },
+    SASLInitialResponse {
+        mechanism: String,
+        data: Vec<u8>,
+    },
+    SASLResponse {
+        data: Vec<u8>,
+    },
 
     // Simple Query
-    Query { sql: String },
+    Query {
+        sql: String,
+    },
 
     // Extended Query
     Parse {
@@ -67,14 +80,28 @@ pub enum Message {
     Flush,
 
     // Responses
-    CommandComplete { tag: String },
-    DataRow { values: Vec<Option<Vec<u8>>> },
+    CommandComplete {
+        tag: String,
+    },
+    DataRow {
+        values: Vec<Option<Vec<u8>>>,
+    },
     EmptyQueryResponse,
-    ErrorResponse { fields: HashMap<u8, String> },
-    NoticeResponse { fields: HashMap<u8, String> },
-    ReadyForQuery { status: u8 },
-    RowDescription { fields: Vec<super::FieldDescription> },
-    ParameterDescription { types: Vec<i32> },
+    ErrorResponse {
+        fields: HashMap<u8, String>,
+    },
+    NoticeResponse {
+        fields: HashMap<u8, String>,
+    },
+    ReadyForQuery {
+        status: u8,
+    },
+    RowDescription {
+        fields: Vec<super::FieldDescription>,
+    },
+    ParameterDescription {
+        types: Vec<i32>,
+    },
     ParseComplete,
     BindComplete,
     CloseComplete,
@@ -84,13 +111,23 @@ pub enum Message {
     // Copy operations (not implemented yet)
     CopyInResponse,
     CopyOutResponse,
-    CopyData { data: Vec<u8> },
+    CopyData {
+        data: Vec<u8>,
+    },
     CopyDone,
-    CopyFail { message: String },
+    CopyFail {
+        message: String,
+    },
 
     // Misc
-    ParameterStatus { name: String, value: String },
-    BackendKeyData { process_id: i32, secret_key: i32 },
+    ParameterStatus {
+        name: String,
+        value: String,
+    },
+    BackendKeyData {
+        process_id: i32,
+        secret_key: i32,
+    },
     Terminate,
 }
 
@@ -99,12 +136,12 @@ impl Message {
     #[allow(dead_code)]
     pub fn type_byte(&self) -> Option<u8> {
         match self {
-            Message::AuthenticationOk |
-            Message::AuthenticationCleartextPassword |
-            Message::AuthenticationMD5Password { .. } |
-            Message::AuthenticationSASL { .. } |
-            Message::AuthenticationSASLContinue { .. } |
-            Message::AuthenticationSASLFinal { .. } => Some(b'R'),
+            Message::AuthenticationOk
+            | Message::AuthenticationCleartextPassword
+            | Message::AuthenticationMD5Password { .. }
+            | Message::AuthenticationSASL { .. }
+            | Message::AuthenticationSASLContinue { .. }
+            | Message::AuthenticationSASLFinal { .. } => Some(b'R'),
             Message::PasswordMessage { .. } => Some(b'p'),
             Message::SASLInitialResponse { .. } => Some(b'p'),
             Message::SASLResponse { .. } => Some(b'p'),
@@ -145,6 +182,13 @@ impl Message {
                 buf.put_u8(b'R');
                 buf.put_i32(8); // Length including self
                 buf.put_i32(0); // Auth type: OK
+            }
+
+            Message::AuthenticationMD5Password { salt } => {
+                buf.put_u8(b'R');
+                buf.put_i32(12); // Length including self (4 + 4 + 4)
+                buf.put_i32(5); // Auth type: MD5
+                buf.put_slice(salt); // 4 byte salt
             }
 
             Message::CommandComplete { tag } => {
@@ -241,7 +285,10 @@ impl Message {
                 buf.put_u8(0);
             }
 
-            Message::BackendKeyData { process_id, secret_key } => {
+            Message::BackendKeyData {
+                process_id,
+                secret_key,
+            } => {
                 buf.put_u8(b'K');
                 buf.put_i32(12); // Length including self
                 buf.put_i32(*process_id);

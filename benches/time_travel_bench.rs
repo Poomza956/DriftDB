@@ -1,9 +1,9 @@
-use criterion::{criterion_group, criterion_main, Criterion, BenchmarkId};
-use driftdb_core::{Engine, Query, QueryResult};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use driftdb_core::query::executor::QueryExecutor;
 use driftdb_core::sql_bridge;
-use tempfile::TempDir;
+use driftdb_core::{Engine, Query, QueryResult};
 use std::time::Instant;
+use tempfile::TempDir;
 
 /// Benchmark time-travel query performance at different scales
 fn bench_time_travel_queries(c: &mut Criterion) {
@@ -15,16 +15,18 @@ fn bench_time_travel_queries(c: &mut Criterion) {
         let mut engine = Engine::init(temp_dir.path()).unwrap();
 
         // Create a test table using SQL
-        sql_bridge::execute_sql(&mut engine,
-            "CREATE TABLE bench_table (id INTEGER PRIMARY KEY, value TEXT, timestamp INTEGER)"
-        ).unwrap();
+        sql_bridge::execute_sql(
+            &mut engine,
+            "CREATE TABLE bench_table (id INTEGER PRIMARY KEY, value TEXT, timestamp INTEGER)",
+        )
+        .unwrap();
 
         // Insert events with some updates to create history
         let setup_start = Instant::now();
         for i in 0..*num_events {
             let sql = format!(
                 "INSERT INTO bench_table (id, value, timestamp) VALUES ({}, 'value_{}', {})",
-                i % 100,  // Reuse IDs to create update history
+                i % 100, // Reuse IDs to create update history
                 i,
                 i
             );
@@ -43,9 +45,8 @@ fn bench_time_travel_queries(c: &mut Criterion) {
         println!("Setup {} events in {:?}", num_events, setup_start.elapsed());
 
         // Get the current state for baseline comparison
-        let current_result = sql_bridge::execute_sql(&mut engine,
-            "SELECT COUNT(*) FROM bench_table"
-        ).unwrap();
+        let current_result =
+            sql_bridge::execute_sql(&mut engine, "SELECT COUNT(*) FROM bench_table").unwrap();
 
         // Benchmark time-travel to different points in history
         group.bench_with_input(
@@ -55,8 +56,12 @@ fn bench_time_travel_queries(c: &mut Criterion) {
                 b.iter(|| {
                     // Query recent history (last 10% of events)
                     let target_seq = (num_events * 9) / 10;
-                    sql_bridge::execute_sql(&mut engine,
-                        &format!("SELECT * FROM bench_table AS OF @seq:{} LIMIT 10", target_seq)
+                    sql_bridge::execute_sql(
+                        &mut engine,
+                        &format!(
+                            "SELECT * FROM bench_table AS OF @seq:{} LIMIT 10",
+                            target_seq
+                        ),
                     )
                 });
             },
@@ -69,8 +74,12 @@ fn bench_time_travel_queries(c: &mut Criterion) {
                 b.iter(|| {
                     // Query middle of history (50% point)
                     let target_seq = num_events / 2;
-                    sql_bridge::execute_sql(&mut engine,
-                        &format!("SELECT * FROM bench_table AS OF @seq:{} LIMIT 10", target_seq)
+                    sql_bridge::execute_sql(
+                        &mut engine,
+                        &format!(
+                            "SELECT * FROM bench_table AS OF @seq:{} LIMIT 10",
+                            target_seq
+                        ),
                     )
                 });
             },
@@ -83,8 +92,12 @@ fn bench_time_travel_queries(c: &mut Criterion) {
                 b.iter(|| {
                     // Query early history (first 10% of events)
                     let target_seq = num_events / 10;
-                    sql_bridge::execute_sql(&mut engine,
-                        &format!("SELECT * FROM bench_table AS OF @seq:{} LIMIT 10", target_seq)
+                    sql_bridge::execute_sql(
+                        &mut engine,
+                        &format!(
+                            "SELECT * FROM bench_table AS OF @seq:{} LIMIT 10",
+                            target_seq
+                        ),
                     )
                 });
             },
@@ -102,8 +115,12 @@ fn bench_time_travel_queries(c: &mut Criterion) {
                     b.iter(|| {
                         // Query after snapshot point
                         let target_seq = (num_events * 3) / 4;
-                        sql_bridge::execute_sql(&mut engine,
-                            &format!("SELECT * FROM bench_table AS OF @seq:{} LIMIT 10", target_seq)
+                        sql_bridge::execute_sql(
+                            &mut engine,
+                            &format!(
+                                "SELECT * FROM bench_table AS OF @seq:{} LIMIT 10",
+                                target_seq
+                            ),
                         )
                     });
                 },
@@ -123,9 +140,11 @@ fn bench_event_replay_overhead(c: &mut Criterion) {
         let mut engine = Engine::init(temp_dir.path()).unwrap();
 
         // Create table
-        sql_bridge::execute_sql(&mut engine,
-            "CREATE TABLE replay_test (id INTEGER PRIMARY KEY, data TEXT)"
-        ).unwrap();
+        sql_bridge::execute_sql(
+            &mut engine,
+            "CREATE TABLE replay_test (id INTEGER PRIMARY KEY, data TEXT)",
+        )
+        .unwrap();
 
         // Generate events
         for i in 0..*num_events {
@@ -143,9 +162,7 @@ fn bench_event_replay_overhead(c: &mut Criterion) {
             |b, _| {
                 b.iter(|| {
                     // Query current state (no replay needed)
-                    sql_bridge::execute_sql(&mut engine,
-                        "SELECT COUNT(*) FROM replay_test"
-                    )
+                    sql_bridge::execute_sql(&mut engine, "SELECT COUNT(*) FROM replay_test")
                 });
             },
         );
@@ -156,8 +173,9 @@ fn bench_event_replay_overhead(c: &mut Criterion) {
             |b, _| {
                 b.iter(|| {
                     // Query from beginning (full replay)
-                    sql_bridge::execute_sql(&mut engine,
-                        "SELECT COUNT(*) FROM replay_test AS OF @seq:1"
+                    sql_bridge::execute_sql(
+                        &mut engine,
+                        "SELECT COUNT(*) FROM replay_test AS OF @seq:1",
                     )
                 });
             },
@@ -176,22 +194,28 @@ fn bench_snapshot_performance(c: &mut Criterion) {
         let mut engine = Engine::init(temp_dir.path()).unwrap();
 
         // Create table with more columns to make snapshots meaningful
-        sql_bridge::execute_sql(&mut engine,
+        sql_bridge::execute_sql(
+            &mut engine,
             "CREATE TABLE snapshot_test (
                 id INTEGER PRIMARY KEY,
                 value1 TEXT,
                 value2 TEXT,
                 value3 INTEGER,
                 value4 REAL
-            )"
-        ).unwrap();
+            )",
+        )
+        .unwrap();
 
         // Generate data
         for i in 0..*num_events {
             let sql = format!(
                 "INSERT INTO snapshot_test (id, value1, value2, value3, value4)
                  VALUES ({}, 'val1_{}', 'val2_{}', {}, {})",
-                i, i, i, i * 2, i as f64 * 1.5
+                i,
+                i,
+                i,
+                i * 2,
+                i as f64 * 1.5
             );
             sql_bridge::execute_sql(&mut engine, &sql).unwrap();
         }
@@ -201,9 +225,7 @@ fn bench_snapshot_performance(c: &mut Criterion) {
             BenchmarkId::new("create", num_events),
             num_events,
             |b, _| {
-                b.iter(|| {
-                    engine.create_snapshot("snapshot_test")
-                });
+                b.iter(|| engine.create_snapshot("snapshot_test"));
             },
         );
 
@@ -218,9 +240,12 @@ fn bench_snapshot_performance(c: &mut Criterion) {
             num_events,
             |b, _| {
                 b.iter(|| {
-                    sql_bridge::execute_sql(&mut engine,
-                        &format!("SELECT * FROM snapshot_test AS OF @seq:{} LIMIT 10",
-                                snapshot_point - 10)
+                    sql_bridge::execute_sql(
+                        &mut engine,
+                        &format!(
+                            "SELECT * FROM snapshot_test AS OF @seq:{} LIMIT 10",
+                            snapshot_point - 10
+                        ),
                     )
                 });
             },
@@ -231,9 +256,12 @@ fn bench_snapshot_performance(c: &mut Criterion) {
             num_events,
             |b, _| {
                 b.iter(|| {
-                    sql_bridge::execute_sql(&mut engine,
-                        &format!("SELECT * FROM snapshot_test AS OF @seq:{} LIMIT 10",
-                                snapshot_point + 10)
+                    sql_bridge::execute_sql(
+                        &mut engine,
+                        &format!(
+                            "SELECT * FROM snapshot_test AS OF @seq:{} LIMIT 10",
+                            snapshot_point + 10
+                        ),
                     )
                 });
             },

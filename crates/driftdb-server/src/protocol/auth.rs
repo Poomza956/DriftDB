@@ -1,21 +1,21 @@
 //! PostgreSQL Authentication
 
-use md5;
+use anyhow::{anyhow, Result};
 use hex;
-use sha2::{Sha256, Digest};
-use rand::{RngCore, thread_rng};
+use md5;
+use rand::{thread_rng, RngCore};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tracing::{warn, info};
-use serde::{Serialize, Deserialize};
-use anyhow::{Result, anyhow};
+use tracing::{info, warn};
 
 /// Authentication methods supported by DriftDB
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AuthMethod {
-    Trust,          // No authentication required
-    MD5,            // MD5 hashed password (PostgreSQL compatible)
-    ScramSha256,    // SCRAM-SHA-256 (PostgreSQL 10+ standard)
+    Trust,       // No authentication required
+    MD5,         // MD5 hashed password (PostgreSQL compatible)
+    ScramSha256, // SCRAM-SHA-256 (PostgreSQL 10+ standard)
 }
 
 impl std::str::FromStr for AuthMethod {
@@ -92,20 +92,16 @@ pub fn md5_auth(password: &str, username: &str, salt: &[u8; 4]) -> String {
     let pass_user = format!("{}{}", password, username);
     let pass_user_hash = md5::compute(pass_user.as_bytes());
 
-    let salt_input = format!("{}{}", hex::encode(pass_user_hash.as_ref()),
-                            std::str::from_utf8(salt).unwrap_or(""));
-    let final_hash = md5::compute(salt_input.as_bytes());
+    // The salt is raw bytes, not text - concatenate hex hash with raw salt bytes
+    let mut salt_input = hex::encode(pass_user_hash.as_ref()).into_bytes();
+    salt_input.extend_from_slice(salt);
+    let final_hash = md5::compute(&salt_input);
 
     format!("md5{}", hex::encode(final_hash.as_ref()))
 }
 
 /// Verify MD5 authentication
-pub fn verify_md5(
-    received: &str,
-    expected_password: &str,
-    username: &str,
-    salt: &[u8; 4],
-) -> bool {
+pub fn verify_md5(received: &str, expected_password: &str, username: &str, salt: &[u8; 4]) -> bool {
     let expected = md5_auth(expected_password, username, salt);
     received == expected
 }
@@ -181,14 +177,17 @@ pub struct User {
 }
 
 impl User {
-    pub fn new(username: String, password: &str, is_superuser: bool, auth_method: AuthMethod) -> Self {
+    pub fn new(
+        username: String,
+        password: &str,
+        is_superuser: bool,
+        auth_method: AuthMethod,
+    ) -> Self {
         let salt = generate_salt().to_vec();
         let password_hash = match auth_method {
             AuthMethod::Trust => String::new(),
             AuthMethod::MD5 => password.to_string(), // Store plaintext for MD5 compatibility
-            AuthMethod::ScramSha256 => {
-                hash_password_sha256(password, &salt)
-            }
+            AuthMethod::ScramSha256 => hash_password_sha256(password, &salt),
         };
 
         let scram_sha256 = if auth_method == AuthMethod::ScramSha256 {
@@ -267,8 +266,8 @@ impl UserDb {
 
         // Create default superuser if authentication is enabled
         if config.require_auth {
-            let default_password = std::env::var("DRIFTDB_PASSWORD")
-                .unwrap_or_else(|_| "driftdb".to_string());
+            let default_password =
+                std::env::var("DRIFTDB_PASSWORD").unwrap_or_else(|_| "driftdb".to_string());
 
             let superuser = User::new(
                 "driftdb".to_string(),
@@ -277,7 +276,10 @@ impl UserDb {
                 config.method.clone(),
             );
 
-            info!("Created default superuser 'driftdb' with {} authentication", config.method);
+            info!(
+                "Created default superuser 'driftdb' with {} authentication",
+                config.method
+            );
             users.insert("driftdb".to_string(), superuser);
         }
 
@@ -299,10 +301,18 @@ impl UserDb {
             return Err(anyhow!("User '{}' already exists", username));
         }
 
-        let user = User::new(username.clone(), password, is_superuser, self.config.method.clone());
+        let user = User::new(
+            username.clone(),
+            password,
+            is_superuser,
+            self.config.method.clone(),
+        );
         users.insert(username.clone(), user);
 
-        info!("Created user '{}' with superuser={}", username, is_superuser);
+        info!(
+            "Created user '{}' with superuser={}",
+            username, is_superuser
+        );
         Ok(())
     }
 
@@ -329,7 +339,7 @@ impl UserDb {
             user.salt = salt.clone();
 
             match user.auth_method {
-                AuthMethod::Trust => {},
+                AuthMethod::Trust => {}
                 AuthMethod::MD5 => {
                     user.password_hash = new_password.to_string();
                 }
@@ -364,12 +374,16 @@ impl UserDb {
         }
 
         let mut users = self.users.write();
-        let user = users.get_mut(username)
+        let user = users
+            .get_mut(username)
             .ok_or_else(|| anyhow!("User '{}' does not exist", username))?;
 
         // Check if user is locked
         if user.is_locked() {
-            warn!("Authentication blocked for locked user '{}' from {}", username, client_addr);
+            warn!(
+                "Authentication blocked for locked user '{}' from {}",
+                username, client_addr
+            );
             return Err(anyhow!("User account is temporarily locked"));
         }
 
@@ -384,10 +398,13 @@ impl UserDb {
                 SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap()
-                    .as_secs()
+                    .as_secs(),
             );
 
-            info!("Successful authentication for user '{}' from {}", username, client_addr);
+            info!(
+                "Successful authentication for user '{}' from {}",
+                username, client_addr
+            );
             self.record_auth_attempt(username, true, client_addr);
             Ok(true)
         } else {
@@ -399,7 +416,8 @@ impl UserDb {
                 let lock_until = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap()
-                    .as_secs() + self.config.lockout_duration_seconds;
+                    .as_secs()
+                    + self.config.lockout_duration_seconds;
 
                 user.locked_until = Some(lock_until);
 
@@ -420,7 +438,8 @@ impl UserDb {
     }
 
     pub fn is_superuser(&self, username: &str) -> bool {
-        self.users.read()
+        self.users
+            .read()
             .get(username)
             .map(|user| user.is_superuser)
             .unwrap_or(false)
@@ -457,11 +476,7 @@ impl UserDb {
 
     pub fn get_recent_auth_attempts(&self, limit: usize) -> Vec<AuthAttempt> {
         let attempts = self.auth_attempts.read();
-        attempts.iter()
-            .rev()
-            .take(limit)
-            .cloned()
-            .collect()
+        attempts.iter().rev().take(limit).cloned().collect()
     }
 }
 
@@ -489,8 +504,13 @@ pub fn validate_username(username: &str) -> Result<()> {
         return Err(anyhow!("Username too long (max 63 characters)"));
     }
 
-    if !username.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
-        return Err(anyhow!("Username can only contain alphanumeric characters, underscores, and hyphens"));
+    if !username
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err(anyhow!(
+            "Username can only contain alphanumeric characters, underscores, and hyphens"
+        ));
     }
 
     Ok(())
@@ -511,7 +531,9 @@ pub fn validate_password(password: &str) -> Result<()> {
     let has_number = password.chars().any(|c| c.is_numeric());
 
     if !has_letter || !has_number {
-        return Err(anyhow!("Password must contain at least one letter and one number"));
+        return Err(anyhow!(
+            "Password must contain at least one letter and one number"
+        ));
     }
 
     Ok(())

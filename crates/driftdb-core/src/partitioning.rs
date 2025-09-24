@@ -1,9 +1,9 @@
 use crate::errors::{DriftError, Result};
-use serde::{Serialize, Deserialize};
-use std::collections::{HashMap, BTreeMap};
-use std::sync::Arc;
-use parking_lot::RwLock;
 use chrono::{DateTime, Utc};
+use parking_lot::RwLock;
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
 
 /// Advanced partitioning and partition pruning system
 pub struct PartitionManager {
@@ -237,11 +237,7 @@ impl PartitionManager {
     }
 
     /// Add a partition to a table
-    pub fn add_partition(
-        &self,
-        table_name: &str,
-        partition: Partition,
-    ) -> Result<()> {
+    pub fn add_partition(&self, table_name: &str, partition: Partition) -> Result<()> {
         let mut partitions = self.partitions.write();
 
         let table_partitions = partitions
@@ -256,7 +252,9 @@ impl PartitionManager {
             )));
         }
 
-        table_partitions.partitions.insert(partition.key.clone(), partition);
+        table_partitions
+            .partitions
+            .insert(partition.key.clone(), partition);
         self.stats.write().total_partitions += 1;
 
         Ok(())
@@ -291,7 +289,11 @@ impl PartitionManager {
         let mut selected_partitions = Vec::new();
 
         for (key, partition) in &table_partitions.partitions {
-            if self.should_scan_partition(partition, predicates, &table_partitions.partition_strategy)? {
+            if self.should_scan_partition(
+                partition,
+                predicates,
+                &table_partitions.partition_strategy,
+            )? {
                 selected_partitions.push(key.clone());
             }
         }
@@ -308,7 +310,9 @@ impl PartitionManager {
                 table: table_name.to_string(),
                 predicates: predicates.iter().map(|p| format!("{:?}", p)).collect(),
             };
-            self.pruning_cache.write().put(cache_key, selected_partitions.clone());
+            self.pruning_cache
+                .write()
+                .put(cache_key, selected_partitions.clone());
         }
 
         Ok(selected_partitions)
@@ -377,15 +381,13 @@ impl PartitionManager {
                 }
             }
 
-            PruningPredicate::And(left, right) => {
-                Ok(self.evaluate_predicate(partition, left, strategy)?
-                    && self.evaluate_predicate(partition, right, strategy)?)
-            }
+            PruningPredicate::And(left, right) => Ok(self
+                .evaluate_predicate(partition, left, strategy)?
+                && self.evaluate_predicate(partition, right, strategy)?),
 
-            PruningPredicate::Or(left, right) => {
-                Ok(self.evaluate_predicate(partition, left, strategy)?
-                    || self.evaluate_predicate(partition, right, strategy)?)
-            }
+            PruningPredicate::Or(left, right) => Ok(self
+                .evaluate_predicate(partition, left, strategy)?
+                || self.evaluate_predicate(partition, right, strategy)?),
 
             _ => Ok(true), // Conservative: scan for unsupported predicates
         }
@@ -440,9 +442,10 @@ impl PartitionManager {
 
             _ => {
                 // Use statistics-based pruning
-                if let (Some(min), Some(max)) =
-                    (partition.statistics.min_values.get(column),
-                     partition.statistics.max_values.get(column)) {
+                if let (Some(min), Some(max)) = (
+                    partition.statistics.min_values.get(column),
+                    partition.statistics.max_values.get(column),
+                ) {
                     Ok(value >= min && value <= max)
                 } else {
                     Ok(true) // Conservative: scan if no stats
@@ -476,9 +479,10 @@ impl PartitionManager {
 
             _ => {
                 // Use statistics-based pruning
-                if let (Some(min), Some(max)) =
-                    (partition.statistics.min_values.get(column),
-                     partition.statistics.max_values.get(column)) {
+                if let (Some(min), Some(max)) = (
+                    partition.statistics.min_values.get(column),
+                    partition.statistics.max_values.get(column),
+                ) {
                     Ok(!(high < min || low > max))
                 } else {
                     Ok(true)
@@ -488,8 +492,8 @@ impl PartitionManager {
     }
 
     fn calculate_hash(&self, value: &PartitionValue) -> usize {
-        use std::hash::{Hash, Hasher};
         use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
 
         let mut hasher = DefaultHasher::new();
         format!("{:?}", value).hash(&mut hasher);
@@ -500,7 +504,9 @@ impl PartitionManager {
         match strategy {
             PartitionStrategy::Range(range) => {
                 if range.ranges.is_empty() {
-                    return Err(DriftError::Validation("Range partitioning requires at least one range".to_string()));
+                    return Err(DriftError::Validation(
+                        "Range partitioning requires at least one range".to_string(),
+                    ));
                 }
                 // Check for overlapping ranges
                 for i in 0..range.ranges.len() {
@@ -517,7 +523,9 @@ impl PartitionManager {
 
             PartitionStrategy::Hash(hash) => {
                 if hash.num_buckets == 0 {
-                    return Err(DriftError::Validation("Hash partitioning requires at least one bucket".to_string()));
+                    return Err(DriftError::Validation(
+                        "Hash partitioning requires at least one bucket".to_string(),
+                    ));
                 }
             }
 
@@ -537,7 +545,11 @@ impl PartitionManager {
     }
 
     /// Automatically split large partitions
-    pub fn auto_split_partition(&self, table_name: &str, partition_key: &PartitionKey) -> Result<Vec<PartitionKey>> {
+    pub fn auto_split_partition(
+        &self,
+        table_name: &str,
+        partition_key: &PartitionKey,
+    ) -> Result<Vec<PartitionKey>> {
         if !self.config.enable_auto_partitioning {
             return Ok(vec![partition_key.clone()]);
         }
@@ -547,24 +559,23 @@ impl PartitionManager {
             .get_mut(table_name)
             .ok_or_else(|| DriftError::NotFound(format!("Table '{}' not found", table_name)))?;
 
-        let partition = table_partitions.partitions
+        let partition = table_partitions
+            .partitions
             .get(partition_key)
             .ok_or_else(|| DriftError::NotFound("Partition not found".to_string()))?;
 
         // Check if split is needed
-        if partition.statistics.row_count < self.config.auto_split_threshold_rows &&
-           partition.statistics.size_bytes < self.config.auto_split_threshold_size_mb * 1024 * 1024 {
+        if partition.statistics.row_count < self.config.auto_split_threshold_rows
+            && partition.statistics.size_bytes
+                < self.config.auto_split_threshold_size_mb * 1024 * 1024
+        {
             return Ok(vec![partition_key.clone()]);
         }
 
         // Split based on strategy
         let new_partitions = match &table_partitions.partition_strategy {
-            PartitionStrategy::Range(range) => {
-                self.split_range_partition(partition, range)?
-            }
-            PartitionStrategy::Hash(hash) => {
-                self.split_hash_partition(partition, hash)?
-            }
+            PartitionStrategy::Range(range) => self.split_range_partition(partition, range)?,
+            PartitionStrategy::Hash(hash) => self.split_hash_partition(partition, hash)?,
             _ => vec![partition_key.clone()],
         };
 
@@ -573,14 +584,23 @@ impl PartitionManager {
         Ok(new_partitions)
     }
 
-    fn split_range_partition(&self, partition: &Partition, range: &RangePartitioning) -> Result<Vec<PartitionKey>> {
+    fn split_range_partition(
+        &self,
+        partition: &Partition,
+        range: &RangePartitioning,
+    ) -> Result<Vec<PartitionKey>> {
         // Implement range splitting logic
 
         // Find the current range this partition belongs to
         let current_range = range.ranges.iter().find(|r| r.name == partition.name);
         let range_def = match current_range {
             Some(r) => r,
-            None => return Err(DriftError::InvalidQuery(format!("Range not found for partition {}", partition.name))),
+            None => {
+                return Err(DriftError::InvalidQuery(format!(
+                    "Range not found for partition {}",
+                    partition.name
+                )))
+            }
         };
 
         // Calculate split point based on partition statistics
@@ -596,7 +616,11 @@ impl PartitionManager {
         Ok(vec![left_key, right_key])
     }
 
-    fn split_hash_partition(&self, partition: &Partition, hash: &HashPartitioning) -> Result<Vec<PartitionKey>> {
+    fn split_hash_partition(
+        &self,
+        partition: &Partition,
+        hash: &HashPartitioning,
+    ) -> Result<Vec<PartitionKey>> {
         // Implement hash re-partitioning
 
         // Double the number of hash buckets by splitting this partition
@@ -616,7 +640,11 @@ impl PartitionManager {
         Ok(vec![key1, key2])
     }
 
-    fn calculate_range_split_point(&self, _partition: &Partition, range_def: &PartitionRange) -> Result<PartitionValue> {
+    fn calculate_range_split_point(
+        &self,
+        _partition: &Partition,
+        range_def: &PartitionRange,
+    ) -> Result<PartitionValue> {
         // Calculate optimal split point for a range partition
         // For simplicity, split at the midpoint between lower and upper bounds
 
@@ -633,8 +661,7 @@ impl PartitionManager {
                 let low_timestamp = low.timestamp();
                 let high_timestamp = high.timestamp();
                 let mid_timestamp = (low_timestamp + high_timestamp) / 2;
-                let mid_date = DateTime::from_timestamp(mid_timestamp, 0)
-                    .unwrap_or(*low);
+                let mid_date = DateTime::from_timestamp(mid_timestamp, 0).unwrap_or(*low);
                 Ok(PartitionValue::Date(mid_date))
             }
             _ => {
@@ -648,11 +675,20 @@ impl PartitionManager {
         // Extract bucket number from hash partition name like "hash_column_123"
         let parts: Vec<&str> = partition_name.split('_').collect();
         if parts.len() >= 3 {
-            parts.last()
+            parts
+                .last()
                 .and_then(|s| s.parse::<usize>().ok())
-                .ok_or_else(|| DriftError::InvalidQuery(format!("Invalid hash partition name: {}", partition_name)))
+                .ok_or_else(|| {
+                    DriftError::InvalidQuery(format!(
+                        "Invalid hash partition name: {}",
+                        partition_name
+                    ))
+                })
         } else {
-            Err(DriftError::InvalidQuery(format!("Invalid hash partition name format: {}", partition_name)))
+            Err(DriftError::InvalidQuery(format!(
+                "Invalid hash partition name format: {}",
+                partition_name
+            )))
         }
     }
 
@@ -803,11 +839,9 @@ mod tests {
             ],
         });
 
-        manager.create_partitioned_table(
-            "sales".to_string(),
-            strategy,
-            vec!["date".to_string()],
-        ).unwrap();
+        manager
+            .create_partitioned_table("sales".to_string(), strategy, vec!["date".to_string()])
+            .unwrap();
 
         // Add partitions
         let partition1 = Partition {
@@ -821,12 +855,10 @@ mod tests {
         manager.add_partition("sales", partition1).unwrap();
 
         // Test pruning
-        let predicates = vec![
-            PruningPredicate::Equals(
-                "date".to_string(),
-                PartitionValue::String("2024-02-15".to_string()),
-            ),
-        ];
+        let predicates = vec![PruningPredicate::Equals(
+            "date".to_string(),
+            PartitionValue::String("2024-02-15".to_string()),
+        )];
 
         let selected = manager.prune_partitions("sales", &predicates).unwrap();
         assert_eq!(selected.len(), 1);
@@ -841,11 +873,9 @@ mod tests {
             num_buckets: 4,
         });
 
-        manager.create_partitioned_table(
-            "users".to_string(),
-            strategy,
-            vec!["user_id".to_string()],
-        ).unwrap();
+        manager
+            .create_partitioned_table("users".to_string(), strategy, vec!["user_id".to_string()])
+            .unwrap();
 
         // Add hash partitions
         for i in 0..4 {
@@ -861,12 +891,10 @@ mod tests {
         }
 
         // All partitions should be selected for non-partition column predicates
-        let predicates = vec![
-            PruningPredicate::Equals(
-                "name".to_string(),
-                PartitionValue::String("John".to_string()),
-            ),
-        ];
+        let predicates = vec![PruningPredicate::Equals(
+            "name".to_string(),
+            PartitionValue::String("John".to_string()),
+        )];
 
         let selected = manager.prune_partitions("users", &predicates).unwrap();
         assert_eq!(selected.len(), 4);
@@ -882,24 +910,32 @@ mod tests {
         let strategy = PartitionStrategy::List(ListPartitioning {
             column: "country".to_string(),
             lists: vec![
-                ("us".to_string(), vec![PartitionValue::String("USA".to_string())]),
-                ("uk".to_string(), vec![PartitionValue::String("UK".to_string())]),
-            ].into_iter().collect(),
+                (
+                    "us".to_string(),
+                    vec![PartitionValue::String("USA".to_string())],
+                ),
+                (
+                    "uk".to_string(),
+                    vec![PartitionValue::String("UK".to_string())],
+                ),
+            ]
+            .into_iter()
+            .collect(),
             default_partition: Some("other".to_string()),
         });
 
-        manager.create_partitioned_table(
-            "customers".to_string(),
-            strategy,
-            vec!["country".to_string()],
-        ).unwrap();
+        manager
+            .create_partitioned_table(
+                "customers".to_string(),
+                strategy,
+                vec!["country".to_string()],
+            )
+            .unwrap();
 
-        let predicates = vec![
-            PruningPredicate::Equals(
-                "country".to_string(),
-                PartitionValue::String("USA".to_string()),
-            ),
-        ];
+        let predicates = vec![PruningPredicate::Equals(
+            "country".to_string(),
+            PartitionValue::String("USA".to_string()),
+        )];
 
         // First call - cache miss
         let _ = manager.prune_partitions("customers", &predicates).unwrap();

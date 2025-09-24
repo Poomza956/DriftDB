@@ -18,10 +18,10 @@ use serde_json::Value;
 use tracing::{debug, info, trace};
 
 use crate::errors::{DriftError, Result};
-use crate::optimizer::{TableStatistics, ColumnStatistics, IndexStatistics};
-use crate::stats::QueryExecution;
-use crate::query::{WhereCondition, AsOf};
+use crate::optimizer::{ColumnStatistics, IndexStatistics, TableStatistics};
 use crate::parallel::JoinType;
+use crate::query::{AsOf, WhereCondition};
+use crate::stats::QueryExecution;
 
 /// Query optimization configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -176,22 +176,13 @@ pub enum PlanOperation {
         aggregates: Vec<AggregateFunction>,
     },
     /// Filter (WHERE clause)
-    Filter {
-        expression: FilterExpression,
-    },
+    Filter { expression: FilterExpression },
     /// Projection (SELECT columns)
-    Project {
-        columns: Vec<String>,
-    },
+    Project { columns: Vec<String> },
     /// Limit/Offset
-    Limit {
-        count: usize,
-        offset: Option<usize>,
-    },
+    Limit { count: usize, offset: Option<usize> },
     /// Parallel execution wrapper
-    Parallel {
-        degree: usize,
-    },
+    Parallel { degree: usize },
 }
 
 /// Filter expression for optimization
@@ -325,10 +316,7 @@ pub trait StatisticsProvider: Send + Sync {
 
 impl QueryOptimizer {
     /// Create a new query optimizer
-    pub fn new(
-        config: OptimizerConfig,
-        stats_provider: Arc<dyn StatisticsProvider>,
-    ) -> Self {
+    pub fn new(config: OptimizerConfig, stats_provider: Arc<dyn StatisticsProvider>) -> Self {
         Self {
             config,
             stats_provider,
@@ -341,8 +329,11 @@ impl QueryOptimizer {
     pub fn optimize_query(&self, query: &OptimizableQuery) -> Result<ExecutionPlan> {
         let start_time = std::time::Instant::now();
 
-        debug!("Optimizing query with {} tables, {} conditions",
-               query.tables.len(), query.where_conditions.len());
+        debug!(
+            "Optimizing query with {} tables, {} conditions",
+            query.tables.len(),
+            query.where_conditions.len()
+        );
 
         // Check plan cache first
         let cache_key = self.generate_cache_key(query);
@@ -364,7 +355,9 @@ impl QueryOptimizer {
         // Sort by cost and select best plan
         candidate_plans.sort_by(|a, b| a.estimated_cost.partial_cmp(&b.estimated_cost).unwrap());
 
-        let mut best_plan = candidate_plans.into_iter().next()
+        let mut best_plan = candidate_plans
+            .into_iter()
+            .next()
             .ok_or_else(|| DriftError::InvalidQuery("No valid execution plan found".to_string()))?;
 
         // Add optimization metadata
@@ -380,8 +373,11 @@ impl QueryOptimizer {
         // Cache the plan
         self.cache_plan(cache_key, best_plan.clone());
 
-        info!("Query optimization completed in {} ms, estimated cost: {:.2}",
-              optimization_time.as_millis(), best_plan.estimated_cost);
+        info!(
+            "Query optimization completed in {} ms, estimated cost: {:.2}",
+            optimization_time.as_millis(),
+            best_plan.estimated_cost
+        );
 
         Ok(best_plan)
     }
@@ -413,12 +409,14 @@ impl QueryOptimizer {
 
     /// Generate basic execution plan
     fn generate_basic_plan(&self, query: &OptimizableQuery) -> Result<ExecutionPlan> {
-        let mut current_node = self.create_table_scan_node(&query.tables[0], &query.where_conditions)?;
+        let mut current_node =
+            self.create_table_scan_node(&query.tables[0], &query.where_conditions)?;
 
         // Add joins for multiple tables
         for table in query.tables.iter().skip(1) {
             let right_node = self.create_table_scan_node(table, &[])?;
-            current_node = self.create_join_node(current_node, right_node, &query.join_conditions)?;
+            current_node =
+                self.create_join_node(current_node, right_node, &query.join_conditions)?;
         }
 
         // Add remaining WHERE conditions as filter
@@ -428,7 +426,8 @@ impl QueryOptimizer {
 
         // Add aggregation if needed
         if !query.group_by.is_empty() || !query.aggregates.is_empty() {
-            current_node = self.create_aggregate_node(current_node, &query.group_by, &query.aggregates)?;
+            current_node =
+                self.create_aggregate_node(current_node, &query.group_by, &query.aggregates)?;
         }
 
         // Add sorting if needed
@@ -502,7 +501,11 @@ impl QueryOptimizer {
     }
 
     /// Create table scan node
-    fn create_table_scan_node(&self, table: &str, conditions: &[WhereCondition]) -> Result<PlanNode> {
+    fn create_table_scan_node(
+        &self,
+        table: &str,
+        conditions: &[WhereCondition],
+    ) -> Result<PlanNode> {
         let table_stats = self.stats_provider.get_table_stats(table);
         let cardinality = table_stats.as_ref().map(|s| s.row_count).unwrap_or(1000);
 
@@ -546,8 +549,8 @@ impl QueryOptimizer {
 
         let operation = match join_type {
             JoinAlgorithm::Hash => PlanOperation::HashJoin {
-                join_type: JoinType::Inner, // Simplified
-                left_key: "id".to_string(), // Simplified
+                join_type: JoinType::Inner,  // Simplified
+                left_key: "id".to_string(),  // Simplified
                 right_key: "id".to_string(), // Simplified
                 conditions: conditions.to_vec(),
             },
@@ -619,7 +622,8 @@ impl QueryOptimizer {
             .collect();
 
         // Combined selectivity (assuming independence)
-        let combined_selectivity = predicates.iter()
+        let combined_selectivity = predicates
+            .iter()
             .map(|p| p.selectivity)
             .fold(1.0, |acc, sel| acc * sel);
 
@@ -632,11 +636,11 @@ impl QueryOptimizer {
     /// Estimate predicate selectivity
     fn estimate_predicate_selectivity(&self, condition: &WhereCondition) -> f64 {
         match condition.operator.as_str() {
-            "=" => 0.1,   // 10% selectivity for equality
-            ">" | "<" => 0.33, // 33% selectivity for range
+            "=" => 0.1,         // 10% selectivity for equality
+            ">" | "<" => 0.33,  // 33% selectivity for range
             ">=" | "<=" => 0.5, // 50% selectivity for inclusive range
-            "LIKE" => 0.25, // 25% selectivity for LIKE
-            _ => 0.5, // Default 50% selectivity
+            "LIKE" => 0.25,     // 25% selectivity for LIKE
+            _ => 0.5,           // Default 50% selectivity
         }
     }
 
@@ -701,11 +705,13 @@ impl QueryOptimizer {
     /// Generate cache key for a query
     fn generate_cache_key(&self, query: &OptimizableQuery) -> String {
         // Simple hash of query structure
-        format!("{}_{}_{}_{}",
-                query.tables.join(","),
-                query.where_conditions.len(),
-                query.join_conditions.len(),
-                query.group_by.len())
+        format!(
+            "{}_{}_{}_{}",
+            query.tables.join(","),
+            query.where_conditions.len(),
+            query.join_conditions.len(),
+            query.group_by.len()
+        )
     }
 
     /// Get cached plan if available
@@ -717,16 +723,23 @@ impl QueryOptimizer {
     /// Cache execution plan
     fn cache_plan(&self, key: String, plan: ExecutionPlan) {
         let mut cache = self.plan_cache.write();
-        cache.insert(key, CachedPlan {
-            plan,
-            cached_at: SystemTime::now(),
-            hit_count: 0,
-            execution_stats: Vec::new(),
-        });
+        cache.insert(
+            key,
+            CachedPlan {
+                plan,
+                cached_at: SystemTime::now(),
+                hit_count: 0,
+                execution_stats: Vec::new(),
+            },
+        );
     }
 
     /// Create filter node
-    fn create_filter_node(&self, child: PlanNode, conditions: &[WhereCondition]) -> Result<PlanNode> {
+    fn create_filter_node(
+        &self,
+        child: PlanNode,
+        conditions: &[WhereCondition],
+    ) -> Result<PlanNode> {
         let filter_expr = self.create_filter_expression(conditions)?;
         let cardinality = (child.cardinality as f64 * filter_expr.selectivity) as u64;
 
@@ -818,7 +831,12 @@ impl QueryOptimizer {
     }
 
     /// Create limit node
-    fn create_limit_node(&self, child: PlanNode, count: usize, offset: Option<usize>) -> Result<PlanNode> {
+    fn create_limit_node(
+        &self,
+        child: PlanNode,
+        count: usize,
+        offset: Option<usize>,
+    ) -> Result<PlanNode> {
         let cardinality = (count as u64).min(child.cardinality);
 
         Ok(PlanNode {

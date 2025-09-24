@@ -4,24 +4,18 @@
 
 use std::sync::Arc;
 
-use axum::{
-    extract::State,
-    http::StatusCode,
-    response::Response,
-    routing::get,
-    Router,
-};
+use axum::{extract::State, http::StatusCode, response::Response, routing::get, Router};
 use lazy_static::lazy_static;
-use prometheus::{
-    Counter, CounterVec, Gauge, GaugeVec, HistogramVec, Registry, TextEncoder, Encoder,
-    HistogramOpts, Opts,
-};
 use parking_lot::RwLock;
+use prometheus::{
+    Counter, CounterVec, Encoder, Gauge, GaugeVec, HistogramOpts, HistogramVec, Opts, Registry,
+    TextEncoder,
+};
+use sysinfo::{Pid, System};
 use tracing::{debug, error};
-use sysinfo::{System, Pid};
 
-use driftdb_core::Engine;
 use crate::session::SessionManager;
+use driftdb_core::Engine;
 
 lazy_static! {
     /// Global metrics registry
@@ -172,7 +166,9 @@ pub fn create_metrics_router(state: MetricsState) -> Router {
 }
 
 /// Prometheus metrics endpoint
-async fn metrics_handler(State(state): State<MetricsState>) -> Result<Response<String>, StatusCode> {
+async fn metrics_handler(
+    State(state): State<MetricsState>,
+) -> Result<Response<String>, StatusCode> {
     debug!("Metrics endpoint requested");
 
     // Update dynamic metrics before serving
@@ -188,11 +184,10 @@ async fn metrics_handler(State(state): State<MetricsState>) -> Result<Response<S
         return Err(StatusCode::INTERNAL_SERVER_ERROR);
     }
 
-    let body = String::from_utf8(buffer)
-        .map_err(|e| {
-            error!("Failed to convert metrics to string: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+    let body = String::from_utf8(buffer).map_err(|e| {
+        error!("Failed to convert metrics to string: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
     let response = Response::builder()
         .status(200)
@@ -298,7 +293,8 @@ fn update_system_metrics() {
     // System-wide CPU metrics
     let cpus = sys.cpus();
     if !cpus.is_empty() {
-        let total_cpu_usage: f32 = cpus.iter().map(|cpu| cpu.cpu_usage()).sum::<f32>() / cpus.len() as f32;
+        let total_cpu_usage: f32 =
+            cpus.iter().map(|cpu| cpu.cpu_usage()).sum::<f32>() / cpus.len() as f32;
         CPU_USAGE_PERCENT
             .with_label_values(&["system"])
             .set(total_cpu_usage as f64);
@@ -316,9 +312,7 @@ fn update_system_metrics() {
 
 /// Record a query execution
 pub fn record_query(query_type: &str, status: &str, duration_seconds: f64) {
-    QUERY_TOTAL
-        .with_label_values(&[query_type, status])
-        .inc();
+    QUERY_TOTAL.with_label_values(&[query_type, status]).inc();
 
     QUERY_DURATION
         .with_label_values(&[query_type])
@@ -368,8 +362,8 @@ pub fn update_pool_connections_created(total: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
     use driftdb_core::{Engine, EnginePool, PoolConfig};
+    use tempfile::TempDir;
 
     #[tokio::test]
     async fn test_metrics_initialization() {

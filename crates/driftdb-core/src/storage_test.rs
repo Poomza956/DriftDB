@@ -1,11 +1,11 @@
 #[cfg(test)]
 mod tests {
-    use crate::storage::*;
     use crate::events::{Event, EventType};
     use crate::schema::Schema;
-    use tempfile::TempDir;
+    use crate::storage::*;
     use serde_json::json;
     use std::time::SystemTime;
+    use tempfile::TempDir;
 
     #[test]
     fn test_segment_basic() {

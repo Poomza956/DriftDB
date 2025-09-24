@@ -1,9 +1,9 @@
-use std::collections::{HashMap, HashSet};
+use crate::engine::Engine;
+use crate::schema::Schema;
+use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use anyhow::{Result, anyhow};
-use crate::schema::Schema;
-use crate::engine::Engine;
+use std::collections::{HashMap, HashSet};
 
 /// SQL Constraint Types
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -115,7 +115,10 @@ impl ConstraintManager {
         self.validate_constraint_definition(&constraint)?;
 
         // Add to foreign key graph if applicable
-        if let ConstraintType::ForeignKey { reference_table, .. } = &constraint.constraint_type {
+        if let ConstraintType::ForeignKey {
+            reference_table, ..
+        } = &constraint.constraint_type
+        {
             self.foreign_key_graph.add_dependency(
                 reference_table.clone(),
                 constraint.table_name.clone(),
@@ -148,7 +151,10 @@ impl ConstraintManager {
             match &constraint.constraint_type {
                 ConstraintType::NotNull { column } => {
                     if record.get(column).map_or(true, |v| v.is_null()) {
-                        return Err(anyhow!("NOT NULL constraint violation: column '{}' cannot be null", column));
+                        return Err(anyhow!(
+                            "NOT NULL constraint violation: column '{}' cannot be null",
+                            column
+                        ));
                     }
                 }
                 ConstraintType::Check { compiled_expr, .. } => {
@@ -159,7 +165,12 @@ impl ConstraintManager {
                 ConstraintType::Unique { columns } => {
                     self.validate_unique_constraint(table, columns, record, engine)?;
                 }
-                ConstraintType::ForeignKey { columns, reference_table, reference_columns, .. } => {
+                ConstraintType::ForeignKey {
+                    columns,
+                    reference_table,
+                    reference_columns,
+                    ..
+                } => {
                     self.validate_foreign_key(
                         columns,
                         reference_table,
@@ -209,7 +220,12 @@ impl ConstraintManager {
                         self.validate_unique_constraint(table, columns, new_record, engine)?;
                     }
                 }
-                ConstraintType::ForeignKey { columns, reference_table, reference_columns, .. } => {
+                ConstraintType::ForeignKey {
+                    columns,
+                    reference_table,
+                    reference_columns,
+                    ..
+                } => {
                     // Only validate if foreign key columns changed
                     if self.columns_changed(columns, old_record, new_record) {
                         self.validate_foreign_key(
@@ -240,7 +256,13 @@ impl ConstraintManager {
         // Check for foreign key references to this record
         if let Some(dependencies) = self.foreign_key_graph.get_dependencies(&table.name) {
             for (child_table, constraint) in dependencies {
-                if let ConstraintType::ForeignKey { columns, reference_columns, on_delete, .. } = &constraint.constraint_type {
+                if let ConstraintType::ForeignKey {
+                    columns,
+                    reference_columns,
+                    on_delete,
+                    ..
+                } = &constraint.constraint_type
+                {
                     // Check if any child records reference this record
                     let child_refs = self.find_referencing_records(
                         &child_table,
@@ -286,30 +308,37 @@ impl ConstraintManager {
     /// Evaluate a check constraint expression
     fn evaluate_check_expression(&self, expr: &CheckExpression, record: &Value) -> Result<bool> {
         match expr {
-            CheckExpression::Comparison { column, operator, value } => {
-                let record_value = record.get(column).ok_or_else(|| anyhow!("Column '{}' not found", column))?;
+            CheckExpression::Comparison {
+                column,
+                operator,
+                value,
+            } => {
+                let record_value = record
+                    .get(column)
+                    .ok_or_else(|| anyhow!("Column '{}' not found", column))?;
                 Ok(self.compare_values(record_value, operator, value))
             }
             CheckExpression::Between { column, min, max } => {
-                let record_value = record.get(column).ok_or_else(|| anyhow!("Column '{}' not found", column))?;
-                Ok(self.compare_values(record_value, &ComparisonOp::GreaterThanOrEqual, min)
-                    && self.compare_values(record_value, &ComparisonOp::LessThanOrEqual, max))
+                let record_value = record
+                    .get(column)
+                    .ok_or_else(|| anyhow!("Column '{}' not found", column))?;
+                Ok(
+                    self.compare_values(record_value, &ComparisonOp::GreaterThanOrEqual, min)
+                        && self.compare_values(record_value, &ComparisonOp::LessThanOrEqual, max),
+                )
             }
             CheckExpression::In { column, values } => {
-                let record_value = record.get(column).ok_or_else(|| anyhow!("Column '{}' not found", column))?;
+                let record_value = record
+                    .get(column)
+                    .ok_or_else(|| anyhow!("Column '{}' not found", column))?;
                 Ok(values.iter().any(|v| v == record_value))
             }
-            CheckExpression::And(left, right) => {
-                Ok(self.evaluate_check_expression(left, record)?
-                    && self.evaluate_check_expression(right, record)?)
-            }
-            CheckExpression::Or(left, right) => {
-                Ok(self.evaluate_check_expression(left, record)?
-                    || self.evaluate_check_expression(right, record)?)
-            }
-            CheckExpression::Not(inner) => {
-                Ok(!self.evaluate_check_expression(inner, record)?)
-            }
+            CheckExpression::And(left, right) => Ok(self
+                .evaluate_check_expression(left, record)?
+                && self.evaluate_check_expression(right, record)?),
+            CheckExpression::Or(left, right) => Ok(self.evaluate_check_expression(left, record)?
+                || self.evaluate_check_expression(right, record)?),
+            CheckExpression::Not(inner) => Ok(!self.evaluate_check_expression(inner, record)?),
         }
     }
 
@@ -356,7 +385,9 @@ impl ConstraintManager {
         // Build unique key from column values
         let mut key_parts = Vec::new();
         for col in columns {
-            let val = record.get(col).ok_or_else(|| anyhow!("Column '{}' not found", col))?;
+            let val = record
+                .get(col)
+                .ok_or_else(|| anyhow!("Column '{}' not found", col))?;
             key_parts.push(val.to_string());
         }
         let unique_key = format!("{}.{}", table.name, key_parts.join("_"));
@@ -380,7 +411,9 @@ impl ConstraintManager {
         // Extract foreign key values from record
         let mut fk_values = Vec::new();
         for col in columns {
-            let val = record.get(col).ok_or_else(|| anyhow!("Column '{}' not found", col))?;
+            let val = record
+                .get(col)
+                .ok_or_else(|| anyhow!("Column '{}' not found", col))?;
             if !val.is_null() {
                 fk_values.push(val.clone());
             }
@@ -428,7 +461,11 @@ impl ConstraintManager {
     /// Validate constraint definition
     fn validate_constraint_definition(&self, constraint: &Constraint) -> Result<()> {
         match &constraint.constraint_type {
-            ConstraintType::ForeignKey { columns, reference_columns, .. } => {
+            ConstraintType::ForeignKey {
+                columns,
+                reference_columns,
+                ..
+            } => {
                 if columns.len() != reference_columns.len() {
                     return Err(anyhow!(
                         "Foreign key column count mismatch: {} local columns vs {} reference columns",
@@ -455,7 +492,12 @@ impl ForeignKeyGraph {
         }
     }
 
-    fn add_dependency(&mut self, parent_table: String, child_table: String, constraint: Constraint) {
+    fn add_dependency(
+        &mut self,
+        parent_table: String,
+        child_table: String,
+        constraint: Constraint,
+    ) {
         self.dependencies
             .entry(parent_table)
             .or_insert_with(Vec::new)
@@ -553,7 +595,10 @@ pub fn parse_check_expression(expr_str: &str) -> Result<CheckExpression> {
         let parts: Vec<&str> = expr_str.split("IN").collect();
         if parts.len() == 2 {
             let column = parts[0].trim().to_string();
-            let values_str = parts[1].trim().trim_start_matches('(').trim_end_matches(')');
+            let values_str = parts[1]
+                .trim()
+                .trim_start_matches('(')
+                .trim_end_matches(')');
             let values: Result<Vec<Value>> = values_str
                 .split(',')
                 .map(|v| parse_value(v.trim()))
@@ -574,7 +619,7 @@ fn parse_value(s: &str) -> Result<Value> {
 
     // String literal
     if s.starts_with('\'') && s.ends_with('\'') {
-        return Ok(Value::String(s[1..s.len()-1].to_string()));
+        return Ok(Value::String(s[1..s.len() - 1].to_string()));
     }
 
     // Boolean
@@ -606,7 +651,11 @@ mod tests {
         // Test simple comparison
         let expr = parse_check_expression("age >= 18").unwrap();
         match expr {
-            CheckExpression::Comparison { column, operator, value } => {
+            CheckExpression::Comparison {
+                column,
+                operator,
+                value,
+            } => {
                 assert_eq!(column, "age");
                 assert!(matches!(operator, ComparisonOp::GreaterThanOrEqual));
                 assert_eq!(value, Value::Number(serde_json::Number::from(18)));

@@ -1,12 +1,12 @@
+use crate::engine::Engine;
 use crate::errors::Result;
 use crate::observability::Metrics;
-use crate::engine::Engine;
-use serde::{Serialize, Deserialize};
-use std::collections::{HashMap, VecDeque};
-use std::sync::Arc;
-use std::sync::atomic::Ordering;
-use std::time::{Duration, SystemTime};
 use parking_lot::RwLock;
+use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use std::time::{Duration, SystemTime};
 // use tokio::sync::mpsc;
 
 /// Comprehensive monitoring system for DriftDB
@@ -188,10 +188,23 @@ pub struct AlertRule {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AlertCondition {
-    ThresholdExceeded { metric: String, threshold: f64 },
-    ThresholdBelow { metric: String, threshold: f64 },
-    RateOfChange { metric: String, threshold_percent: f64, window: Duration },
-    Anomaly { metric: String, deviation_factor: f64 },
+    ThresholdExceeded {
+        metric: String,
+        threshold: f64,
+    },
+    ThresholdBelow {
+        metric: String,
+        threshold: f64,
+    },
+    RateOfChange {
+        metric: String,
+        threshold_percent: f64,
+        window: Duration,
+    },
+    Anomaly {
+        metric: String,
+        deviation_factor: f64,
+    },
     Custom(String), // Custom expression
 }
 
@@ -239,13 +252,31 @@ pub struct Widget {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum WidgetType {
-    LineChart { metrics: Vec<String>, time_range: Duration },
-    GaugeChart { metric: String, min: f64, max: f64 },
-    BarChart { metrics: Vec<String> },
-    HeatMap { metric: String, buckets: usize },
-    Table { columns: Vec<String> },
-    Counter { metric: String },
-    Text { content: String },
+    LineChart {
+        metrics: Vec<String>,
+        time_range: Duration,
+    },
+    GaugeChart {
+        metric: String,
+        min: f64,
+        max: f64,
+    },
+    BarChart {
+        metrics: Vec<String>,
+    },
+    HeatMap {
+        metric: String,
+        buckets: usize,
+    },
+    Table {
+        columns: Vec<String>,
+    },
+    Counter {
+        metric: String,
+    },
+    Text {
+        content: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -265,7 +296,9 @@ impl MonitoringSystem {
             collectors: Arc::new(RwLock::new(Vec::new())),
             exporters: Arc::new(RwLock::new(Vec::new())),
             alert_manager,
-            history: Arc::new(RwLock::new(MetricsHistory::new(Duration::from_secs(24 * 60 * 60)))),
+            history: Arc::new(RwLock::new(MetricsHistory::new(Duration::from_secs(
+                24 * 60 * 60,
+            )))),
             dashboard: Arc::new(RwLock::new(Dashboard::default())),
             engine: None,
         }
@@ -326,7 +359,7 @@ impl MonitoringSystem {
     async fn collect_metrics(
         &self,
         metrics: &Arc<Metrics>,
-        collectors: &Arc<RwLock<Vec<Box<dyn MetricCollector>>>>
+        collectors: &Arc<RwLock<Vec<Box<dyn MetricCollector>>>>,
     ) -> MetricSnapshot {
         let system = Self::collect_system_metrics();
         let database = self.collect_database_metrics(metrics);
@@ -436,9 +469,9 @@ impl MonitoringSystem {
         StorageMetrics {
             segments_count: metrics.segments_created.load(Ordering::Relaxed) as usize,
             segment_avg_size_bytes: 0, // TODO: Calculate average
-            compaction_pending: 0, // TODO: Track pending compactions
-            wal_size_bytes: 0, // TODO: Get WAL size
-            wal_lag_bytes: 0, // TODO: Track WAL lag
+            compaction_pending: 0,     // TODO: Track pending compactions
+            wal_size_bytes: 0,         // TODO: Get WAL size
+            wal_lag_bytes: 0,          // TODO: Track WAL lag
             snapshots_count: metrics.snapshots_created.load(Ordering::Relaxed) as usize,
             index_size_bytes: 0, // TODO: Calculate index size
         }
@@ -449,15 +482,15 @@ impl MonitoringSystem {
             active_connections: metrics.active_connections.load(Ordering::Relaxed),
             bytes_received: metrics.read_bytes.load(Ordering::Relaxed),
             bytes_sent: metrics.write_bytes.load(Ordering::Relaxed),
-            requests_per_second: 0.0, // TODO: Calculate rate
+            requests_per_second: 0.0,  // TODO: Calculate rate
             avg_response_time_ms: 0.0, // TODO: Track response time
-            connection_errors: 0, // TODO: Track errors
+            connection_errors: 0,      // TODO: Track errors
         }
     }
 
     async fn export_metrics(
         exporters: &Arc<RwLock<Vec<Box<dyn MetricExporter>>>>,
-        snapshot: &MetricSnapshot
+        snapshot: &MetricSnapshot,
     ) {
         for exporter in exporters.write().iter_mut() {
             if let Err(e) = exporter.export(snapshot) {
@@ -540,17 +573,17 @@ impl MetricsHistory {
             resolution_buckets: vec![
                 ResolutionBucket {
                     duration: Duration::from_secs(3600), // 1 hour
-                    interval: Duration::from_secs(10), // 10 second resolution
+                    interval: Duration::from_secs(10),   // 10 second resolution
                     data: VecDeque::new(),
                 },
                 ResolutionBucket {
                     duration: Duration::from_secs(86400), // 24 hours
-                    interval: Duration::from_secs(60), // 1 minute resolution
+                    interval: Duration::from_secs(60),    // 1 minute resolution
                     data: VecDeque::new(),
                 },
                 ResolutionBucket {
                     duration: Duration::from_secs(604800), // 7 days
-                    interval: Duration::from_secs(300), // 5 minute resolution
+                    interval: Duration::from_secs(300),    // 5 minute resolution
                     data: VecDeque::new(),
                 },
             ],
@@ -593,8 +626,13 @@ impl MetricsHistory {
 impl ResolutionBucket {
     fn add_snapshot(&mut self, snapshot: MetricSnapshot) {
         // Add if enough time has passed since last entry
-        if self.data.is_empty() ||
-           snapshot.timestamp.duration_since(self.data.back().unwrap().timestamp).unwrap() >= self.interval {
+        if self.data.is_empty()
+            || snapshot
+                .timestamp
+                .duration_since(self.data.back().unwrap().timestamp)
+                .unwrap()
+                >= self.interval
+        {
             self.data.push_back(snapshot);
         }
 
@@ -652,7 +690,10 @@ impl AlertManager {
     fn evaluate_rule(&self, rule: &AlertRule, _snapshot: &MetricSnapshot) -> Option<Alert> {
         // Simplified evaluation - would be more complex in production
         match &rule.condition {
-            AlertCondition::ThresholdExceeded { metric: _metric, threshold: _threshold } => {
+            AlertCondition::ThresholdExceeded {
+                metric: _metric,
+                threshold: _threshold,
+            } => {
                 // Check if metric exceeds threshold
                 // This is simplified - would need to extract actual metric value
                 None
@@ -701,18 +742,30 @@ impl PrometheusExporter {
 
         // System metrics
         output.push_str(&format!("# TYPE cpu_usage_percent gauge\n"));
-        output.push_str(&format!("cpu_usage_percent {}\n", snapshot.system.cpu_usage_percent));
+        output.push_str(&format!(
+            "cpu_usage_percent {}\n",
+            snapshot.system.cpu_usage_percent
+        ));
 
         output.push_str(&format!("# TYPE memory_usage_bytes gauge\n"));
-        output.push_str(&format!("memory_usage_bytes {}\n", snapshot.system.memory_usage_bytes));
+        output.push_str(&format!(
+            "memory_usage_bytes {}\n",
+            snapshot.system.memory_usage_bytes
+        ));
 
         // Database metrics
         output.push_str(&format!("# TYPE database_tables_count gauge\n"));
-        output.push_str(&format!("database_tables_count {}\n", snapshot.database.tables_count));
+        output.push_str(&format!(
+            "database_tables_count {}\n",
+            snapshot.database.tables_count
+        ));
 
         // Query metrics
         output.push_str(&format!("# TYPE query_avg_time_ms histogram\n"));
-        output.push_str(&format!("query_avg_time_ms {}\n", snapshot.query.avg_query_time_ms));
+        output.push_str(&format!(
+            "query_avg_time_ms {}\n",
+            snapshot.query.avg_query_time_ms
+        ));
 
         output
     }

@@ -17,7 +17,7 @@ use colored::*;
 use indicatif::{ProgressBar, ProgressStyle};
 use prettytable::{Cell, Row, Table};
 
-use driftdb_core::{Engine, backup::BackupManager, observability::Metrics};
+use driftdb_core::{backup::BackupManager, observability::Metrics, Engine};
 use std::sync::Arc;
 
 #[derive(Parser)]
@@ -379,7 +379,10 @@ async fn monitor_metrics(data_dir: &PathBuf, interval: u64) -> Result<()> {
         // Clear screen
         print!("\x1B[2J\x1B[1;1H");
 
-        println!("{}", format!("DriftDB Monitor - {}", chrono::Local::now()).bold());
+        println!(
+            "{}",
+            format!("DriftDB Monitor - {}", chrono::Local::now()).bold()
+        );
         println!("{}", "=".repeat(70));
 
         let mut table = Table::new();
@@ -536,22 +539,32 @@ async fn handle_backup(command: BackupCommands, data_dir: &PathBuf) -> Result<()
                             found_backups = true;
 
                             if let Ok(content) = std::fs::read_to_string(&metadata_file) {
-                                if let Ok(metadata) = serde_json::from_str::<serde_json::Value>(&content) {
-                                    let timestamp = metadata.get("timestamp_ms")
+                                if let Ok(metadata) =
+                                    serde_json::from_str::<serde_json::Value>(&content)
+                                {
+                                    let timestamp = metadata
+                                        .get("timestamp_ms")
                                         .and_then(|t| t.as_u64())
                                         .map(|t| {
                                             chrono::DateTime::from_timestamp_millis(t as i64)
-                                                .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
+                                                .map(|dt| {
+                                                    dt.format("%Y-%m-%d %H:%M:%S").to_string()
+                                                })
                                                 .unwrap_or_else(|| "Unknown".to_string())
                                         })
                                         .unwrap_or_else(|| "Unknown".to_string());
 
-                                    let table_count = metadata.get("tables")
+                                    let table_count = metadata
+                                        .get("tables")
                                         .and_then(|t| t.as_array())
                                         .map(|arr| arr.len())
                                         .unwrap_or(0);
 
-                                    let backup_type = if table_count > 0 { "Full" } else { "Incremental" };
+                                    let backup_type = if table_count > 0 {
+                                        "Full"
+                                    } else {
+                                        "Incremental"
+                                    };
 
                                     // Verify backup to check status
                                     let status = match backup_manager.verify_backup(&backup_path) {
@@ -561,9 +574,12 @@ async fn handle_backup(command: BackupCommands, data_dir: &PathBuf) -> Result<()
                                     };
 
                                     table.add_row(Row::new(vec![
-                                        Cell::new(&backup_path.file_name()
-                                            .map(|n| n.to_string_lossy())
-                                            .unwrap_or_else(|| "Unknown".into())),
+                                        Cell::new(
+                                            &backup_path
+                                                .file_name()
+                                                .map(|n| n.to_string_lossy())
+                                                .unwrap_or_else(|| "Unknown".into()),
+                                        ),
                                         Cell::new(&timestamp),
                                         Cell::new(&table_count.to_string()),
                                         Cell::new(backup_type),
@@ -721,10 +737,7 @@ async fn check_health(data_dir: &PathBuf, verbose: bool) -> Result<()> {
     Ok(())
 }
 
-async fn analyze_tables(
-    data_dir: &PathBuf,
-    table: Option<String>,
-) -> Result<()> {
+async fn analyze_tables(data_dir: &PathBuf, table: Option<String>) -> Result<()> {
     let engine = Engine::open(data_dir)?;
 
     println!("{}", "Analyzing tables...".yellow());

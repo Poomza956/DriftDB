@@ -141,7 +141,10 @@ impl BackupManager {
         let metadata_file = File::create(metadata_path)?;
         serde_json::to_writer_pretty(metadata_file, &final_metadata)?;
 
-        info!("Full backup completed (sequences {} to {})", global_start_seq, global_end_seq);
+        info!(
+            "Full backup completed (sequences {} to {})",
+            global_start_seq, global_end_seq
+        );
         Ok(final_metadata)
     }
 
@@ -154,8 +157,10 @@ impl BackupManager {
         parent_backup_path: Option<&Path>,
     ) -> Result<BackupMetadata> {
         let backup_path = backup_path.as_ref();
-        info!("Starting incremental backup since sequence {} to {:?}",
-              since_sequence, backup_path);
+        info!(
+            "Starting incremental backup since sequence {} to {:?}",
+            since_sequence, backup_path
+        );
 
         // Create backup directory
         fs::create_dir_all(backup_path)?;
@@ -174,11 +179,8 @@ impl BackupManager {
                     let table_name = entry.file_name().to_string_lossy().to_string();
 
                     // Backup only new segments for this table
-                    let table_info = self.backup_table_incremental(
-                        &table_name,
-                        backup_path,
-                        since_sequence
-                    )?;
+                    let table_info =
+                        self.backup_table_incremental(&table_name, backup_path, since_sequence)?;
 
                     // Track sequence ranges
                     if table_info.segments_backed_up.len() > 0 {
@@ -230,7 +232,10 @@ impl BackupManager {
         let metadata_file = File::create(metadata_path)?;
         serde_json::to_writer_pretty(metadata_file, &final_metadata)?;
 
-        info!("Incremental backup completed (sequences {} to {})", global_start_seq, global_end_seq);
+        info!(
+            "Incremental backup completed (sequences {} to {})",
+            global_start_seq, global_end_seq
+        );
         Ok(final_metadata)
     }
 
@@ -257,7 +262,7 @@ impl BackupManager {
         let computed_checksum = self.compute_backup_checksum(backup_path)?;
         if computed_checksum != metadata.checksum {
             return Err(DriftError::Other(
-                "Backup checksum verification failed".into()
+                "Backup checksum verification failed".into(),
             ));
         }
 
@@ -319,8 +324,10 @@ impl BackupManager {
             }
         }
 
-        info!("Backup verification successful (type: {:?}, sequences {} to {})",
-              metadata.backup_type, metadata.start_sequence, metadata.end_sequence);
+        info!(
+            "Backup verification successful (type: {:?}, sequences {} to {})",
+            metadata.backup_type, metadata.start_sequence, metadata.end_sequence
+        );
         Ok(true)
     }
 
@@ -351,7 +358,7 @@ impl BackupManager {
                     let segment_info = self.backup_segment_file(
                         &entry.path(),
                         &dst_segments_dir,
-                        CompressionType::Zstd
+                        CompressionType::Zstd,
                     )?;
 
                     total_events += segment_info.end_sequence - segment_info.start_sequence + 1;
@@ -377,9 +384,12 @@ impl BackupManager {
         &self,
         table_name: &str,
         backup_path: &Path,
-        since_sequence: u64
+        since_sequence: u64,
     ) -> Result<TableBackupInfo> {
-        debug!("Backing up incremental table {} since sequence {}", table_name, since_sequence);
+        debug!(
+            "Backing up incremental table {} since sequence {}",
+            table_name, since_sequence
+        );
 
         let src_table_dir = self.data_dir.join("tables").join(table_name);
         let dst_table_dir = backup_path.join("tables").join(table_name);
@@ -406,10 +416,12 @@ impl BackupManager {
                             let segment_info = self.backup_segment_file(
                                 &entry.path(),
                                 &dst_segments_dir,
-                                CompressionType::Zstd
+                                CompressionType::Zstd,
                             )?;
 
-                            total_events += segment_info.end_sequence.saturating_sub(since_sequence.max(segment_info.start_sequence - 1));
+                            total_events += segment_info.end_sequence.saturating_sub(
+                                since_sequence.max(segment_info.start_sequence - 1),
+                            );
                             last_sequence = last_sequence.max(segment_info.end_sequence);
                             segment_infos.push(segment_info);
                         }
@@ -431,15 +443,17 @@ impl BackupManager {
         &self,
         src_path: &Path,
         dst_dir: &Path,
-        compression: CompressionType
+        compression: CompressionType,
     ) -> Result<SegmentInfo> {
-        let file_name = src_path.file_name()
+        let file_name = src_path
+            .file_name()
             .ok_or_else(|| DriftError::Other("Invalid segment file name".to_string()))?
             .to_string_lossy()
             .to_string();
 
         // Parse segment ID from filename (e.g., "000001.seg")
-        let segment_id = file_name.trim_end_matches(".seg")
+        let segment_id = file_name
+            .trim_end_matches(".seg")
             .parse::<u64>()
             .unwrap_or(0);
 
@@ -482,15 +496,16 @@ impl BackupManager {
         while reader.read_exact(&mut buffer).is_ok() {
             // Extract sequence from frame (offset 8 in frame)
             let sequence = u64::from_le_bytes([
-                buffer[8], buffer[9], buffer[10], buffer[11],
-                buffer[12], buffer[13], buffer[14], buffer[15],
+                buffer[8], buffer[9], buffer[10], buffer[11], buffer[12], buffer[13], buffer[14],
+                buffer[15],
             ]);
 
             first_seq = first_seq.min(sequence);
             last_seq = last_seq.max(sequence);
 
             // Skip rest of frame (simplified)
-            let frame_len = u32::from_le_bytes([buffer[0], buffer[1], buffer[2], buffer[3]]) as usize;
+            let frame_len =
+                u32::from_le_bytes([buffer[0], buffer[1], buffer[2], buffer[3]]) as usize;
             if frame_len > 16 {
                 let mut skip_buf = vec![0u8; frame_len - 16];
                 if reader.read_exact(&mut skip_buf).is_err() {
@@ -533,8 +548,17 @@ impl BackupManager {
         Ok(())
     }
 
-    fn restore_table(&self, table_info: &TableBackupInfo, backup_path: &Path, target_dir: &Path) -> Result<()> {
-        debug!("Restoring table: {} ({} segments)", table_info.name, table_info.segments_backed_up.len());
+    fn restore_table(
+        &self,
+        table_info: &TableBackupInfo,
+        backup_path: &Path,
+        target_dir: &Path,
+    ) -> Result<()> {
+        debug!(
+            "Restoring table: {} ({} segments)",
+            table_info.name,
+            table_info.segments_backed_up.len()
+        );
 
         let src_table_dir = backup_path.join("tables").join(&table_info.name);
         let dst_table_dir = target_dir.join("tables").join(&table_info.name);
@@ -553,10 +577,12 @@ impl BackupManager {
         // Log sequence range restored
         if let (Some(first), Some(last)) = (
             table_info.segments_backed_up.first(),
-            table_info.segments_backed_up.last()
+            table_info.segments_backed_up.last(),
         ) {
-            info!("Restored table {} with sequences {} to {}",
-                  table_info.name, first.start_sequence, last.end_sequence);
+            info!(
+                "Restored table {} with sequences {} to {}",
+                table_info.name, first.start_sequence, last.end_sequence
+            );
         }
 
         Ok(())
@@ -608,7 +634,8 @@ impl BackupManager {
 
             // For decompression, adjust destination filename
             let dst_file_name = if matches!(compression, CompressionType::None)
-                && file_name.to_str().is_some_and(|s| s.ends_with(".zst")) {
+                && file_name.to_str().is_some_and(|s| s.ends_with(".zst"))
+            {
                 // For now, special case for schema.zst -> schema.yaml
                 // In production, we'd store original extension in metadata
                 let name_str = match file_name.to_str() {
@@ -690,7 +717,9 @@ impl BackupManager {
                 encoder.finish()?;
             }
             CompressionType::Gzip => {
-                return Err(DriftError::Other("Gzip compression not yet implemented".into()));
+                return Err(DriftError::Other(
+                    "Gzip compression not yet implemented".into(),
+                ));
             }
         }
 
@@ -698,7 +727,7 @@ impl BackupManager {
     }
 
     fn compute_backup_checksum(&self, backup_path: &Path) -> Result<String> {
-        use sha2::{Sha256, Digest};
+        use sha2::{Digest, Sha256};
 
         let mut hasher = Sha256::new();
 
@@ -709,16 +738,14 @@ impl BackupManager {
         Ok(format!("{:x}", result))
     }
 
-    #[allow(clippy::only_used_in_recursion)]  // hasher is used throughout the recursion
+    #[allow(clippy::only_used_in_recursion)] // hasher is used throughout the recursion
     fn hash_directory_recursive(&self, path: &Path, hasher: &mut Sha256) -> Result<()> {
         use sha2::Digest;
         if !path.exists() {
             return Ok(());
         }
 
-        let mut entries: Vec<_> = fs::read_dir(path)?
-            .filter_map(|e| e.ok())
-            .collect();
+        let mut entries: Vec<_> = fs::read_dir(path)?.filter_map(|e| e.ok()).collect();
 
         // Sort for consistent hashing
         entries.sort_by_key(|e| e.path());
@@ -754,9 +781,9 @@ impl BackupManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
     use std::thread;
     use std::time::Duration;
+    use tempfile::TempDir;
 
     fn create_test_data(data_dir: &Path) {
         // Create test tables with various file types
@@ -767,14 +794,22 @@ mod tests {
             fs::create_dir_all(&table_dir).unwrap();
 
             // Create schema file
-            fs::write(table_dir.join("schema.yaml"), format!("# Schema for {}\ncolumns:\n  id: TEXT", table)).unwrap();
+            fs::write(
+                table_dir.join("schema.yaml"),
+                format!("# Schema for {}\ncolumns:\n  id: TEXT", table),
+            )
+            .unwrap();
 
             // Create some data files
             fs::write(table_dir.join("segment_001.dat"), "test data 1").unwrap();
             fs::write(table_dir.join("segment_002.dat"), "test data 2").unwrap();
 
             // Create metadata
-            fs::write(table_dir.join("meta.json"), r#"{"version": 1, "records": 100}"#).unwrap();
+            fs::write(
+                table_dir.join("meta.json"),
+                r#"{"version": 1, "records": 100}"#,
+            )
+            .unwrap();
         }
 
         // Create WAL directory with test files
@@ -817,13 +852,22 @@ mod tests {
         assert!(manager.verify_backup(backup_dir.path()).unwrap());
 
         // Restore to new location
-        manager.restore_from_backup(backup_dir.path(), Some(restore_dir.path())).unwrap();
+        manager
+            .restore_from_backup(backup_dir.path(), Some(restore_dir.path()))
+            .unwrap();
 
         // Verify restored data structure
         for table in &["users", "orders", "products"] {
             let restored_table_dir = restore_dir.path().join("tables").join(table);
-            assert!(restored_table_dir.exists(), "Table directory should exist: {}", restored_table_dir.display());
-            assert!(restored_table_dir.join("schema.yaml").exists(), "Schema file should exist");
+            assert!(
+                restored_table_dir.exists(),
+                "Table directory should exist: {}",
+                restored_table_dir.display()
+            );
+            assert!(
+                restored_table_dir.join("schema.yaml").exists(),
+                "Schema file should exist"
+            );
 
             // List files to debug what's actually restored
             if let Ok(entries) = std::fs::read_dir(&restored_table_dir) {
@@ -837,9 +881,15 @@ mod tests {
 
             // Note: during restoration, the original extensions may not be preserved perfectly
             // The compression/decompression process may alter file extensions
-            assert!(restored_table_dir.join("segment_001").exists() ||
-                   restored_table_dir.join("segment_001.dat").exists(), "Segment file should exist");
-            assert!(restored_table_dir.join("meta.json").exists(), "Meta file should exist");
+            assert!(
+                restored_table_dir.join("segment_001").exists()
+                    || restored_table_dir.join("segment_001.dat").exists(),
+                "Segment file should exist"
+            );
+            assert!(
+                restored_table_dir.join("meta.json").exists(),
+                "Meta file should exist"
+            );
         }
 
         // Verify WAL is restored
@@ -857,8 +907,11 @@ mod tests {
         }
 
         // WAL files may also have extension changes during compression/decompression
-        assert!(restored_wal_dir.join("000001").exists() ||
-               restored_wal_dir.join("000001.wal").exists(), "WAL file should exist");
+        assert!(
+            restored_wal_dir.join("000001").exists()
+                || restored_wal_dir.join("000001.wal").exists(),
+            "WAL file should exist"
+        );
     }
 
     #[test]
@@ -881,11 +934,13 @@ mod tests {
         fs::write(wal_dir.join("000003.wal"), "new wal entry").unwrap();
 
         // Create incremental backup
-        let inc_metadata = manager.create_incremental_backup(
-            inc_backup_dir.path(),
-            full_metadata.end_sequence,
-            Some(full_backup_dir.path())
-        ).unwrap();
+        let inc_metadata = manager
+            .create_incremental_backup(
+                inc_backup_dir.path(),
+                full_metadata.end_sequence,
+                Some(full_backup_dir.path()),
+            )
+            .unwrap();
 
         // Verify incremental backup metadata
         // Since we didn't add new segments, just WAL, tables might be empty
@@ -918,7 +973,11 @@ mod tests {
         assert!(manager.verify_backup(backup_dir.path()).unwrap());
 
         // Corrupt a file
-        let corrupt_file = backup_dir.path().join("tables").join("users").join("schema.zst");
+        let corrupt_file = backup_dir
+            .path()
+            .join("tables")
+            .join("users")
+            .join("schema.zst");
         if corrupt_file.exists() {
             fs::write(&corrupt_file, "corrupted data").unwrap();
 
@@ -942,14 +1001,16 @@ mod tests {
         assert!(matches!(metadata.compression, CompressionType::Zstd));
 
         // Verify compressed files exist
-        let compressed_schema = backup_dir.path()
+        let compressed_schema = backup_dir
+            .path()
             .join("tables")
             .join("users")
             .join("schema.zst");
         assert!(compressed_schema.exists());
 
         // Original file should not exist in backup
-        let uncompressed_schema = backup_dir.path()
+        let uncompressed_schema = backup_dir
+            .path()
             .join("tables")
             .join("users")
             .join("schema.yaml");
@@ -973,10 +1034,17 @@ mod tests {
         fs::remove_dir_all(data_dir.path().join("tables")).unwrap();
 
         // Restore to same location (None means use original data_dir)
-        manager.restore_from_backup(backup_dir.path(), None::<&Path>).unwrap();
+        manager
+            .restore_from_backup(backup_dir.path(), None::<&Path>)
+            .unwrap();
 
         // Verify data is restored
-        assert!(data_dir.path().join("tables").join("users").join("schema.yaml").exists());
+        assert!(data_dir
+            .path()
+            .join("tables")
+            .join("users")
+            .join("schema.yaml")
+            .exists());
     }
 
     #[test]
@@ -1001,7 +1069,9 @@ mod tests {
 
         // Restore should also work
         let restore_dir = TempDir::new().unwrap();
-        manager.restore_from_backup(backup_dir.path(), Some(restore_dir.path())).unwrap();
+        manager
+            .restore_from_backup(backup_dir.path(), Some(restore_dir.path()))
+            .unwrap();
     }
 
     #[test]
@@ -1047,9 +1117,7 @@ mod tests {
         create_test_data(data_dir.path());
 
         // Start two backups concurrently
-        let handle1 = thread::spawn(move || {
-            manager1.create_full_backup(backup_path1)
-        });
+        let handle1 = thread::spawn(move || manager1.create_full_backup(backup_path1));
 
         let handle2 = thread::spawn(move || {
             thread::sleep(Duration::from_millis(10)); // Small delay
@@ -1093,10 +1161,13 @@ mod tests {
 
         // Restore
         let restore_dir = TempDir::new().unwrap();
-        manager.restore_from_backup(backup_dir.path(), Some(restore_dir.path())).unwrap();
+        manager
+            .restore_from_backup(backup_dir.path(), Some(restore_dir.path()))
+            .unwrap();
 
         // Verify restored
-        let restored_file = restore_dir.path()
+        let restored_file = restore_dir
+            .path()
             .join("tables")
             .join(table_name)
             .join("schema.yaml");
@@ -1129,33 +1200,53 @@ mod tests {
         assert!(manager.verify_backup(backup_dir.path()).unwrap());
 
         // Check compressed file is smaller than original
-        let original_size = fs::metadata(table_dir.join("large_file.dat")).unwrap().len();
-        let compressed_file = backup_dir.path()
+        let original_size = fs::metadata(table_dir.join("large_file.dat"))
+            .unwrap()
+            .len();
+        let compressed_file = backup_dir
+            .path()
             .join("tables")
             .join("large_table")
             .join("large_file.zst");
 
         if compressed_file.exists() {
             let compressed_size = fs::metadata(&compressed_file).unwrap().len();
-            assert!(compressed_size < original_size, "Compressed file should be smaller");
+            assert!(
+                compressed_size < original_size,
+                "Compressed file should be smaller"
+            );
         }
 
         // Restore and verify
         let restore_dir = TempDir::new().unwrap();
-        manager.restore_from_backup(backup_dir.path(), Some(restore_dir.path())).unwrap();
+        manager
+            .restore_from_backup(backup_dir.path(), Some(restore_dir.path()))
+            .unwrap();
 
-        let restored_file = restore_dir.path()
+        let restored_file = restore_dir
+            .path()
             .join("tables")
             .join("large_table")
             .join("large_file.dat");
-        let restored_file_alt = restore_dir.path()
+        let restored_file_alt = restore_dir
+            .path()
             .join("tables")
             .join("large_table")
             .join("large_file");
-        assert!(restored_file.exists() || restored_file_alt.exists(), "Large file should be restored");
+        assert!(
+            restored_file.exists() || restored_file_alt.exists(),
+            "Large file should be restored"
+        );
 
-        let actual_restored_file = if restored_file.exists() { &restored_file } else { &restored_file_alt };
+        let actual_restored_file = if restored_file.exists() {
+            &restored_file
+        } else {
+            &restored_file_alt
+        };
         let restored_size = fs::metadata(actual_restored_file).unwrap().len();
-        assert_eq!(restored_size, original_size, "Restored file should match original size");
+        assert_eq!(
+            restored_size, original_size,
+            "Restored file should match original size"
+        );
     }
 }

@@ -11,10 +11,10 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use parking_lot::{RwLock, Mutex};
+use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tracing::{debug, info, warn, instrument};
+use tracing::{debug, info, instrument, warn};
 
 use crate::errors::{DriftError, Result};
 
@@ -204,7 +204,10 @@ impl MVCCManager {
 
     /// Begin a new transaction
     #[instrument(skip(self))]
-    pub fn begin_transaction(&self, isolation_level: IsolationLevel) -> Result<Arc<MVCCTransaction>> {
+    pub fn begin_transaction(
+        &self,
+        isolation_level: IsolationLevel,
+    ) -> Result<Arc<MVCCTransaction>> {
         let txn_id = self.next_txn_id.fetch_add(1, Ordering::SeqCst);
         let start_timestamp = self.current_timestamp.fetch_add(1, Ordering::SeqCst);
 
@@ -231,7 +234,10 @@ impl MVCCManager {
         // Register transaction
         self.active_txns.write().insert(txn_id, txn.clone());
 
-        debug!("Started transaction {} with isolation {:?}", txn_id, isolation_level);
+        debug!(
+            "Started transaction {} with isolation {:?}",
+            txn_id, isolation_level
+        );
         Ok(txn)
     }
 
@@ -277,7 +283,8 @@ impl MVCCManager {
                 if *other_txn_id != txn.id {
                     if other_txn.write_set.read().contains_key(&record_id) {
                         return Err(DriftError::Other(format!(
-                            "Write conflict on record {:?}", record_id
+                            "Write conflict on record {:?}",
+                            record_id
                         )));
                     }
                 }
@@ -344,7 +351,9 @@ impl MVCCManager {
             versions.insert(record_id.clone(), version_to_commit);
 
             // Add to GC queue
-            self.gc_queue.lock().push_back((record_id.clone(), commit_timestamp));
+            self.gc_queue
+                .lock()
+                .push_back((record_id.clone(), commit_timestamp));
         }
 
         // Release locks
@@ -358,7 +367,10 @@ impl MVCCManager {
         // Remove from active transactions
         self.active_txns.write().remove(&txn.id);
 
-        info!("Committed transaction {} at timestamp {}", txn.id, commit_timestamp);
+        info!(
+            "Committed transaction {} at timestamp {}",
+            txn.id, commit_timestamp
+        );
         Ok(())
     }
 
@@ -384,7 +396,11 @@ impl MVCCManager {
     }
 
     /// Find visible version for a transaction
-    fn find_visible_version<'a>(&self, version: &'a MVCCVersion, txn: &MVCCTransaction) -> Result<Option<&'a MVCCVersion>> {
+    fn find_visible_version<'a>(
+        &self,
+        version: &'a MVCCVersion,
+        txn: &MVCCTransaction,
+    ) -> Result<Option<&'a MVCCVersion>> {
         let mut current = Some(version);
 
         while let Some(v) = current {
@@ -426,7 +442,8 @@ impl MVCCManager {
                 // Check if version changed since read
                 if current_version.timestamp > txn.start_timestamp {
                     return Err(DriftError::Other(format!(
-                        "Serialization failure: Record {:?} was modified", record_id
+                        "Serialization failure: Record {:?} was modified",
+                        record_id
                     )));
                 }
             }
@@ -459,7 +476,8 @@ impl MVCCManager {
 
     fn get_min_active_timestamp(&self) -> VersionTimestamp {
         let active_txns = self.active_txns.read();
-        active_txns.values()
+        active_txns
+            .values()
             .map(|t| t.start_timestamp)
             .min()
             .unwrap_or(self.current_timestamp.load(Ordering::SeqCst))
@@ -630,7 +648,8 @@ impl DeadlockDetector {
 
         for &node in wait_graph.keys() {
             if !visited.contains(&node) {
-                if let Some(cycle) = self.dfs_find_cycle(node, wait_graph, &mut visited, &mut stack) {
+                if let Some(cycle) = self.dfs_find_cycle(node, wait_graph, &mut visited, &mut stack)
+                {
                     cycles.push(cycle);
                 }
             }
@@ -684,7 +703,9 @@ mod tests {
         let mvcc = MVCCManager::new(MVCCConfig::default());
 
         // Start transaction
-        let txn1 = mvcc.begin_transaction(IsolationLevel::ReadCommitted).unwrap();
+        let txn1 = mvcc
+            .begin_transaction(IsolationLevel::ReadCommitted)
+            .unwrap();
 
         // Write data
         let record_id = RecordId {
@@ -692,10 +713,17 @@ mod tests {
             key: "key1".to_string(),
         };
 
-        mvcc.write(&txn1, record_id.clone(), Value::String("value1".to_string())).unwrap();
+        mvcc.write(
+            &txn1,
+            record_id.clone(),
+            Value::String("value1".to_string()),
+        )
+        .unwrap();
 
         // Read uncommitted data
-        let txn2 = mvcc.begin_transaction(IsolationLevel::ReadCommitted).unwrap();
+        let txn2 = mvcc
+            .begin_transaction(IsolationLevel::ReadCommitted)
+            .unwrap();
         let read_result = mvcc.read(&txn2, record_id.clone()).unwrap();
         assert!(read_result.is_none()); // Shouldn't see uncommitted data
 
@@ -718,7 +746,12 @@ mod tests {
 
         // Initial value
         let txn0 = mvcc.begin_transaction(IsolationLevel::Snapshot).unwrap();
-        mvcc.write(&txn0, record_id.clone(), Value::Number(serde_json::Number::from(0))).unwrap();
+        mvcc.write(
+            &txn0,
+            record_id.clone(),
+            Value::Number(serde_json::Number::from(0)),
+        )
+        .unwrap();
         mvcc.commit(txn0).unwrap();
 
         // Two concurrent transactions
@@ -731,7 +764,12 @@ mod tests {
         assert_eq!(val1, val2);
 
         // Both try to increment
-        mvcc.write(&txn1, record_id.clone(), Value::Number(serde_json::Number::from(1))).unwrap();
+        mvcc.write(
+            &txn1,
+            record_id.clone(),
+            Value::Number(serde_json::Number::from(1)),
+        )
+        .unwrap();
         mvcc.commit(txn1).unwrap();
 
         // txn2 should still see old value due to snapshot isolation

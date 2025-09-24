@@ -11,13 +11,13 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use tracing::debug;
 
-use crate::errors::{DriftError, Result};
 use crate::engine::Engine;
-use crate::parallel::{ParallelExecutor, ParallelConfig, JoinType as ParallelJoinType};
-use crate::query::{WhereCondition, AsOf};
+use crate::errors::{DriftError, Result};
+use crate::parallel::{JoinType as ParallelJoinType, ParallelConfig, ParallelExecutor};
+use crate::query::{AsOf, WhereCondition};
 
 /// SQL JOIN types
 #[derive(Debug, Clone, PartialEq)]
@@ -123,11 +123,8 @@ impl JoinExecutor {
         let mut result_data = base_data;
 
         for join_clause in &query.joins {
-            result_data = self.execute_single_join(
-                result_data,
-                join_clause,
-                query.as_of.clone(),
-            )?;
+            result_data =
+                self.execute_single_join(result_data, join_clause, query.as_of.clone())?;
         }
 
         // Project final columns and apply limit
@@ -141,8 +138,11 @@ impl JoinExecutor {
         join_clause: &JoinClause,
         as_of: Option<AsOf>,
     ) -> Result<Vec<Value>> {
-        debug!("Executing {} JOIN with table: {}",
-               format!("{:?}", join_clause.join_type), join_clause.table);
+        debug!(
+            "Executing {} JOIN with table: {}",
+            format!("{:?}", join_clause.join_type),
+            join_clause.table
+        );
 
         // Load right table data
         let right_data = self.load_table_data(
@@ -160,7 +160,7 @@ impl JoinExecutor {
         // Validate join conditions
         if join_clause.conditions.is_empty() {
             return Err(DriftError::InvalidQuery(
-                "JOIN requires at least one condition".to_string()
+                "JOIN requires at least one condition".to_string(),
             ));
         }
 
@@ -168,31 +168,28 @@ impl JoinExecutor {
         // TODO: Support multiple conditions and non-equi joins
         let condition = &join_clause.conditions[0];
         if condition.operator != "=" {
-            return Err(DriftError::InvalidQuery(
-                format!("Unsupported JOIN operator: {}", condition.operator)
-            ));
+            return Err(DriftError::InvalidQuery(format!(
+                "Unsupported JOIN operator: {}",
+                condition.operator
+            )));
         }
 
         // Execute join based on type
         match join_clause.join_type {
-            JoinType::Inner => {
-                self.parallel_executor.parallel_join(
-                    left_data,
-                    right_data,
-                    ParallelJoinType::Inner,
-                    &condition.left_column,
-                    &condition.right_column,
-                )
-            }
-            JoinType::LeftOuter => {
-                self.parallel_executor.parallel_join(
-                    left_data,
-                    right_data,
-                    ParallelJoinType::LeftOuter,
-                    &condition.left_column,
-                    &condition.right_column,
-                )
-            }
+            JoinType::Inner => self.parallel_executor.parallel_join(
+                left_data,
+                right_data,
+                ParallelJoinType::Inner,
+                &condition.left_column,
+                &condition.right_column,
+            ),
+            JoinType::LeftOuter => self.parallel_executor.parallel_join(
+                left_data,
+                right_data,
+                ParallelJoinType::LeftOuter,
+                &condition.left_column,
+                &condition.right_column,
+            ),
             JoinType::RightOuter => {
                 // Swap tables for right outer join
                 self.parallel_executor.parallel_join(
@@ -226,12 +223,16 @@ impl JoinExecutor {
                 results.extend(right_anti);
                 Ok(results)
             }
-            _ => unreachable!()
+            _ => unreachable!(),
         }
     }
 
     /// Execute CROSS JOIN (Cartesian product)
-    fn execute_cross_join(&self, left_data: Vec<Value>, right_data: Vec<Value>) -> Result<Vec<Value>> {
+    fn execute_cross_join(
+        &self,
+        left_data: Vec<Value>,
+        right_data: Vec<Value>,
+    ) -> Result<Vec<Value>> {
         let mut results = Vec::with_capacity(left_data.len() * right_data.len());
 
         for left_row in &left_data {
@@ -239,8 +240,7 @@ impl JoinExecutor {
                 let mut combined = json!({});
 
                 // Merge both rows
-                if let (Value::Object(left_map), Value::Object(right_map)) =
-                    (left_row, right_row) {
+                if let (Value::Object(left_map), Value::Object(right_map)) = (left_row, right_row) {
                     for (k, v) in left_map {
                         combined[format!("left_{}", k)] = v.clone();
                     }
@@ -293,7 +293,10 @@ impl JoinExecutor {
         as_of: Option<AsOf>,
     ) -> Result<Vec<Value>> {
         // Get table storage
-        let storage = self.engine.tables.get(table)
+        let storage = self
+            .engine
+            .tables
+            .get(table)
             .ok_or_else(|| DriftError::TableNotFound(table.to_string()))?;
 
         // Determine sequence for temporal query
@@ -301,7 +304,8 @@ impl JoinExecutor {
             Some(AsOf::Sequence(seq)) => Some(seq),
             Some(AsOf::Timestamp(ts)) => {
                 let events = storage.read_all_events()?;
-                events.iter()
+                events
+                    .iter()
                     .filter(|e| e.timestamp <= ts)
                     .map(|e| e.sequence)
                     .max()
@@ -371,13 +375,19 @@ impl JoinExecutor {
                         if let Value::Object(map) = &row {
                             let prefix = format!("{}.", table);
                             for (k, v) in map {
-                                if k.starts_with(&prefix) || k.starts_with(&format!("{}_{}", table, "")) {
+                                if k.starts_with(&prefix)
+                                    || k.starts_with(&format!("{}_{}", table, ""))
+                                {
                                     projected_row[k] = v.clone();
                                 }
                             }
                         }
                     }
-                    SelectColumn::Column { table, column, alias } => {
+                    SelectColumn::Column {
+                        table,
+                        column,
+                        alias,
+                    } => {
                         // Include specific column
                         let col_name = if let Some(t) = table {
                             format!("{}.{}", t, column)
@@ -438,20 +448,16 @@ mod tests {
         let query = JoinQuery {
             base_table: "users".to_string(),
             base_alias: Some("u".to_string()),
-            joins: vec![
-                JoinClause {
-                    join_type: JoinType::Inner,
-                    table: "orders".to_string(),
-                    alias: Some("o".to_string()),
-                    conditions: vec![
-                        JoinCondition {
-                            left_column: "u.id".to_string(),
-                            operator: "=".to_string(),
-                            right_column: "o.user_id".to_string(),
-                        }
-                    ],
-                }
-            ],
+            joins: vec![JoinClause {
+                join_type: JoinType::Inner,
+                table: "orders".to_string(),
+                alias: Some("o".to_string()),
+                conditions: vec![JoinCondition {
+                    left_column: "u.id".to_string(),
+                    operator: "=".to_string(),
+                    right_column: "o.user_id".to_string(),
+                }],
+            }],
             select_columns: vec![
                 SelectColumn::Column {
                     table: Some("u".to_string()),
@@ -476,7 +482,13 @@ mod tests {
 
     #[test]
     fn test_join_type_conversion() {
-        assert_eq!(ParallelJoinType::from(JoinType::Inner), ParallelJoinType::Inner);
-        assert_eq!(ParallelJoinType::from(JoinType::LeftOuter), ParallelJoinType::LeftOuter);
+        assert_eq!(
+            ParallelJoinType::from(JoinType::Inner),
+            ParallelJoinType::Inner
+        );
+        assert_eq!(
+            ParallelJoinType::from(JoinType::LeftOuter),
+            ParallelJoinType::LeftOuter
+        );
     }
 }

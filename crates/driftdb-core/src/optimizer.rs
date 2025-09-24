@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, instrument};
 
 use crate::errors::Result;
-use crate::query::{Query, WhereCondition, AsOf};
+use crate::query::{AsOf, Query, WhereCondition};
 
 /// Query execution plan
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -67,20 +67,11 @@ pub enum PlanStep {
         cost: f64,
     },
     /// Limit results
-    Limit {
-        count: usize,
-        cost: f64,
-    },
+    Limit { count: usize, cost: f64 },
     /// Time travel to specific version
-    TimeTravel {
-        as_of: AsOf,
-        cost: f64,
-    },
+    TimeTravel { as_of: AsOf, cost: f64 },
     /// Load snapshot
-    SnapshotLoad {
-        sequence: u64,
-        cost: f64,
-    },
+    SnapshotLoad { sequence: u64, cost: f64 },
     /// Replay events from WAL
     EventReplay {
         from_sequence: u64,
@@ -184,9 +175,12 @@ impl QueryOptimizer {
         }
 
         let plan = match query {
-            Query::Select { table, conditions, as_of, limit } => {
-                self.optimize_select(table, conditions, as_of.as_ref(), limit.as_ref())
-            }
+            Query::Select {
+                table,
+                conditions,
+                as_of,
+                limit,
+            } => self.optimize_select(table, conditions, as_of.as_ref(), limit.as_ref()),
             _ => {
                 // Non-select queries don't need optimization
                 Ok(QueryPlan {
@@ -238,7 +232,10 @@ impl QueryOptimizer {
         let best_access = self.choose_best_plan(&access_plans);
 
         if let Some(plan) = best_access {
-            uses_index = matches!(plan, PlanStep::IndexScan { .. } | PlanStep::IndexLookup { .. });
+            uses_index = matches!(
+                plan,
+                PlanStep::IndexScan { .. } | PlanStep::IndexLookup { .. }
+            );
             estimated_rows = self.rows_after_step(&plan, estimated_rows);
             estimated_cost += self.cost_of_step(&plan);
             steps.push(plan);
@@ -341,11 +338,14 @@ impl QueryOptimizer {
 
     /// Choose the best plan based on cost
     fn choose_best_plan(&self, plans: &[PlanStep]) -> Option<PlanStep> {
-        plans.iter()
+        plans
+            .iter()
             .min_by(|a, b| {
                 let cost_a = self.cost_of_step(a);
                 let cost_b = self.cost_of_step(b);
-                cost_a.partial_cmp(&cost_b).unwrap_or(std::cmp::Ordering::Equal)
+                cost_a
+                    .partial_cmp(&cost_b)
+                    .unwrap_or(std::cmp::Ordering::Equal)
             })
             .cloned()
     }
@@ -368,7 +368,9 @@ impl QueryOptimizer {
                             from_sequence: snap_seq,
                             to_sequence: *seq,
                             estimated_events: (*seq - snap_seq) as usize,
-                            cost: self.cost_model.event_replay_cost((*seq - snap_seq) as usize),
+                            cost: self
+                                .cost_model
+                                .event_replay_cost((*seq - snap_seq) as usize),
                         })
                     } else {
                         None
@@ -418,7 +420,7 @@ impl QueryOptimizer {
                                 self.estimate_equality_selectivity_with_histogram(
                                     &condition.value,
                                     histogram,
-                                    table_stats.row_count
+                                    table_stats.row_count,
                                 )
                             } else {
                                 // Uniform distribution assumption
@@ -435,14 +437,14 @@ impl QueryOptimizer {
                                 &condition.value,
                                 &condition.operator,
                                 histogram,
-                                table_stats.row_count
+                                table_stats.row_count,
                             )
                         } else if col_stats.min_value.is_some() && col_stats.max_value.is_some() {
                             self.estimate_range_selectivity_with_bounds(
                                 &condition.value,
                                 &condition.operator,
                                 &col_stats.min_value,
-                                &col_stats.max_value
+                                &col_stats.max_value,
                             )
                         } else {
                             0.3 // Default 30% selectivity for range
@@ -450,7 +452,7 @@ impl QueryOptimizer {
                     }
                     "IS NULL" => null_fraction,
                     "IS NOT NULL" => 1.0 - null_fraction,
-                    _ => 0.5 // Default 50% for unknown operators
+                    _ => 0.5, // Default 50% for unknown operators
                 };
 
                 // Adjust for nulls (most operators don't match nulls)
@@ -558,7 +560,12 @@ impl QueryOptimizer {
     }
 
     /// Check if a value is within a range
-    fn value_in_range(&self, value: &serde_json::Value, lower: &serde_json::Value, upper: &serde_json::Value) -> bool {
+    fn value_in_range(
+        &self,
+        value: &serde_json::Value,
+        lower: &serde_json::Value,
+        upper: &serde_json::Value,
+    ) -> bool {
         self.compare_values(value, lower) >= 0 && self.compare_values(value, upper) <= 0
     }
 
@@ -573,18 +580,28 @@ impl QueryOptimizer {
                     0
                 }
             }
-            (serde_json::Value::String(s1), serde_json::Value::String(s2)) => {
-                s1.cmp(s2) as i32
-            }
+            (serde_json::Value::String(s1), serde_json::Value::String(s2)) => s1.cmp(s2) as i32,
             _ => 0,
         }
     }
 
     /// Interpolate value position between min and max
-    fn interpolate_value_position(&self, value: &serde_json::Value, min: &serde_json::Value, max: &serde_json::Value) -> f64 {
+    fn interpolate_value_position(
+        &self,
+        value: &serde_json::Value,
+        min: &serde_json::Value,
+        max: &serde_json::Value,
+    ) -> f64 {
         // Simple linear interpolation for numeric values
-        if let (serde_json::Value::Number(v), serde_json::Value::Number(min_n), serde_json::Value::Number(max_n)) = (value, min, max) {
-            if let (Some(v_f), Some(min_f), Some(max_f)) = (v.as_f64(), min_n.as_f64(), max_n.as_f64()) {
+        if let (
+            serde_json::Value::Number(v),
+            serde_json::Value::Number(min_n),
+            serde_json::Value::Number(max_n),
+        ) = (value, min, max)
+        {
+            if let (Some(v_f), Some(min_f), Some(max_f)) =
+                (v.as_f64(), min_n.as_f64(), max_n.as_f64())
+            {
                 if max_f > min_f {
                     ((v_f - min_f) / (max_f - min_f)).max(0.0).min(1.0)
                 } else {
@@ -606,7 +623,8 @@ impl QueryOptimizer {
 
     /// Estimate rows in table
     fn estimate_table_rows(&self, table: &str) -> usize {
-        self.statistics.read()
+        self.statistics
+            .read()
             .get(table)
             .map(|s| s.row_count)
             .unwrap_or(0) // Return 0 if no statistics - forces statistics collection
@@ -645,7 +663,8 @@ impl QueryOptimizer {
 
         if let Some(snapshots) = registry.get(table) {
             // Find the snapshot with the largest sequence that's still <= target sequence
-            snapshots.iter()
+            snapshots
+                .iter()
                 .filter(|s| s.sequence <= sequence)
                 .max_by_key(|s| s.sequence)
                 .map(|s| s.sequence)
@@ -657,9 +676,7 @@ impl QueryOptimizer {
     /// Register a snapshot with the optimizer
     pub fn register_snapshot(&self, table: &str, info: SnapshotInfo) {
         let mut registry = self.snapshot_registry.write();
-        registry.entry(table.to_string())
-            .or_default()
-            .push(info);
+        registry.entry(table.to_string()).or_default().push(info);
     }
 
     /// Generate cache key for query
@@ -679,7 +696,11 @@ impl QueryOptimizer {
 
     /// Optimize multiple conditions by reordering for efficiency
     #[allow(dead_code)]
-    fn optimize_condition_order(&self, table: &str, conditions: &[WhereCondition]) -> Vec<WhereCondition> {
+    fn optimize_condition_order(
+        &self,
+        table: &str,
+        conditions: &[WhereCondition],
+    ) -> Vec<WhereCondition> {
         let mut conditions = conditions.to_vec();
 
         // Sort conditions by selectivity (most selective first)
@@ -702,8 +723,10 @@ impl QueryOptimizer {
                 // Suggest index if column is frequently used in WHERE but not indexed
                 if !table_stats.index_stats.contains_key(column_name) {
                     // In production, would check query history for this column
-                    suggestions.push(format!("CREATE INDEX idx_{}_{} ON {} ({})",
-                        table, column_name, table, column_name));
+                    suggestions.push(format!(
+                        "CREATE INDEX idx_{}_{} ON {} ({})",
+                        table, column_name, table, column_name
+                    ));
                 }
             }
         }
@@ -717,8 +740,8 @@ impl QueryOptimizer {
 
         for step in &plan.steps {
             match step {
-                PlanStep::TableScan { estimated_rows, .. } |
-                PlanStep::IndexScan { estimated_rows, .. } => {
+                PlanStep::TableScan { estimated_rows, .. }
+                | PlanStep::IndexScan { estimated_rows, .. } => {
                     // Assume average row size of 1KB
                     memory = memory.max(estimated_rows * 1024);
                 }

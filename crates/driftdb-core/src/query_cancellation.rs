@@ -1,10 +1,10 @@
 use crate::errors::{DriftError, Result};
-use serde::{Serialize, Deserialize};
+use parking_lot::{Mutex, RwLock};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
-use parking_lot::{RwLock, Mutex};
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
@@ -33,7 +33,7 @@ impl Default for CancellationConfig {
     fn default() -> Self {
         Self {
             default_timeout: Duration::from_secs(300), // 5 minutes
-            max_timeout: Duration::from_secs(3600), // 1 hour
+            max_timeout: Duration::from_secs(3600),    // 1 hour
             enable_deadlock_detection: true,
             deadlock_check_interval: Duration::from_secs(10),
             memory_limit_mb: 1024, // 1GB per query
@@ -214,15 +214,16 @@ impl QueryCancellationManager {
                 QueryState::Cancelling => {
                     Ok(()) // Already cancelling
                 }
-                _ => {
-                    Err(DriftError::Other(format!(
-                        "Query {} is not running (state: {:?})",
-                        query_id, *state
-                    )))
-                }
+                _ => Err(DriftError::Other(format!(
+                    "Query {} is not running (state: {:?})",
+                    query_id, *state
+                ))),
             }
         } else {
-            Err(DriftError::NotFound(format!("Query {} not found", query_id)))
+            Err(DriftError::NotFound(format!(
+                "Query {} not found",
+                query_id
+            )))
         }
     }
 
@@ -280,7 +281,10 @@ impl QueryCancellationManager {
 
             Ok(())
         } else {
-            Err(DriftError::NotFound(format!("Query {} not found", query_id)))
+            Err(DriftError::NotFound(format!(
+                "Query {} not found",
+                query_id
+            )))
         }
     }
 
@@ -311,7 +315,8 @@ impl QueryCancellationManager {
     pub fn list_active_queries(&self) -> Vec<QueryStatus> {
         let queries = self.active_queries.read();
 
-        queries.keys()
+        queries
+            .keys()
             .filter_map(|id| self.get_query_status(*id))
             .collect()
     }
@@ -393,8 +398,9 @@ impl QueryCancellationManager {
                         }
 
                         // Check CPU limit (simplified)
-                        let cpu_percent = (usage.cpu_time_ms as f64) /
-                                        (handle.started_at.elapsed().as_millis() as f64) * 100.0;
+                        let cpu_percent = (usage.cpu_time_ms as f64)
+                            / (handle.started_at.elapsed().as_millis() as f64)
+                            * 100.0;
 
                         if cpu_percent > config.cpu_limit_percent {
                             exceeded.push((*id, "cpu"));
@@ -417,7 +423,8 @@ impl QueryCancellationManager {
 
                         tracing::warn!(
                             "Query {} exceeded {} limit and was cancelled",
-                            id, resource
+                            id,
+                            resource
                         );
                     }
                 }
@@ -458,10 +465,7 @@ impl QueryCancellationManager {
                 for id in stuck_queries {
                     let mut queries_write = queries.write();
                     if let Some(handle) = queries_write.remove(&id) {
-                        tracing::error!(
-                            "Force-killing stuck query {}: {}",
-                            id, handle.query
-                        );
+                        tracing::error!("Force-killing stuck query {}: {}", id, handle.query);
                     }
                 }
             }
@@ -511,7 +515,10 @@ impl QueryCancellationManager {
             *handle.resource_usage.write() = usage;
             Ok(())
         } else {
-            Err(DriftError::NotFound(format!("Query {} not found", query_id)))
+            Err(DriftError::NotFound(format!(
+                "Query {} not found",
+                query_id
+            )))
         }
     }
 }
@@ -621,11 +628,13 @@ mod tests {
     async fn test_query_cancellation() {
         let manager = QueryCancellationManager::new(CancellationConfig::default());
 
-        let mut token = manager.register_query(
-            "SELECT * FROM large_table".to_string(),
-            Some(Duration::from_secs(10)),
-            HashMap::new(),
-        ).unwrap();
+        let mut token = manager
+            .register_query(
+                "SELECT * FROM large_table".to_string(),
+                Some(Duration::from_secs(10)),
+                HashMap::new(),
+            )
+            .unwrap();
 
         assert!(!token.is_cancelled());
 
@@ -643,11 +652,13 @@ mod tests {
 
         let manager = QueryCancellationManager::new(config);
 
-        let mut token = manager.register_query(
-            "SELECT * FROM large_table".to_string(),
-            None,
-            HashMap::new(),
-        ).unwrap();
+        let mut token = manager
+            .register_query(
+                "SELECT * FROM large_table".to_string(),
+                None,
+                HashMap::new(),
+            )
+            .unwrap();
 
         tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -664,24 +675,16 @@ mod tests {
         let manager = QueryCancellationManager::new(config);
 
         // Register two queries - should succeed
-        let _token1 = manager.register_query(
-            "SELECT 1".to_string(),
-            None,
-            HashMap::new(),
-        ).unwrap();
+        let _token1 = manager
+            .register_query("SELECT 1".to_string(), None, HashMap::new())
+            .unwrap();
 
-        let _token2 = manager.register_query(
-            "SELECT 2".to_string(),
-            None,
-            HashMap::new(),
-        ).unwrap();
+        let _token2 = manager
+            .register_query("SELECT 2".to_string(), None, HashMap::new())
+            .unwrap();
 
         // Third query should fail
-        let result = manager.register_query(
-            "SELECT 3".to_string(),
-            None,
-            HashMap::new(),
-        );
+        let result = manager.register_query("SELECT 3".to_string(), None, HashMap::new());
 
         assert!(result.is_err());
     }

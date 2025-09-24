@@ -1,15 +1,15 @@
 //! Backup and restore CLI commands for DriftDB
 
-use std::path::PathBuf;
-use std::fs;
-use std::sync::Arc;
-use anyhow::{Result, Context};
+use anyhow::{Context, Result};
 use clap::Subcommand;
 use serde_json;
+use std::fs;
+use std::path::PathBuf;
+use std::sync::Arc;
 use time::OffsetDateTime;
 
 use driftdb_core::backup::{BackupManager, BackupMetadata};
-use driftdb_core::{Engine, observability::Metrics};
+use driftdb_core::{observability::Metrics, Engine};
 
 #[derive(Subcommand)]
 pub enum BackupCommands {
@@ -85,26 +85,16 @@ pub fn run(command: BackupCommands) -> Result<()> {
             backup_type,
             compression,
             parent,
-        } => {
-            create_backup(source, destination, backup_type, compression, parent)
-        }
+        } => create_backup(source, destination, backup_type, compression, parent),
         BackupCommands::Restore {
             backup,
             target,
             force,
             point_in_time,
-        } => {
-            restore_backup(backup, target, force, point_in_time)
-        }
-        BackupCommands::List { path } => {
-            list_backups(path)
-        }
-        BackupCommands::Verify { backup } => {
-            verify_backup(backup)
-        }
-        BackupCommands::Info { backup } => {
-            show_backup_info(backup)
-        }
+        } => restore_backup(backup, target, force, point_in_time),
+        BackupCommands::List { path } => list_backups(path),
+        BackupCommands::Verify { backup } => verify_backup(backup),
+        BackupCommands::Info { backup } => show_backup_info(backup),
     }
 }
 
@@ -120,17 +110,22 @@ fn create_backup(
     // Generate default backup name if not provided
     let backup_path = destination.unwrap_or_else(|| {
         let now = OffsetDateTime::now_utc();
-        let timestamp = format!("{}{}{}_{}{}{}",
-            now.year(), now.month() as u8, now.day(),
-            now.hour(), now.minute(), now.second());
+        let timestamp = format!(
+            "{}{}{}_{}{}{}",
+            now.year(),
+            now.month() as u8,
+            now.day(),
+            now.hour(),
+            now.minute(),
+            now.second()
+        );
         PathBuf::from(format!("./backups/backup_{}", timestamp))
     });
 
     println!("  Initializing backup...");
 
     // Open the database
-    let _engine = Engine::open(&source)
-        .context("Failed to open source database")?;
+    let _engine = Engine::open(&source).context("Failed to open source database")?;
 
     let metrics = Arc::new(Metrics::new());
     let backup_mgr = BackupManager::new(&source, metrics);
@@ -143,7 +138,9 @@ fn create_backup(
         }
         "incremental" => {
             if parent.is_none() {
-                return Err(anyhow::anyhow!("Incremental backup requires parent backup path"));
+                return Err(anyhow::anyhow!(
+                    "Incremental backup requires parent backup path"
+                ));
             }
             println!("  Creating incremental backup...");
             // For incremental, we need to get the last sequence from parent
@@ -167,7 +164,10 @@ fn create_backup(
     println!("  Location: {}", backup_path.display());
     println!("  Type: {:?}", metadata.backup_type);
     println!("  Tables: {}", metadata.tables.len());
-    println!("  Sequences: {} to {}", metadata.start_sequence, metadata.end_sequence);
+    println!(
+        "  Sequences: {} to {}",
+        metadata.start_sequence, metadata.end_sequence
+    );
     println!("  Compression: {:?}", metadata.compression);
     println!("  Checksum: {}", metadata.checksum);
 
@@ -176,7 +176,10 @@ fn create_backup(
     let metadata_json = serde_json::to_string_pretty(&metadata)?;
     fs::write(&metadata_path, metadata_json)?;
 
-    println!("\n✅ Backup created successfully at: {}", backup_path.display());
+    println!(
+        "\n✅ Backup created successfully at: {}",
+        backup_path.display()
+    );
 
     Ok(())
 }
@@ -198,8 +201,8 @@ fn restore_backup(
 
     // Load metadata
     let metadata_path = backup.join("metadata.json");
-    let metadata_json = fs::read_to_string(&metadata_path)
-        .context("Failed to read backup metadata")?;
+    let metadata_json =
+        fs::read_to_string(&metadata_path).context("Failed to read backup metadata")?;
     let metadata: BackupMetadata = serde_json::from_str(&metadata_json)?;
 
     println!("  Processing {} tables...", metadata.tables.len());
@@ -225,11 +228,16 @@ fn restore_backup(
         // TODO: Implement point-in-time recovery by replaying WAL up to specified time
     }
 
-    println!("\n✅ Database restored successfully to: {}", target.display());
-    println!("📊 Restored {} tables with sequences {} to {}",
-             metadata.tables.len(),
-             metadata.start_sequence,
-             metadata.end_sequence);
+    println!(
+        "\n✅ Database restored successfully to: {}",
+        target.display()
+    );
+    println!(
+        "📊 Restored {} tables with sequences {} to {}",
+        metadata.tables.len(),
+        metadata.start_sequence,
+        metadata.end_sequence
+    );
 
     Ok(())
 }
@@ -268,25 +276,41 @@ fn list_backups(path: PathBuf) -> Result<()> {
         // Sort by timestamp
         backups.sort_by_key(|(_, m)| m.timestamp_ms);
 
-        println!("{:<30} {:<10} {:<20} {:<10}", "Backup Name", "Type", "Timestamp", "Tables");
+        println!(
+            "{:<30} {:<10} {:<20} {:<10}",
+            "Backup Name", "Type", "Timestamp", "Tables"
+        );
         println!("{:-<80}", "");
 
         for (path, metadata) in backups {
-            let name = path.file_name()
+            let name = path
+                .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("unknown");
 
-            let timestamp = OffsetDateTime::from_unix_timestamp_nanos((metadata.timestamp_ms as i128) * 1_000_000)
-                .map(|dt| format!("{}-{:02}-{:02} {:02}:{:02}:{:02}",
-                    dt.year(), dt.month() as u8, dt.day(),
-                    dt.hour(), dt.minute(), dt.second()))
-                .unwrap_or_else(|_| "unknown".to_string());
+            let timestamp = OffsetDateTime::from_unix_timestamp_nanos(
+                (metadata.timestamp_ms as i128) * 1_000_000,
+            )
+            .map(|dt| {
+                format!(
+                    "{}-{:02}-{:02} {:02}:{:02}:{:02}",
+                    dt.year(),
+                    dt.month() as u8,
+                    dt.day(),
+                    dt.hour(),
+                    dt.minute(),
+                    dt.second()
+                )
+            })
+            .unwrap_or_else(|_| "unknown".to_string());
 
-            println!("{:<30} {:<10} {:<20} {:<10}",
-                     name,
-                     format!("{:?}", metadata.backup_type),
-                     timestamp,
-                     metadata.tables.len());
+            println!(
+                "{:<30} {:<10} {:<20} {:<10}",
+                name,
+                format!("{:?}", metadata.backup_type),
+                timestamp,
+                metadata.tables.len()
+            );
         }
     }
 
@@ -365,27 +389,43 @@ fn show_backup_info(backup: PathBuf) -> Result<()> {
         println!("  Parent: {}", parent);
     }
 
-    let timestamp = OffsetDateTime::from_unix_timestamp_nanos((metadata.timestamp_ms as i128) * 1_000_000)
-        .map(|dt| format!("{}-{:02}-{:02} {:02}:{:02}:{:02}",
-            dt.year(), dt.month() as u8, dt.day(),
-            dt.hour(), dt.minute(), dt.second()))
-        .unwrap_or_else(|_| "unknown".to_string());
+    let timestamp =
+        OffsetDateTime::from_unix_timestamp_nanos((metadata.timestamp_ms as i128) * 1_000_000)
+            .map(|dt| {
+                format!(
+                    "{}-{:02}-{:02} {:02}:{:02}:{:02}",
+                    dt.year(),
+                    dt.month() as u8,
+                    dt.day(),
+                    dt.hour(),
+                    dt.minute(),
+                    dt.second()
+                )
+            })
+            .unwrap_or_else(|_| "unknown".to_string());
 
     println!("  Created: {}", timestamp);
-    println!("  Sequences: {} to {}", metadata.start_sequence, metadata.end_sequence);
+    println!(
+        "  Sequences: {} to {}",
+        metadata.start_sequence, metadata.end_sequence
+    );
     println!("  Compression: {:?}", metadata.compression);
     println!("  Checksum: {}", metadata.checksum);
 
     println!("\n📋 Tables ({}):", metadata.tables.len());
     for table in &metadata.tables {
-        println!("  - {}: {} events, {} segments",
-                 table.name,
-                 table.total_events,
-                 table.segments_backed_up.len());
+        println!(
+            "  - {}: {} events, {} segments",
+            table.name,
+            table.total_events,
+            table.segments_backed_up.len()
+        );
     }
 
     // Calculate total size
-    let total_size: u64 = metadata.tables.iter()
+    let total_size: u64 = metadata
+        .tables
+        .iter()
         .flat_map(|t| &t.segments_backed_up)
         .map(|s| s.size_bytes)
         .sum();

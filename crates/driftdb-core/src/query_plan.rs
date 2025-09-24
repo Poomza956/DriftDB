@@ -203,7 +203,11 @@ impl QueryPlanBuilder {
         Ok(plan)
     }
 
-    fn create_node(&mut self, operation: PlanOperation, children: Vec<Arc<PlanNode>>) -> Arc<PlanNode> {
+    fn create_node(
+        &mut self,
+        operation: PlanOperation,
+        children: Vec<Arc<PlanNode>>,
+    ) -> Arc<PlanNode> {
         let id = self.next_id;
         self.next_id += 1;
 
@@ -386,11 +390,17 @@ impl QueryPlanVisualizer {
     fn visualize_node_text(&self, node: &PlanNode, output: &mut String, depth: usize) {
         let indent = "  ".repeat(depth);
 
-        output.push_str(&format!("{}-> {}\n", indent, self.format_operation(&node.operation)));
+        output.push_str(&format!(
+            "{}-> {}\n",
+            indent,
+            self.format_operation(&node.operation)
+        ));
 
         if self.show_costs {
-            output.push_str(&format!("{}   Cost: {:.2}, Rows: {}",
-                indent, node.estimated_cost, node.estimated_rows));
+            output.push_str(&format!(
+                "{}   Cost: {:.2}, Rows: {}",
+                indent, node.estimated_cost, node.estimated_rows
+            ));
 
             if let Some(actual_rows) = node.actual_rows {
                 output.push_str(&format!(" (actual: {})", actual_rows));
@@ -399,12 +409,16 @@ impl QueryPlanVisualizer {
         }
 
         if self.show_actual_stats && node.actual_time_ms.is_some() {
-            output.push_str(&format!("{}   Time: {:.2}ms\n",
-                indent, node.actual_time_ms.unwrap()));
+            output.push_str(&format!(
+                "{}   Time: {:.2}ms\n",
+                indent,
+                node.actual_time_ms.unwrap()
+            ));
         }
 
         if self.show_properties {
-            output.push_str(&format!("{}   Properties: CPU={:.2}, IO={:.2}, Mem={}KB\n",
+            output.push_str(&format!(
+                "{}   Properties: CPU={:.2}, IO={:.2}, Mem={}KB\n",
                 indent,
                 node.properties.cpu_cost,
                 node.properties.io_cost,
@@ -448,7 +462,12 @@ impl QueryPlanVisualizer {
         output
     }
 
-    fn visualize_node_dot(&self, node: &PlanNode, output: &mut String, visited: &mut HashSet<usize>) {
+    fn visualize_node_dot(
+        &self,
+        node: &PlanNode,
+        output: &mut String,
+        visited: &mut HashSet<usize>,
+    ) {
         if visited.contains(&node.id) {
             return;
         }
@@ -456,13 +475,18 @@ impl QueryPlanVisualizer {
 
         let label = self.format_operation(&node.operation);
         let cost_label = if self.show_costs {
-            format!("\\nCost: {:.2}\\nRows: {}", node.estimated_cost, node.estimated_rows)
+            format!(
+                "\\nCost: {:.2}\\nRows: {}",
+                node.estimated_cost, node.estimated_rows
+            )
         } else {
             String::new()
         };
 
-        output.push_str(&format!("  n{} [label=\"{}{}\"]\n",
-            node.id, label, cost_label));
+        output.push_str(&format!(
+            "  n{} [label=\"{}{}\"]\n",
+            node.id, label, cost_label
+        ));
 
         for child in &node.children {
             output.push_str(&format!("  n{} -> n{}\n", child.id, node.id));
@@ -490,7 +514,10 @@ impl QueryPlanVisualizer {
             html.push_str("</ul>\n");
         }
 
-        html.push_str(&format!("<p>Estimated Cost: {:.2}<br>", plan.estimated_cost));
+        html.push_str(&format!(
+            "<p>Estimated Cost: {:.2}<br>",
+            plan.estimated_cost
+        ));
         html.push_str(&format!("Estimated Rows: {}</p>\n", plan.estimated_rows));
 
         html.push_str("<div class=\"plan\">\n");
@@ -503,13 +530,17 @@ impl QueryPlanVisualizer {
 
     fn visualize_node_html(&self, node: &PlanNode, output: &mut String) {
         output.push_str("<div class=\"node\">\n");
-        output.push_str(&format!("<div class=\"operation\">{}</div>\n",
-            self.format_operation(&node.operation)));
+        output.push_str(&format!(
+            "<div class=\"operation\">{}</div>\n",
+            self.format_operation(&node.operation)
+        ));
 
         if self.show_costs {
             output.push_str("<div class=\"stats\">");
-            output.push_str(&format!("Cost: {:.2}, Rows: {}",
-                node.estimated_cost, node.estimated_rows));
+            output.push_str(&format!(
+                "Cost: {:.2}, Rows: {}",
+                node.estimated_cost, node.estimated_rows
+            ));
 
             if let Some(actual_rows) = node.actual_rows {
                 output.push_str(&format!(" (actual: {})", actual_rows));
@@ -531,37 +562,65 @@ impl QueryPlanVisualizer {
 
     fn format_operation(&self, op: &PlanOperation) -> String {
         match op {
-            PlanOperation::TableScan { table, columns, filter } => {
-                let filter_str = filter.as_ref().map(|f| format!(" WHERE {}", f)).unwrap_or_default();
-                format!("TableScan({}, [{}]{})", table, columns.join(", "), filter_str)
+            PlanOperation::TableScan {
+                table,
+                columns,
+                filter,
+            } => {
+                let filter_str = filter
+                    .as_ref()
+                    .map(|f| format!(" WHERE {}", f))
+                    .unwrap_or_default();
+                format!(
+                    "TableScan({}, [{}]{})",
+                    table,
+                    columns.join(", "),
+                    filter_str
+                )
             }
             PlanOperation::IndexScan { table, index, .. } => {
                 format!("IndexScan({} using {})", table, index)
             }
-            PlanOperation::HashJoin { join_type, condition, .. } => {
+            PlanOperation::HashJoin {
+                join_type,
+                condition,
+                ..
+            } => {
                 format!("HashJoin({:?} ON {})", join_type, condition)
             }
-            PlanOperation::NestedLoopJoin { join_type, condition } => {
+            PlanOperation::NestedLoopJoin {
+                join_type,
+                condition,
+            } => {
                 format!("NestedLoopJoin({:?} ON {})", join_type, condition)
             }
-            PlanOperation::MergeJoin { join_type, condition, .. } => {
+            PlanOperation::MergeJoin {
+                join_type,
+                condition,
+                ..
+            } => {
                 format!("MergeJoin({:?} ON {})", join_type, condition)
             }
             PlanOperation::Sort { keys, limit } => {
-                let keys_str = keys.iter()
+                let keys_str = keys
+                    .iter()
                     .map(|k| format!("{} {}", k.column, if k.ascending { "ASC" } else { "DESC" }))
                     .collect::<Vec<_>>()
                     .join(", ");
                 let limit_str = limit.map(|l| format!(" LIMIT {}", l)).unwrap_or_default();
                 format!("Sort([{}]{})", keys_str, limit_str)
             }
-            PlanOperation::Aggregate { group_by, aggregates } => {
+            PlanOperation::Aggregate {
+                group_by,
+                aggregates,
+            } => {
                 let group_str = if group_by.is_empty() {
                     String::new()
                 } else {
                     format!("GROUP BY [{}] ", group_by.join(", "))
                 };
-                let agg_str = aggregates.iter()
+                let agg_str = aggregates
+                    .iter()
                     .map(|a| format!("{}({})", a.function, a.column))
                     .collect::<Vec<_>>()
                     .join(", ");
@@ -594,7 +653,11 @@ impl QueryPlanVisualizer {
             PlanOperation::ParallelScan { partitions } => {
                 format!("ParallelScan({} partitions)", partitions)
             }
-            PlanOperation::WindowFunction { function, partition_by, .. } => {
+            PlanOperation::WindowFunction {
+                function,
+                partition_by,
+                ..
+            } => {
                 let partition_str = if partition_by.is_empty() {
                     String::new()
                 } else {
@@ -640,14 +703,18 @@ impl PlanAnalyzer {
     fn analyze_node(&mut self, node: &PlanNode) {
         match &node.operation {
             PlanOperation::TableScan { filter, .. } if filter.is_none() => {
-                self.warnings.push("Full table scan detected without filter".to_string());
+                self.warnings
+                    .push("Full table scan detected without filter".to_string());
             }
             PlanOperation::NestedLoopJoin { .. } if node.estimated_rows > 10000 => {
-                self.warnings.push("Nested loop join on large dataset".to_string());
-                self.suggestions.push("Consider using hash join for better performance".to_string());
+                self.warnings
+                    .push("Nested loop join on large dataset".to_string());
+                self.suggestions
+                    .push("Consider using hash join for better performance".to_string());
             }
             PlanOperation::Sort { .. } if node.properties.memory_usage > 100 * 1024 * 1024 => {
-                self.warnings.push("Large sort operation may spill to disk".to_string());
+                self.warnings
+                    .push("Large sort operation may spill to disk".to_string());
             }
             _ => {}
         }
@@ -659,21 +726,25 @@ impl PlanAnalyzer {
 
     fn check_performance_issues(&mut self, plan: &QueryPlan) {
         if plan.estimated_cost > 10000.0 {
-            self.warnings.push("Query has high estimated cost".to_string());
+            self.warnings
+                .push("Query has high estimated cost".to_string());
         }
 
         if !plan.statistics_used {
-            self.suggestions.push("Update table statistics for better optimization".to_string());
+            self.suggestions
+                .push("Update table statistics for better optimization".to_string());
         }
 
         if !plan.parallelism_enabled && plan.estimated_rows > 100000 {
-            self.suggestions.push("Enable parallel query execution for large datasets".to_string());
+            self.suggestions
+                .push("Enable parallel query execution for large datasets".to_string());
         }
     }
 
     fn suggest_optimizations(&mut self, _plan: &QueryPlan) {
         if self.suggestions.is_empty() {
-            self.suggestions.push("Query plan appears optimal".to_string());
+            self.suggestions
+                .push("Query plan appears optimal".to_string());
         }
     }
 
@@ -771,12 +842,15 @@ impl PlanExecutionTracker {
     }
 
     pub fn start_node(&mut self, node_id: usize) {
-        self.node_timings.insert(node_id, NodeTiming {
-            start: Instant::now(),
-            end: None,
-            rows_processed: 0,
-            memory_peak: 0,
-        });
+        self.node_timings.insert(
+            node_id,
+            NodeTiming {
+                start: Instant::now(),
+                end: None,
+                rows_processed: 0,
+                memory_peak: 0,
+            },
+        );
     }
 
     pub fn end_node(&mut self, node_id: usize, rows: usize) {

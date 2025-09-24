@@ -5,8 +5,8 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::errors::Result;
 use super::{SystemTimeClause, TemporalPoint};
+use crate::errors::Result;
 
 /// SQL:2011 Temporal Table Definition
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -48,17 +48,17 @@ pub struct TemporalDDL;
 
 impl TemporalDDL {
     /// Generate CREATE TABLE statement for temporal table
-    pub fn create_temporal_table(
-        name: &str,
-        columns: Vec<ColumnDef>,
-        primary_key: &str,
-    ) -> String {
+    pub fn create_temporal_table(name: &str, columns: Vec<ColumnDef>, primary_key: &str) -> String {
         let mut ddl = format!("CREATE TABLE {} (\n", name);
 
         // Add user columns
         for col in &columns {
-            ddl.push_str(&format!("    {} {} {},\n", col.name, col.data_type,
-                if col.not_null { "NOT NULL" } else { "" }));
+            ddl.push_str(&format!(
+                "    {} {} {},\n",
+                col.name,
+                col.data_type,
+                if col.not_null { "NOT NULL" } else { "" }
+            ));
         }
 
         // Add system time columns (hidden by default)
@@ -105,15 +105,9 @@ impl TemporalSemantics {
     /// Translate SQL:2011 temporal point to DriftDB concepts
     pub fn to_driftdb_point(point: &TemporalPoint) -> Result<DriftDbPoint> {
         match point {
-            TemporalPoint::Timestamp(ts) => {
-                Ok(DriftDbPoint::Timestamp(*ts))
-            }
-            TemporalPoint::Sequence(seq) => {
-                Ok(DriftDbPoint::Sequence(*seq))
-            }
-            TemporalPoint::CurrentTimestamp => {
-                Ok(DriftDbPoint::Timestamp(Utc::now()))
-            }
+            TemporalPoint::Timestamp(ts) => Ok(DriftDbPoint::Timestamp(*ts)),
+            TemporalPoint::Sequence(seq) => Ok(DriftDbPoint::Sequence(*seq)),
+            TemporalPoint::CurrentTimestamp => Ok(DriftDbPoint::Timestamp(Utc::now())),
         }
     }
 
@@ -148,9 +142,7 @@ impl TemporalSemantics {
                 })
             }
 
-            SystemTimeClause::All => {
-                Ok(TemporalFilter::All)
-            }
+            SystemTimeClause::All => Ok(TemporalFilter::All),
         }
     }
 
@@ -253,6 +245,10 @@ mod tests {
         assert!(TemporalSemantics::is_valid_at(start, end, query_time));
 
         let query_time_after = Utc::now();
-        assert!(!TemporalSemantics::is_valid_at(start, end, query_time_after));
+        assert!(!TemporalSemantics::is_valid_at(
+            start,
+            end,
+            query_time_after
+        ));
     }
 }

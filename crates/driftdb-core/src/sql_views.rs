@@ -6,22 +6,19 @@
 //! - WITH CHECK OPTION for updatable views
 //! - Recursive views with CTEs
 
-use sqlparser::ast::{
-    Statement, Query as SqlQuery,
-    CreateTableOptions, ObjectName
-};
+use sqlparser::ast::{CreateTableOptions, ObjectName, Query as SqlQuery, Statement};
 use sqlparser::dialect::GenericDialect;
 use sqlparser::parser::Parser;
 
-use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
 use parking_lot::RwLock;
 use serde_json::Value;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
-use crate::errors::{DriftError, Result};
 use crate::engine::Engine;
-use crate::views::{ViewDefinition, ViewManager, RefreshPolicy, ColumnDefinition};
+use crate::errors::{DriftError, Result};
 use crate::sql_bridge;
+use crate::views::{ColumnDefinition, RefreshPolicy, ViewDefinition, ViewManager};
 
 /// Extended view manager with full SQL support
 pub struct SqlViewManager {
@@ -121,9 +118,10 @@ impl SqlViewManager {
 
                 // Check if view exists and or_replace is not set
                 if !or_replace && self.view_manager.get_view(&view_name).is_some() {
-                    return Err(DriftError::Other(
-                        format!("View '{}' already exists", view_name)
-                    ));
+                    return Err(DriftError::Other(format!(
+                        "View '{}' already exists",
+                        view_name
+                    )));
                 }
 
                 // Extract dependencies from the query
@@ -134,15 +132,20 @@ impl SqlViewManager {
                     // Derive columns from query
                     self.derive_columns_from_query(engine, query)?
                 } else {
-                    columns.iter().map(|col| ColumnDefinition {
-                        name: col.name.to_string(),
-                        data_type: col.data_type.as_ref()
-                            .map(|dt| dt.to_string())
-                            .unwrap_or_else(|| "text".to_string()),
-                        nullable: true,
-                        source_table: None,
-                        source_column: None,
-                    }).collect()
+                    columns
+                        .iter()
+                        .map(|col| ColumnDefinition {
+                            name: col.name.to_string(),
+                            data_type: col
+                                .data_type
+                                .as_ref()
+                                .map(|dt| dt.to_string())
+                                .unwrap_or_else(|| "text".to_string()),
+                            nullable: true,
+                            source_table: None,
+                            source_column: None,
+                        })
+                        .collect()
                 };
 
                 // Determine refresh policy for materialized views
@@ -178,7 +181,9 @@ impl SqlViewManager {
                 }
 
                 // Cache parsed query (dereference boxed query)
-                self.parsed_views.write().insert(view_name.clone(), (**query).clone());
+                self.parsed_views
+                    .write()
+                    .insert(view_name.clone(), (**query).clone());
 
                 // If materialized, perform initial refresh
                 if *materialized {
@@ -188,8 +193,8 @@ impl SqlViewManager {
                 Ok(())
             }
             _ => Err(DriftError::InvalidQuery(
-                "Expected CREATE VIEW statement".to_string()
-            ))
+                "Expected CREATE VIEW statement".to_string(),
+            )),
         }
     }
 
@@ -204,10 +209,15 @@ impl SqlViewManager {
         }
 
         match &ast[0] {
-            Statement::Drop { object_type, names, cascade: sql_cascade, .. } => {
+            Statement::Drop {
+                object_type,
+                names,
+                cascade: sql_cascade,
+                ..
+            } => {
                 if !matches!(object_type, sqlparser::ast::ObjectType::View) {
                     return Err(DriftError::InvalidQuery(
-                        "Expected DROP VIEW statement".to_string()
+                        "Expected DROP VIEW statement".to_string(),
                     ));
                 }
 
@@ -254,14 +264,16 @@ impl SqlViewManager {
                 Ok(())
             }
             _ => Err(DriftError::InvalidQuery(
-                "Expected DROP VIEW statement".to_string()
-            ))
+                "Expected DROP VIEW statement".to_string(),
+            )),
         }
     }
 
     /// Query a view as if it were a table
     pub fn query_view(&self, engine: &mut Engine, view_name: &str) -> Result<Vec<Value>> {
-        let view = self.view_manager.get_view(view_name)
+        let view = self
+            .view_manager
+            .get_view(view_name)
             .ok_or_else(|| DriftError::Other(format!("View '{}' not found", view_name)))?;
 
         if view.is_materialized {
@@ -275,20 +287,24 @@ impl SqlViewManager {
 
     /// Refresh a materialized view
     pub fn refresh_materialized_view(&self, engine: &mut Engine, view_name: &str) -> Result<()> {
-        let view = self.view_manager.get_view(view_name)
+        let view = self
+            .view_manager
+            .get_view(view_name)
             .ok_or_else(|| DriftError::Other(format!("View '{}' not found", view_name)))?;
 
         if !view.is_materialized {
-            return Err(DriftError::Other(
-                format!("View '{}' is not materialized", view_name)
-            ));
+            return Err(DriftError::Other(format!(
+                "View '{}' is not materialized",
+                view_name
+            )));
         }
 
         // Execute the view's query
         let results = self.execute_view_query(engine, &view)?;
 
         // Store the results in the cache
-        self.view_manager.cache_materialized_data(view_name, results)?;
+        self.view_manager
+            .cache_materialized_data(view_name, results)?;
 
         Ok(())
     }
@@ -312,7 +328,11 @@ impl SqlViewManager {
         Ok(dependencies)
     }
 
-    fn extract_dependencies_from_set_expr(&self, expr: &sqlparser::ast::SetExpr, dependencies: &mut HashSet<String>) {
+    fn extract_dependencies_from_set_expr(
+        &self,
+        expr: &sqlparser::ast::SetExpr,
+        dependencies: &mut HashSet<String>,
+    ) {
         match expr {
             sqlparser::ast::SetExpr::Select(select) => {
                 // Extract from FROM clause
@@ -414,10 +434,7 @@ impl SqlViewManager {
         Ok(columns)
     }
 
-    fn parse_refresh_policy(
-        &self,
-        _options: &CreateTableOptions,
-    ) -> Result<RefreshPolicy> {
+    fn parse_refresh_policy(&self, _options: &CreateTableOptions) -> Result<RefreshPolicy> {
         // Parse refresh options from WITH clause
         // For now, default to manual refresh
         Ok(RefreshPolicy::Manual)
@@ -432,15 +449,18 @@ impl SqlViewManager {
     }
 
     fn query_materialized_view(&self, _engine: &mut Engine, view_name: &str) -> Result<Vec<Value>> {
-        self.view_manager.get_cached_data(view_name)
-            .ok_or_else(|| DriftError::Other(
-                format!("Materialized view '{}' has no cached data", view_name)
+        self.view_manager.get_cached_data(view_name).ok_or_else(|| {
+            DriftError::Other(format!(
+                "Materialized view '{}' has no cached data",
+                view_name
             ))
+        })
     }
 }
 
 fn object_name_to_string(name: &ObjectName) -> String {
-    name.0.iter()
+    name.0
+        .iter()
         .map(|ident| ident.value.clone())
         .collect::<Vec<_>>()
         .join(".")
@@ -459,15 +479,19 @@ mod tests {
         let sql_view_mgr = SqlViewManager::new(view_manager);
 
         // Create a base table first
-        engine.create_table(
-            "users",
-            "id",
-            vec![("name".to_string(), "string".to_string())],
-        ).unwrap();
+        engine
+            .create_table(
+                "users",
+                "id",
+                vec![("name".to_string(), "string".to_string())],
+            )
+            .unwrap();
 
         // Create a view
         let create_sql = "CREATE VIEW active_users AS SELECT * FROM users WHERE status = 'active'";
-        sql_view_mgr.create_view_from_sql(&mut engine, create_sql).unwrap();
+        sql_view_mgr
+            .create_view_from_sql(&mut engine, create_sql)
+            .unwrap();
 
         // Verify view was created
         assert!(sql_view_mgr.view_manager.get_view("active_users").is_some());
@@ -481,17 +505,21 @@ mod tests {
         let sql_view_mgr = SqlViewManager::new(view_manager);
 
         // Create base table
-        engine.create_table(
-            "orders",
-            "id",
-            vec![("total".to_string(), "number".to_string())],
-        ).unwrap();
+        engine
+            .create_table(
+                "orders",
+                "id",
+                vec![("total".to_string(), "number".to_string())],
+            )
+            .unwrap();
 
         // Create materialized view
         let create_sql = "CREATE MATERIALIZED VIEW order_summary AS
                          SELECT COUNT(*) as order_count, SUM(total) as total_revenue
                          FROM orders";
-        sql_view_mgr.create_view_from_sql(&mut engine, create_sql).unwrap();
+        sql_view_mgr
+            .create_view_from_sql(&mut engine, create_sql)
+            .unwrap();
 
         let view = sql_view_mgr.view_manager.get_view("order_summary").unwrap();
         assert!(view.is_materialized);
@@ -508,10 +536,12 @@ mod tests {
         engine.create_table("products", "id", vec![]).unwrap();
 
         // Create first view
-        sql_view_mgr.create_view_from_sql(
-            &mut engine,
-            "CREATE VIEW expensive_products AS SELECT * FROM products WHERE price > 100"
-        ).unwrap();
+        sql_view_mgr
+            .create_view_from_sql(
+                &mut engine,
+                "CREATE VIEW expensive_products AS SELECT * FROM products WHERE price > 100",
+            )
+            .unwrap();
 
         // Create dependent view
         sql_view_mgr.create_view_from_sql(
@@ -524,10 +554,18 @@ mod tests {
         assert!(result.is_err());
 
         // Drop with cascade (should succeed)
-        sql_view_mgr.drop_view_from_sql("DROP VIEW expensive_products", true).unwrap();
+        sql_view_mgr
+            .drop_view_from_sql("DROP VIEW expensive_products", true)
+            .unwrap();
 
         // Both views should be gone
-        assert!(sql_view_mgr.view_manager.get_view("expensive_products").is_none());
-        assert!(sql_view_mgr.view_manager.get_view("featured_expensive").is_none());
+        assert!(sql_view_mgr
+            .view_manager
+            .get_view("expensive_products")
+            .is_none());
+        assert!(sql_view_mgr
+            .view_manager
+            .get_view("featured_expensive")
+            .is_none());
     }
 }

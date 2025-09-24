@@ -17,13 +17,13 @@ use std::time::SystemTime;
 
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
-use tracing::{debug, info, error, trace};
+use serde_json::{json, Value};
+use tracing::{debug, error, info, trace};
 
-use crate::errors::{DriftError, Result};
 use crate::engine::Engine;
-use crate::sql_bridge;
+use crate::errors::{DriftError, Result};
 use crate::query::QueryResult;
+use crate::sql_bridge;
 
 /// Trigger timing - when the trigger fires relative to the event
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -60,10 +60,7 @@ pub enum TriggerAction {
     /// Execute a SQL statement
     SqlStatement(String),
     /// Call a stored procedure
-    CallProcedure {
-        name: String,
-        args: Vec<Value>,
-    },
+    CallProcedure { name: String, args: Vec<Value> },
     /// Execute custom code (function name)
     CustomFunction(String),
     /// Log to audit table
@@ -78,10 +75,7 @@ pub enum TriggerAction {
         error_message: String,
     },
     /// Send notification
-    Notify {
-        channel: String,
-        payload: Value,
-    },
+    Notify { channel: String, payload: Value },
 }
 
 /// Trigger definition
@@ -200,15 +194,19 @@ impl TriggerManager {
         let trigger_name = definition.name.clone();
         let table_name = definition.table_name.clone();
 
-        debug!("Creating trigger '{}' on table '{}'", trigger_name, table_name);
+        debug!(
+            "Creating trigger '{}' on table '{}'",
+            trigger_name, table_name
+        );
 
         // Check if trigger already exists
         {
             let triggers = self.triggers_by_name.read();
             if triggers.contains_key(&trigger_name) {
-                return Err(DriftError::InvalidQuery(
-                    format!("Trigger '{}' already exists", trigger_name)
-                ));
+                return Err(DriftError::InvalidQuery(format!(
+                    "Trigger '{}' already exists",
+                    trigger_name
+                )));
             }
         }
 
@@ -220,7 +218,8 @@ impl TriggerManager {
 
         {
             let mut by_table = self.triggers_by_table.write();
-            by_table.entry(table_name.clone())
+            by_table
+                .entry(table_name.clone())
                 .or_insert_with(Vec::new)
                 .push(definition.clone());
         }
@@ -234,7 +233,10 @@ impl TriggerManager {
             }
         }
 
-        info!("Trigger '{}' created on table '{}'", trigger_name, table_name);
+        info!(
+            "Trigger '{}' created on table '{}'",
+            trigger_name, table_name
+        );
         Ok(())
     }
 
@@ -245,10 +247,9 @@ impl TriggerManager {
         // Remove from name map and get definition
         let definition = {
             let mut by_name = self.triggers_by_name.write();
-            by_name.remove(trigger_name)
-                .ok_or_else(|| DriftError::InvalidQuery(
-                    format!("Trigger '{}' does not exist", trigger_name)
-                ))?
+            by_name.remove(trigger_name).ok_or_else(|| {
+                DriftError::InvalidQuery(format!("Trigger '{}' does not exist", trigger_name))
+            })?
         };
 
         // Remove from table map
@@ -278,10 +279,9 @@ impl TriggerManager {
     /// Enable or disable a trigger
     pub fn set_trigger_enabled(&self, trigger_name: &str, enabled: bool) -> Result<()> {
         let mut by_name = self.triggers_by_name.write();
-        let trigger = by_name.get_mut(trigger_name)
-            .ok_or_else(|| DriftError::InvalidQuery(
-                format!("Trigger '{}' does not exist", trigger_name)
-            ))?;
+        let trigger = by_name.get_mut(trigger_name).ok_or_else(|| {
+            DriftError::InvalidQuery(format!("Trigger '{}' does not exist", trigger_name))
+        })?;
 
         let was_enabled = trigger.enabled;
         trigger.enabled = enabled;
@@ -314,7 +314,11 @@ impl TriggerManager {
             }
         }
 
-        info!("Trigger '{}' {}", trigger_name, if enabled { "enabled" } else { "disabled" });
+        info!(
+            "Trigger '{}' {}",
+            trigger_name,
+            if enabled { "enabled" } else { "disabled" }
+        );
         Ok(())
     }
 
@@ -333,10 +337,10 @@ impl TriggerManager {
         let applicable_triggers: Vec<_> = triggers
             .iter()
             .filter(|t| {
-                t.enabled &&
-                t.timing == timing &&
-                t.events.contains(&context.event) &&
-                self.evaluate_when_condition(t, context)
+                t.enabled
+                    && t.timing == timing
+                    && t.events.contains(&context.event)
+                    && self.evaluate_when_condition(t, context)
             })
             .collect();
 
@@ -344,17 +348,23 @@ impl TriggerManager {
             return Ok(TriggerResult::Continue);
         }
 
-        debug!("Executing {} triggers for {:?} {:?} on table '{}'",
-               applicable_triggers.len(), timing, context.event, context.table);
+        debug!(
+            "Executing {} triggers for {:?} {:?} on table '{}'",
+            applicable_triggers.len(),
+            timing,
+            context.event,
+            context.table
+        );
 
         // Check recursion depth
         if let Some(txn_id) = context.transaction_id {
             let mut depths = self.recursion_depth.write();
             let depth = depths.entry(txn_id).or_insert(0);
             if *depth >= self.max_recursion_depth {
-                return Err(DriftError::Internal(
-                    format!("Trigger recursion depth exceeded (max: {})", self.max_recursion_depth)
-                ));
+                return Err(DriftError::Internal(format!(
+                    "Trigger recursion depth exceeded (max: {})",
+                    self.max_recursion_depth
+                )));
             }
             *depth += 1;
         }
@@ -365,22 +375,22 @@ impl TriggerManager {
             let start = std::time::Instant::now();
 
             match self.execute_single_trigger(trigger, context) {
-                Ok(TriggerResult::Continue) => {},
+                Ok(TriggerResult::Continue) => {}
                 Ok(TriggerResult::Skip) => {
                     if trigger.level == TriggerLevel::Row {
                         result = TriggerResult::Skip;
                         break;
                     }
-                },
+                }
                 Ok(TriggerResult::Abort(msg)) => {
                     self.update_stats(false, start.elapsed().as_millis() as f64);
                     return Ok(TriggerResult::Abort(msg));
-                },
+                }
                 Ok(TriggerResult::ModifyRow(new_row)) => {
                     if timing == TriggerTiming::Before {
                         result = TriggerResult::ModifyRow(new_row);
                     }
-                },
+                }
                 Err(e) => {
                     error!("Trigger '{}' failed: {}", trigger.name, e);
                     self.update_stats(false, start.elapsed().as_millis() as f64);
@@ -479,20 +489,21 @@ impl TriggerManager {
                     debug!("No engine available for trigger SQL execution");
                     Ok(TriggerResult::Continue)
                 }
-            },
+            }
             TriggerAction::CallProcedure { name, args } => {
                 // Call stored procedure
                 if let Some(ref engine_arc) = self.engine {
                     // Build CALL statement
-                    let arg_strings: Vec<String> = args.iter().map(|arg| {
-                        match arg {
+                    let arg_strings: Vec<String> = args
+                        .iter()
+                        .map(|arg| match arg {
                             Value::String(s) => format!("'{}'", s.replace('\'', "''")),
                             Value::Number(n) => n.to_string(),
                             Value::Bool(b) => b.to_string(),
                             Value::Null => "NULL".to_string(),
                             _ => format!("'{}'", arg.to_string().replace('\'', "''")),
-                        }
-                    }).collect();
+                        })
+                        .collect();
 
                     let call_sql = format!("CALL {}({})", name, arg_strings.join(", "));
                     debug!("Executing procedure call: {}", call_sql);
@@ -512,23 +523,31 @@ impl TriggerManager {
                     debug!("No engine available for procedure call execution");
                     Ok(TriggerResult::Continue)
                 }
-            },
+            }
             TriggerAction::CustomFunction(func_name) => {
                 // TODO: Execute custom function
                 debug!("Would execute function '{}'", func_name);
                 Ok(TriggerResult::Continue)
-            },
-            TriggerAction::AuditLog { table, include_old, include_new } => {
-                self.execute_audit_log(table, *include_old, *include_new, context)
-            },
-            TriggerAction::Validate { condition, error_message } => {
+            }
+            TriggerAction::AuditLog {
+                table,
+                include_old,
+                include_new,
+            } => self.execute_audit_log(table, *include_old, *include_new, context),
+            TriggerAction::Validate {
+                condition,
+                error_message,
+            } => {
                 if !self.evaluate_condition(condition, context) {
                     Ok(TriggerResult::Abort(error_message.clone()))
                 } else {
                     Ok(TriggerResult::Continue)
                 }
-            },
-            TriggerAction::Notify { channel, payload: _payload } => {
+            }
+            TriggerAction::Notify {
+                channel,
+                payload: _payload,
+            } => {
                 // TODO: Send notification
                 debug!("Would notify channel '{}' with payload", channel);
                 Ok(TriggerResult::Continue)
@@ -572,15 +591,18 @@ impl TriggerManager {
         if let Some(ref engine_arc) = self.engine {
             // Create INSERT statement for audit table
             let columns: Vec<String> = audit_entry.as_object().unwrap().keys().cloned().collect();
-            let values: Vec<String> = audit_entry.as_object().unwrap().values().map(|v| {
-                match v {
+            let values: Vec<String> = audit_entry
+                .as_object()
+                .unwrap()
+                .values()
+                .map(|v| match v {
                     Value::String(s) => format!("'{}'", s.replace('\'', "''")),
                     Value::Number(n) => n.to_string(),
                     Value::Bool(b) => b.to_string(),
                     Value::Null => "NULL".to_string(),
                     _ => format!("'{}'", v.to_string().replace('\'', "''")),
-                }
-            }).collect();
+                })
+                .collect();
 
             let insert_sql = format!(
                 "INSERT INTO {} ({}) VALUES ({})",
@@ -610,7 +632,11 @@ impl TriggerManager {
     }
 
     /// Evaluate WHEN condition for a trigger
-    fn evaluate_when_condition(&self, trigger: &TriggerDefinition, context: &TriggerContext) -> bool {
+    fn evaluate_when_condition(
+        &self,
+        trigger: &TriggerDefinition,
+        context: &TriggerContext,
+    ) -> bool {
         if let Some(condition) = &trigger.when_condition {
             self.evaluate_condition(condition, context)
         } else {
@@ -660,7 +686,10 @@ impl TriggerManager {
 
         // For simple conditions, we can execute them as SQL queries
         if let Some(ref engine_arc) = self.engine {
-            let check_sql = format!("SELECT CASE WHEN ({}) THEN 1 ELSE 0 END AS result", eval_condition);
+            let check_sql = format!(
+                "SELECT CASE WHEN ({}) THEN 1 ELSE 0 END AS result",
+                eval_condition
+            );
 
             let mut engine = engine_arc.write();
             match sql_bridge::execute_sql(&mut engine, &check_sql) {
@@ -701,7 +730,8 @@ impl TriggerManager {
 
         // Update average execution time
         let total_time = stats.avg_execution_time_ms * (stats.total_executions - 1) as f64;
-        stats.avg_execution_time_ms = (total_time + execution_time_ms) / stats.total_executions as f64;
+        stats.avg_execution_time_ms =
+            (total_time + execution_time_ms) / stats.total_executions as f64;
     }
 
     /// Get trigger by name
@@ -716,7 +746,8 @@ impl TriggerManager {
 
     /// List triggers for a table
     pub fn list_table_triggers(&self, table_name: &str) -> Vec<TriggerDefinition> {
-        self.triggers_by_table.read()
+        self.triggers_by_table
+            .read()
             .get(table_name)
             .cloned()
             .unwrap_or_default()
@@ -803,7 +834,7 @@ impl TriggerBuilder {
     pub fn build(self) -> Result<TriggerDefinition> {
         if self.events.is_empty() {
             return Err(DriftError::InvalidQuery(
-                "Trigger must have at least one event".to_string()
+                "Trigger must have at least one event".to_string(),
             ));
         }
 

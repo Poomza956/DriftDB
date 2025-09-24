@@ -1,14 +1,16 @@
 //! SQL:2011 Temporal Query Executor
 
-use sqlparser::ast::{Statement, Query, TableWithJoins, SetExpr};
 use serde_json::json;
+use sqlparser::ast::{Query, SetExpr, Statement, TableWithJoins};
 
 use crate::engine::Engine;
 use crate::errors::{DriftError, Result};
 use crate::events::Event;
 
-use super::{TemporalStatement, SystemTimeClause, TemporalQueryResult, TemporalMetadata, QueryResult};
-use super::temporal::{TemporalSemantics, DriftDbPoint};
+use super::temporal::{DriftDbPoint, TemporalSemantics};
+use super::{
+    QueryResult, SystemTimeClause, TemporalMetadata, TemporalQueryResult, TemporalStatement,
+};
 
 pub struct SqlExecutor<'a> {
     engine: &'a mut Engine,
@@ -26,7 +28,7 @@ impl<'a> SqlExecutor<'a> {
                 // Convert TemporalQueryResult to QueryResult
                 if result.rows.is_empty() {
                     Ok(QueryResult::Success {
-                        message: "Query executed successfully".to_string()
+                        message: "Query executed successfully".to_string(),
                     })
                 } else {
                     // Extract columns from first row
@@ -41,22 +43,29 @@ impl<'a> SqlExecutor<'a> {
                     };
 
                     // Convert rows to arrays
-                    let rows: Vec<Vec<serde_json::Value>> = result.rows.into_iter().map(|row| {
-                        if let serde_json::Value::Object(map) = row {
-                            columns.iter().map(|col| {
-                                map.get(col).cloned().unwrap_or(serde_json::Value::Null)
-                            }).collect()
-                        } else {
-                            vec![row]
-                        }
-                    }).collect();
+                    let rows: Vec<Vec<serde_json::Value>> = result
+                        .rows
+                        .into_iter()
+                        .map(|row| {
+                            if let serde_json::Value::Object(map) = row {
+                                columns
+                                    .iter()
+                                    .map(|col| {
+                                        map.get(col).cloned().unwrap_or(serde_json::Value::Null)
+                                    })
+                                    .collect()
+                            } else {
+                                vec![row]
+                            }
+                        })
+                        .collect();
 
                     Ok(QueryResult::Records { columns, rows })
                 }
             }
             Err(e) => Ok(QueryResult::Error {
-                message: format!("{}", e)
-            })
+                message: format!("{}", e),
+            }),
         }
     }
 
@@ -69,20 +78,23 @@ impl<'a> SqlExecutor<'a> {
                 self.execute_insert(&insert.table_name, &insert.columns, &insert.source)
             }
 
-            Statement::Update { table, assignments, selection, .. } => {
-                self.execute_update(table, assignments, selection)
-            }
+            Statement::Update {
+                table,
+                assignments,
+                selection,
+                ..
+            } => self.execute_update(table, assignments, selection),
 
-            Statement::Delete(delete) => {
-                self.execute_delete(&delete.tables, &delete.selection)
-            }
+            Statement::Delete(delete) => self.execute_delete(&delete.tables, &delete.selection),
 
-            Statement::CreateTable(create_table) => {
-                self.execute_create_table(&create_table.name, &create_table.columns, &create_table.constraints)
-            }
+            Statement::CreateTable(create_table) => self.execute_create_table(
+                &create_table.name,
+                &create_table.columns,
+                &create_table.constraints,
+            ),
 
             _ => Err(DriftError::InvalidQuery(
-                "Unsupported SQL statement type".to_string()
+                "Unsupported SQL statement type".to_string(),
             )),
         }
     }
@@ -154,16 +166,17 @@ impl<'a> SqlExecutor<'a> {
                 self.query_between(table, start_point, end_point, false)
             }
 
-            SystemTimeClause::All => {
-                self.query_all_versions(table)
-            }
+            SystemTimeClause::All => self.query_all_versions(table),
         }
     }
 
     /// Query as of a specific point
     fn query_as_of(&mut self, table: &str, point: DriftDbPoint) -> Result<Vec<serde_json::Value>> {
         // Get the storage for this table
-        let storage = self.engine.tables.get(table)
+        let storage = self
+            .engine
+            .tables
+            .get(table)
             .ok_or_else(|| DriftError::TableNotFound(table.to_string()))?;
 
         // Determine sequence number from point
@@ -191,14 +204,18 @@ impl<'a> SqlExecutor<'a> {
         _end: DriftDbPoint,
         _inclusive: bool,
     ) -> Result<Vec<serde_json::Value>> {
-        let storage = self.engine.tables.get(table)
+        let storage = self
+            .engine
+            .tables
+            .get(table)
             .ok_or_else(|| DriftError::TableNotFound(table.to_string()))?;
 
         // Get all events in range
         let events = storage.read_all_events()?;
 
         // Filter by time range
-        let filtered: Vec<_> = events.into_iter()
+        let filtered: Vec<_> = events
+            .into_iter()
             .filter(|_event| {
                 // Check if event is in temporal range
                 // This is simplified - production would be more sophisticated
@@ -212,7 +229,10 @@ impl<'a> SqlExecutor<'a> {
 
     /// Query all versions
     fn query_all_versions(&mut self, table: &str) -> Result<Vec<serde_json::Value>> {
-        let storage = self.engine.tables.get(table)
+        let storage = self
+            .engine
+            .tables
+            .get(table)
             .ok_or_else(|| DriftError::TableNotFound(table.to_string()))?;
 
         let events = storage.read_all_events()?;
@@ -220,8 +240,15 @@ impl<'a> SqlExecutor<'a> {
     }
 
     /// Query current state (no temporal clause)
-    fn query_current(&mut self, table: &str, _where_clause: Option<String>) -> Result<Vec<serde_json::Value>> {
-        let storage = self.engine.tables.get(table)
+    fn query_current(
+        &mut self,
+        table: &str,
+        _where_clause: Option<String>,
+    ) -> Result<Vec<serde_json::Value>> {
+        let storage = self
+            .engine
+            .tables
+            .get(table)
             .ok_or_else(|| DriftError::TableNotFound(table.to_string()))?;
 
         let state = storage.reconstruct_state_at(None)?;
@@ -271,14 +298,16 @@ impl<'a> SqlExecutor<'a> {
         let mut updates = serde_json::Map::new();
         for assignment in assignments {
             let column = match &assignment.target {
-                sqlparser::ast::AssignmentTarget::ColumnName(name) => {
-                    name.0.iter()
-                        .map(|i| i.value.clone())
-                        .collect::<Vec<_>>()
-                        .join(".")
-                }
+                sqlparser::ast::AssignmentTarget::ColumnName(name) => name
+                    .0
+                    .iter()
+                    .map(|i| i.value.clone())
+                    .collect::<Vec<_>>()
+                    .join("."),
                 sqlparser::ast::AssignmentTarget::Tuple(_) => {
-                    return Err(DriftError::InvalidQuery("Tuple assignments not supported".to_string()));
+                    return Err(DriftError::InvalidQuery(
+                        "Tuple assignments not supported".to_string(),
+                    ));
                 }
             };
 
@@ -344,7 +373,8 @@ impl<'a> SqlExecutor<'a> {
         let indexed_columns = self.extract_indexes(constraints);
 
         // Create table in engine
-        self.engine.create_table(&table_name, &primary_key, indexed_columns)?;
+        self.engine
+            .create_table(&table_name, &primary_key, indexed_columns)?;
 
         Ok(TemporalQueryResult {
             rows: vec![json!({
@@ -367,12 +397,13 @@ impl<'a> SqlExecutor<'a> {
                 }
 
                 let table_name = self.extract_table_name(&select.from[0])?;
-                let where_clause = select.selection.as_ref()
-                    .map(|expr| format!("{}", expr));
+                let where_clause = select.selection.as_ref().map(|expr| format!("{}", expr));
 
                 Ok((table_name, where_clause))
             }
-            _ => Err(DriftError::InvalidQuery("Unsupported query type".to_string())),
+            _ => Err(DriftError::InvalidQuery(
+                "Unsupported query type".to_string(),
+            )),
         }
     }
 
@@ -381,11 +412,16 @@ impl<'a> SqlExecutor<'a> {
 
         match &table.relation {
             TableFactor::Table { name, .. } => Ok(name.to_string()),
-            _ => Err(DriftError::InvalidQuery("Complex table expressions not supported".to_string())),
+            _ => Err(DriftError::InvalidQuery(
+                "Complex table expressions not supported".to_string(),
+            )),
         }
     }
 
-    fn extract_primary_key(&self, constraints: &Vec<sqlparser::ast::TableConstraint>) -> Result<String> {
+    fn extract_primary_key(
+        &self,
+        constraints: &Vec<sqlparser::ast::TableConstraint>,
+    ) -> Result<String> {
         for constraint in constraints {
             // Check for primary key constraint
             match constraint {
@@ -397,7 +433,9 @@ impl<'a> SqlExecutor<'a> {
                 _ => continue,
             }
         }
-        Err(DriftError::InvalidQuery("No primary key defined".to_string()))
+        Err(DriftError::InvalidQuery(
+            "No primary key defined".to_string(),
+        ))
     }
 
     fn extract_indexes(&self, _constraints: &Vec<sqlparser::ast::TableConstraint>) -> Vec<String> {

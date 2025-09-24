@@ -12,17 +12,17 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{SystemTime, Duration};
+use std::time::{Duration, SystemTime};
 
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
-use tracing::{debug, info, warn, error, trace};
+use serde_json::{json, Value};
+use tracing::{debug, error, info, trace, warn};
 
-use crate::errors::{DriftError, Result};
 use crate::engine::Engine;
-use crate::sql_bridge;
+use crate::errors::{DriftError, Result};
 use crate::query::QueryResult;
+use crate::sql_bridge;
 
 /// Stored procedure definition
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -85,7 +85,7 @@ pub enum DataType {
     BigInt,
     Float,
     Double,
-    Decimal(u8, u8), // precision, scale
+    Decimal(u8, u8),     // precision, scale
     String(Option<u32>), // max length
     Boolean,
     Date,
@@ -216,9 +216,7 @@ pub enum Statement {
         finally_statements: Option<Vec<Statement>>,
     },
     /// Return statement
-    Return {
-        value: Option<Expression>,
-    },
+    Return { value: Option<Expression> },
     /// Cursor operations
     Cursor(CursorOperation),
     /// Procedure call
@@ -234,9 +232,7 @@ pub enum Statement {
         parameters: Vec<Expression>,
     },
     /// PRINT/OUTPUT statement
-    Print {
-        message: Expression,
-    },
+    Print { message: Expression },
 }
 
 /// Expression types for procedure logic
@@ -271,16 +267,32 @@ pub enum Expression {
 /// Binary operators
 #[derive(Debug, Clone, PartialEq)]
 pub enum BinaryOperator {
-    Add, Subtract, Multiply, Divide, Modulo,
-    Equal, NotEqual, Less, LessEqual, Greater, GreaterEqual,
-    And, Or, Like, In, IsNull, IsNotNull,
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+    Modulo,
+    Equal,
+    NotEqual,
+    Less,
+    LessEqual,
+    Greater,
+    GreaterEqual,
+    And,
+    Or,
+    Like,
+    In,
+    IsNull,
+    IsNotNull,
     Concat,
 }
 
 /// Unary operators
 #[derive(Debug, Clone, PartialEq)]
 pub enum UnaryOperator {
-    Not, Minus, Plus,
+    Not,
+    Minus,
+    Plus,
 }
 
 /// Exception handling
@@ -448,9 +460,10 @@ impl ProcedureManager {
         {
             let procedures = self.procedures.read();
             if procedures.contains_key(&proc_name) {
-                return Err(DriftError::InvalidQuery(
-                    format!("Procedure '{}' already exists", proc_name)
-                ));
+                return Err(DriftError::InvalidQuery(format!(
+                    "Procedure '{}' already exists",
+                    proc_name
+                )));
             }
         }
 
@@ -487,9 +500,10 @@ impl ProcedureManager {
         {
             let mut procedures = self.procedures.write();
             if procedures.remove(name).is_none() {
-                return Err(DriftError::InvalidQuery(
-                    format!("Procedure '{}' does not exist", name)
-                ));
+                return Err(DriftError::InvalidQuery(format!(
+                    "Procedure '{}' does not exist",
+                    name
+                )));
             }
         }
 
@@ -517,7 +531,11 @@ impl ProcedureManager {
     ) -> Result<ProcedureResult> {
         let start_time = SystemTime::now();
 
-        debug!("Executing stored procedure '{}' with {} arguments", name, arguments.len());
+        debug!(
+            "Executing stored procedure '{}' with {} arguments",
+            name,
+            arguments.len()
+        );
 
         // Get compiled procedure (with caching)
         let compiled = {
@@ -534,10 +552,9 @@ impl ProcedureManager {
 
                 // Load and compile procedure
                 let procedures = self.procedures.read();
-                let definition = procedures.get(name)
-                    .ok_or_else(|| DriftError::InvalidQuery(
-                        format!("Procedure '{}' does not exist", name)
-                    ))?;
+                let definition = procedures.get(name).ok_or_else(|| {
+                    DriftError::InvalidQuery(format!("Procedure '{}' does not exist", name))
+                })?;
 
                 let compiled = self.compile_procedure(definition)?;
 
@@ -586,7 +603,8 @@ impl ProcedureManager {
 
             // Update average execution time
             let total_time = stats.avg_execution_time_ms * (stats.total_executions - 1) as f64;
-            stats.avg_execution_time_ms = (total_time + execution_time.as_millis() as f64) / stats.total_executions as f64;
+            stats.avg_execution_time_ms =
+                (total_time + execution_time.as_millis() as f64) / stats.total_executions as f64;
         }
 
         match result {
@@ -594,7 +612,9 @@ impl ProcedureManager {
                 // Extract output parameters
                 let mut output_params = HashMap::new();
                 for param in &compiled.definition.parameters {
-                    if param.direction == ParameterDirection::Out || param.direction == ParameterDirection::InOut {
+                    if param.direction == ParameterDirection::Out
+                        || param.direction == ParameterDirection::InOut
+                    {
                         if let Some(value) = context.parameters.get(&param.name) {
                             output_params.insert(param.name.clone(), value.clone());
                         }
@@ -619,13 +639,17 @@ impl ProcedureManager {
     fn validate_procedure(&self, definition: &ProcedureDefinition) -> Result<()> {
         // Check procedure name
         if definition.name.is_empty() {
-            return Err(DriftError::InvalidQuery("Procedure name cannot be empty".to_string()));
+            return Err(DriftError::InvalidQuery(
+                "Procedure name cannot be empty".to_string(),
+            ));
         }
 
         // Validate parameters
         for param in &definition.parameters {
             if param.name.is_empty() {
-                return Err(DriftError::InvalidQuery("Parameter name cannot be empty".to_string()));
+                return Err(DriftError::InvalidQuery(
+                    "Parameter name cannot be empty".to_string(),
+                ));
             }
         }
 
@@ -633,9 +657,10 @@ impl ProcedureManager {
         let mut param_names = std::collections::HashSet::new();
         for param in &definition.parameters {
             if !param_names.insert(&param.name) {
-                return Err(DriftError::InvalidQuery(
-                    format!("Duplicate parameter name: {}", param.name)
-                ));
+                return Err(DriftError::InvalidQuery(format!(
+                    "Duplicate parameter name: {}",
+                    param.name
+                )));
             }
         }
 
@@ -698,7 +723,10 @@ impl ProcedureManager {
         let mut variables = HashMap::new();
 
         for stmt in statements {
-            if let Statement::Declare { name, data_type, .. } = stmt {
+            if let Statement::Declare {
+                name, data_type, ..
+            } = stmt
+            {
                 variables.insert(name.clone(), data_type.clone());
             }
         }
@@ -713,11 +741,14 @@ impl ProcedureManager {
         arguments: &HashMap<String, Value>,
     ) -> Result<()> {
         for param in &definition.parameters {
-            if param.direction == ParameterDirection::In || param.direction == ParameterDirection::InOut {
+            if param.direction == ParameterDirection::In
+                || param.direction == ParameterDirection::InOut
+            {
                 if param.is_required && !arguments.contains_key(&param.name) {
-                    return Err(DriftError::InvalidQuery(
-                        format!("Required parameter '{}' not provided", param.name)
-                    ));
+                    return Err(DriftError::InvalidQuery(format!(
+                        "Required parameter '{}' not provided",
+                        param.name
+                    )));
                 }
             }
         }
@@ -745,16 +776,29 @@ impl ProcedureManager {
     }
 
     /// Execute a single statement
-    fn execute_statement(&self, statement: &Statement, context: &mut ExecutionContext) -> Result<()> {
+    fn execute_statement(
+        &self,
+        statement: &Statement,
+        context: &mut ExecutionContext,
+    ) -> Result<()> {
         trace!("Executing statement: {:?}", statement);
 
         match statement {
-            Statement::Declare { name, data_type, default_value } => {
-                let value = default_value.clone().unwrap_or(self.get_default_value(data_type));
+            Statement::Declare {
+                name,
+                data_type,
+                default_value,
+            } => {
+                let value = default_value
+                    .clone()
+                    .unwrap_or(self.get_default_value(data_type));
                 context.variables.insert(name.clone(), value);
             }
 
-            Statement::Set { variable, expression } => {
+            Statement::Set {
+                variable,
+                expression,
+            } => {
                 let value = self.evaluate_expression(expression, context)?;
                 context.variables.insert(variable.clone(), value);
             }
@@ -771,14 +815,20 @@ impl ProcedureManager {
                         param_values.push(param_value);
                     }
 
-                    debug!("Executing parameterized SQL: {} with {} parameters", sql, param_values.len());
+                    debug!(
+                        "Executing parameterized SQL: {} with {} parameters",
+                        sql,
+                        param_values.len()
+                    );
 
                     // Execute the SQL with parameters (no string concatenation)
                     let mut engine = engine_arc.write();
                     match sql_bridge::execute_sql_with_params(&mut engine, sql, &param_values) {
                         Ok(QueryResult::Rows { data }) => {
                             // Store results in a special variable
-                            context.variables.insert("@@ROWCOUNT".to_string(), json!(data.len()));
+                            context
+                                .variables
+                                .insert("@@ROWCOUNT".to_string(), json!(data.len()));
                             context.stats.rows_affected += data.len();
                         }
                         Ok(QueryResult::Success { message }) => {
@@ -791,10 +841,16 @@ impl ProcedureManager {
                             context.variables.insert("@@ROWCOUNT".to_string(), json!(0));
                         }
                         Ok(QueryResult::Error { message }) => {
-                            return Err(DriftError::InvalidQuery(format!("SQL execution failed in procedure: {}", message)));
+                            return Err(DriftError::InvalidQuery(format!(
+                                "SQL execution failed in procedure: {}",
+                                message
+                            )));
                         }
                         Err(e) => {
-                            return Err(DriftError::InvalidQuery(format!("SQL execution error in procedure: {}", e)));
+                            return Err(DriftError::InvalidQuery(format!(
+                                "SQL execution error in procedure: {}",
+                                e
+                            )));
                         }
                     }
                 } else {
@@ -819,7 +875,11 @@ impl ProcedureManager {
                 context.messages.push(msg_str);
             }
 
-            Statement::If { condition, then_statements, else_statements } => {
+            Statement::If {
+                condition,
+                then_statements,
+                else_statements,
+            } => {
                 let condition_result = self.evaluate_expression(condition, context)?;
                 if self.is_truthy(&condition_result) {
                     self.execute_statements(then_statements, context)?;
@@ -828,13 +888,18 @@ impl ProcedureManager {
                 }
             }
 
-            Statement::While { condition, statements } => {
+            Statement::While {
+                condition,
+                statements,
+            } => {
                 while self.is_truthy(&self.evaluate_expression(condition, context)?) {
                     self.execute_statements(statements, context)?;
 
                     // Prevent infinite loops (simple protection)
                     if context.stats.statements_executed > 10000 {
-                        return Err(DriftError::InvalidQuery("Statement limit exceeded".to_string()));
+                        return Err(DriftError::InvalidQuery(
+                            "Statement limit exceeded".to_string(),
+                        ));
                     }
                 }
             }
@@ -850,30 +915,39 @@ impl ProcedureManager {
 
     /// Evaluate an expression to a value
     #[allow(unreachable_patterns)]
-    fn evaluate_expression(&self, expression: &Expression, context: &ExecutionContext) -> Result<Value> {
+    fn evaluate_expression(
+        &self,
+        expression: &Expression,
+        context: &ExecutionContext,
+    ) -> Result<Value> {
         match expression {
             Expression::Literal(value) => Ok(value.clone()),
 
             Expression::Variable(name) => {
-                context.variables.get(name)
-                    .cloned()
-                    .ok_or_else(|| DriftError::InvalidQuery(format!("Variable '{}' not found", name)))
+                context.variables.get(name).cloned().ok_or_else(|| {
+                    DriftError::InvalidQuery(format!("Variable '{}' not found", name))
+                })
             }
 
             Expression::Parameter(name) => {
-                context.parameters.get(name)
-                    .cloned()
-                    .ok_or_else(|| DriftError::InvalidQuery(format!("Parameter '{}' not found", name)))
+                context.parameters.get(name).cloned().ok_or_else(|| {
+                    DriftError::InvalidQuery(format!("Parameter '{}' not found", name))
+                })
             }
 
-            Expression::Binary { left, operator, right } => {
+            Expression::Binary {
+                left,
+                operator,
+                right,
+            } => {
                 let left_val = self.evaluate_expression(left, context)?;
                 let right_val = self.evaluate_expression(right, context)?;
                 self.apply_binary_operator(&left_val, operator, &right_val)
             }
 
             Expression::Function { name, arguments } => {
-                let arg_values: Result<Vec<Value>> = arguments.iter()
+                let arg_values: Result<Vec<Value>> = arguments
+                    .iter()
                     .map(|arg| self.evaluate_expression(arg, context))
                     .collect();
                 let args = arg_values?;
@@ -921,7 +995,12 @@ impl ProcedureManager {
     }
 
     /// Apply binary operator to two values
-    fn apply_binary_operator(&self, left: &Value, op: &BinaryOperator, right: &Value) -> Result<Value> {
+    fn apply_binary_operator(
+        &self,
+        left: &Value,
+        op: &BinaryOperator,
+        right: &Value,
+    ) -> Result<Value> {
         match (left, op, right) {
             (Value::Number(a), BinaryOperator::Add, Value::Number(b)) => {
                 let result = a.as_f64().unwrap_or(0.0) + b.as_f64().unwrap_or(0.0);
@@ -930,9 +1009,7 @@ impl ProcedureManager {
             (Value::String(a), BinaryOperator::Concat, Value::String(b)) => {
                 Ok(json!(format!("{}{}", a, b)))
             }
-            (a, BinaryOperator::Equal, b) => {
-                Ok(json!(a == b))
-            }
+            (a, BinaryOperator::Equal, b) => Ok(json!(a == b)),
             (Value::Number(a), BinaryOperator::Subtract, Value::Number(b)) => {
                 let result = a.as_f64().unwrap_or(0.0) - b.as_f64().unwrap_or(0.0);
                 Ok(json!(result))
@@ -956,24 +1033,21 @@ impl ProcedureManager {
             (Value::Number(a), BinaryOperator::Less, Value::Number(b)) => {
                 Ok(json!(a.as_f64().unwrap_or(0.0) < b.as_f64().unwrap_or(0.0)))
             }
-            (Value::Number(a), BinaryOperator::GreaterEqual, Value::Number(b)) => {
-                Ok(json!(a.as_f64().unwrap_or(0.0) >= b.as_f64().unwrap_or(0.0)))
-            }
-            (Value::Number(a), BinaryOperator::LessEqual, Value::Number(b)) => {
-                Ok(json!(a.as_f64().unwrap_or(0.0) <= b.as_f64().unwrap_or(0.0)))
-            }
-            (a, BinaryOperator::NotEqual, b) => {
-                Ok(json!(a != b))
-            }
-            (Value::Bool(a), BinaryOperator::And, Value::Bool(b)) => {
-                Ok(json!(*a && *b))
-            }
-            (Value::Bool(a), BinaryOperator::Or, Value::Bool(b)) => {
-                Ok(json!(*a || *b))
-            }
+            (Value::Number(a), BinaryOperator::GreaterEqual, Value::Number(b)) => Ok(json!(
+                a.as_f64().unwrap_or(0.0) >= b.as_f64().unwrap_or(0.0)
+            )),
+            (Value::Number(a), BinaryOperator::LessEqual, Value::Number(b)) => Ok(json!(
+                a.as_f64().unwrap_or(0.0) <= b.as_f64().unwrap_or(0.0)
+            )),
+            (a, BinaryOperator::NotEqual, b) => Ok(json!(a != b)),
+            (Value::Bool(a), BinaryOperator::And, Value::Bool(b)) => Ok(json!(*a && *b)),
+            (Value::Bool(a), BinaryOperator::Or, Value::Bool(b)) => Ok(json!(*a || *b)),
             _ => {
                 // For unimplemented operators, return null
-                debug!("Unimplemented binary operator: {:?} {:?} {:?}", left, op, right);
+                debug!(
+                    "Unimplemented binary operator: {:?} {:?} {:?}",
+                    left, op, right
+                );
                 Ok(Value::Null)
             }
         }
@@ -1088,16 +1162,14 @@ mod tests {
 
         let definition = ProcedureDefinition {
             name: "test_proc".to_string(),
-            parameters: vec![
-                Parameter {
-                    name: "input_value".to_string(),
-                    data_type: DataType::Integer,
-                    direction: ParameterDirection::In,
-                    default_value: None,
-                    is_required: true,
-                    description: None,
-                }
-            ],
+            parameters: vec![Parameter {
+                name: "input_value".to_string(),
+                data_type: DataType::Integer,
+                direction: ParameterDirection::In,
+                default_value: None,
+                is_required: true,
+                description: None,
+            }],
             return_type: ReturnType::Scalar(DataType::String(None)),
             body: "RETURN 'Hello World'".to_string(),
             parsed_body: None,
@@ -1147,7 +1219,9 @@ mod tests {
 
         manager.create_procedure(definition).unwrap();
 
-        let result = manager.execute_procedure("simple_proc", HashMap::new()).unwrap();
+        let result = manager
+            .execute_procedure("simple_proc", HashMap::new())
+            .unwrap();
         assert!(result.return_value.is_some());
     }
 
@@ -1157,16 +1231,14 @@ mod tests {
 
         let definition = ProcedureDefinition {
             name: "param_proc".to_string(),
-            parameters: vec![
-                Parameter {
-                    name: "required_param".to_string(),
-                    data_type: DataType::String(None),
-                    direction: ParameterDirection::In,
-                    default_value: None,
-                    is_required: true,
-                    description: None,
-                }
-            ],
+            parameters: vec![Parameter {
+                name: "required_param".to_string(),
+                data_type: DataType::String(None),
+                direction: ParameterDirection::In,
+                default_value: None,
+                is_required: true,
+                description: None,
+            }],
             return_type: ReturnType::Void,
             body: "".to_string(),
             parsed_body: None,

@@ -97,7 +97,8 @@ impl TransactionState {
 
     /// Rollback to a savepoint
     pub fn rollback_to_savepoint(&mut self, name: &str) -> Result<()> {
-        let savepoint_idx = self.savepoints
+        let savepoint_idx = self
+            .savepoints
             .iter()
             .position(|sp| sp.name == name)
             .ok_or_else(|| anyhow!("Savepoint '{}' not found", name))?;
@@ -163,7 +164,7 @@ impl TransactionManager {
         &self,
         session_id: &str,
         isolation_level: IsolationLevel,
-        is_read_only: bool
+        is_read_only: bool,
     ) -> Result<u64> {
         // Get current sequence from engine
         let engine = self.engine.read();
@@ -189,7 +190,8 @@ impl TransactionManager {
         // Extract state and release lock immediately
         let state = {
             let mut transactions = self.transactions.write();
-            transactions.remove(session_id)
+            transactions
+                .remove(session_id)
                 .ok_or_else(|| anyhow!("No active transaction for session"))?
         };
 
@@ -205,7 +207,8 @@ impl TransactionManager {
                 match write.operation {
                     WriteOperation::Insert => {
                         // Insert the data
-                        engine.insert_record(&write.table, write.data)
+                        engine
+                            .insert_record(&write.table, write.data)
                             .map_err(|e| anyhow!("Failed to insert: {}", e))?;
                     }
                     WriteOperation::Update { id: _ } => {
@@ -224,7 +227,10 @@ impl TransactionManager {
         // Release all locks held by this transaction
         self.lock_manager.release_all_locks(state.txn_id);
 
-        info!("Committed transaction {} for session {}", state.txn_id, session_id);
+        info!(
+            "Committed transaction {} for session {}",
+            state.txn_id, session_id
+        );
         Ok(())
     }
 
@@ -233,7 +239,8 @@ impl TransactionManager {
         // Extract state and release lock immediately
         let state = {
             let mut transactions = self.transactions.write();
-            transactions.remove(session_id)
+            transactions
+                .remove(session_id)
                 .ok_or_else(|| anyhow!("No active transaction for session"))?
         };
 
@@ -241,7 +248,10 @@ impl TransactionManager {
         self.lock_manager.release_all_locks(state.txn_id);
 
         // Pending writes are simply discarded
-        info!("Rolled back transaction {} for session {}", state.txn_id, session_id);
+        info!(
+            "Rolled back transaction {} for session {}",
+            state.txn_id, session_id
+        );
         Ok(())
     }
 
@@ -261,7 +271,8 @@ impl TransactionManager {
     pub fn add_pending_write(&self, session_id: &str, write: PendingWrite) -> Result<()> {
         let mut transactions = self.transactions.write();
 
-        let state = transactions.get_mut(session_id)
+        let state = transactions
+            .get_mut(session_id)
             .ok_or_else(|| anyhow!("No active transaction for session"))?;
 
         state.add_write(write)?;
@@ -272,7 +283,8 @@ impl TransactionManager {
     pub fn create_savepoint(&self, session_id: &str, name: String) -> Result<()> {
         let mut transactions = self.transactions.write();
 
-        let state = transactions.get_mut(session_id)
+        let state = transactions
+            .get_mut(session_id)
             .ok_or_else(|| anyhow!("No active transaction for session"))?;
 
         state.create_savepoint(name)?;
@@ -283,7 +295,8 @@ impl TransactionManager {
     pub fn rollback_to_savepoint(&self, session_id: &str, name: &str) -> Result<()> {
         let mut transactions = self.transactions.write();
 
-        let state = transactions.get_mut(session_id)
+        let state = transactions
+            .get_mut(session_id)
             .ok_or_else(|| anyhow!("No active transaction for session"))?;
 
         state.rollback_to_savepoint(name)?;
@@ -339,21 +352,25 @@ mod tests {
         let mut state = TransactionState::new(IsolationLevel::ReadCommitted, false, 100);
 
         // Add some writes
-        state.add_write(PendingWrite {
-            table: "test".to_string(),
-            operation: WriteOperation::Insert,
-            data: Value::Null,
-        }).unwrap();
+        state
+            .add_write(PendingWrite {
+                table: "test".to_string(),
+                operation: WriteOperation::Insert,
+                data: Value::Null,
+            })
+            .unwrap();
 
         // Create savepoint
         state.create_savepoint("sp1".to_string()).unwrap();
 
         // Add more writes
-        state.add_write(PendingWrite {
-            table: "test".to_string(),
-            operation: WriteOperation::Insert,
-            data: Value::Null,
-        }).unwrap();
+        state
+            .add_write(PendingWrite {
+                table: "test".to_string(),
+                operation: WriteOperation::Insert,
+                data: Value::Null,
+            })
+            .unwrap();
 
         assert_eq!(state.pending_writes.len(), 2);
 

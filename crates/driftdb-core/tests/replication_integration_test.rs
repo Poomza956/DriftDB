@@ -4,7 +4,7 @@ use tempfile::TempDir;
 use tokio::time::sleep;
 
 use driftdb_core::replication::{
-    ReplicationCoordinator, ReplicationConfig, NodeRole, ReplicationMode
+    NodeRole, ReplicationConfig, ReplicationCoordinator, ReplicationMode,
 };
 use driftdb_core::Engine;
 

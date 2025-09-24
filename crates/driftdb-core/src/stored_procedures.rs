@@ -8,14 +8,14 @@
 //! - Nested procedure calls
 //! - Security contexts and permissions
 
+use parking_lot::RwLock;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
-use parking_lot::RwLock;
-use serde::{Serialize, Deserialize};
-use serde_json::Value;
 
-use crate::errors::{DriftError, Result};
 use crate::engine::Engine;
+use crate::errors::{DriftError, Result};
 use crate::query::QueryResult;
 
 /// Wrapper for SQL data types that can be serialized
@@ -108,26 +108,15 @@ pub enum ProcedureStatement {
     /// RETURN value
     Return(Option<String>),
     /// RAISE exception
-    Raise {
-        error_code: String,
-        message: String,
-    },
+    Raise { error_code: String, message: String },
     /// BEGIN-END block
-    Block {
-        statements: Vec<ProcedureStatement>,
-    },
+    Block { statements: Vec<ProcedureStatement> },
     /// DECLARE cursor
-    DeclareCursor {
-        name: String,
-        query: String,
-    },
+    DeclareCursor { name: String, query: String },
     /// OPEN cursor
     OpenCursor(String),
     /// FETCH from cursor
-    Fetch {
-        cursor: String,
-        into: Vec<String>,
-    },
+    Fetch { cursor: String, into: Vec<String> },
     /// CLOSE cursor
     CloseCursor(String),
 }
@@ -158,8 +147,8 @@ pub enum ProcedureLanguage {
 /// Security context for procedure execution
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SecurityContext {
-    Definer,  // Execute with privileges of procedure owner
-    Invoker,  // Execute with privileges of calling user
+    Definer, // Execute with privileges of procedure owner
+    Invoker, // Execute with privileges of calling user
 }
 
 /// Runtime context for procedure execution
@@ -269,8 +258,12 @@ impl ProcedureManager {
         let compiled = self.compile_procedure(&procedure)?;
 
         // Store procedure and compiled version
-        self.procedures.write().insert(procedure.name.clone(), procedure.clone());
-        self.compiled_cache.write().insert(procedure.name.clone(), compiled);
+        self.procedures
+            .write()
+            .insert(procedure.name.clone(), procedure.clone());
+        self.compiled_cache
+            .write()
+            .insert(procedure.name.clone(), compiled);
 
         Ok(())
     }
@@ -283,7 +276,9 @@ impl ProcedureManager {
         arguments: Vec<Value>,
         user: &str,
     ) -> Result<Option<Value>> {
-        let procedure = self.procedures.read()
+        let procedure = self
+            .procedures
+            .read()
             .get(name)
             .cloned()
             .ok_or_else(|| DriftError::Other(format!("Procedure '{}' not found", name)))?;
@@ -308,20 +303,19 @@ impl ProcedureManager {
             if let Some(value) = arguments.get(i) {
                 context.variables.insert(param.name.clone(), value.clone());
             } else if let Some(default) = &param.default_value {
-                context.variables.insert(param.name.clone(), default.clone());
+                context
+                    .variables
+                    .insert(param.name.clone(), default.clone());
             } else {
-                return Err(DriftError::Other(
-                    format!("Missing required parameter '{}'", param.name)
-                ));
+                return Err(DriftError::Other(format!(
+                    "Missing required parameter '{}'",
+                    param.name
+                )));
             }
         }
 
         // Execute procedure body
-        let result = self.execute_statements(
-            engine,
-            &procedure.body.statements,
-            &mut context,
-        )?;
+        let result = self.execute_statements(engine, &procedure.body.statements, &mut context)?;
 
         // Update statistics
         let mut stats = self.stats.write();
@@ -340,7 +334,10 @@ impl ProcedureManager {
     ) -> Result<Option<Value>> {
         for statement in statements {
             match statement {
-                ProcedureStatement::Assignment { variable, expression } => {
+                ProcedureStatement::Assignment {
+                    variable,
+                    expression,
+                } => {
                     let value = self.evaluate_expression(engine, expression, context)?;
                     context.variables.insert(variable.clone(), value);
                 }
@@ -351,14 +348,22 @@ impl ProcedureManager {
                     let _result = crate::sql_bridge::execute_sql(engine, &sql)?;
                 }
 
-                ProcedureStatement::If { condition, then_branch, else_branch } => {
+                ProcedureStatement::If {
+                    condition,
+                    then_branch,
+                    else_branch,
+                } => {
                     let cond_value = self.evaluate_condition(engine, condition, context)?;
                     if cond_value {
-                        if let Some(result) = self.execute_statements(engine, then_branch, context)? {
+                        if let Some(result) =
+                            self.execute_statements(engine, then_branch, context)?
+                        {
                             return Ok(Some(result));
                         }
                     } else if let Some(else_stmts) = else_branch {
-                        if let Some(result) = self.execute_statements(engine, else_stmts, context)? {
+                        if let Some(result) =
+                            self.execute_statements(engine, else_stmts, context)?
+                        {
                             return Ok(Some(result));
                         }
                     }
@@ -380,16 +385,16 @@ impl ProcedureManager {
                     }
                 }
 
-                ProcedureStatement::Call { procedure, arguments } => {
-                    let args: Result<Vec<Value>> = arguments.iter()
+                ProcedureStatement::Call {
+                    procedure,
+                    arguments,
+                } => {
+                    let args: Result<Vec<Value>> = arguments
+                        .iter()
                         .map(|arg| self.evaluate_expression(engine, arg, context))
                         .collect();
-                    let result = self.execute_procedure(
-                        engine,
-                        procedure,
-                        args?,
-                        &context.current_user,
-                    )?;
+                    let result =
+                        self.execute_procedure(engine, procedure, args?, &context.current_user)?;
                     if let Some(val) = result {
                         // Store result if needed
                         context.variables.insert("__result__".to_string(), val);
@@ -411,7 +416,10 @@ impl ProcedureManager {
                     let query_to_execute = if let Some(cursor) = context.cursors.get(name) {
                         cursor.query.clone()
                     } else {
-                        return Err(DriftError::InvalidQuery(format!("Cursor {} not found", name)));
+                        return Err(DriftError::InvalidQuery(format!(
+                            "Cursor {} not found",
+                            name
+                        )));
                     };
 
                     // Now substitute variables with clean borrow
@@ -525,9 +533,10 @@ impl ProcedureManager {
         let mut param_names = std::collections::HashSet::new();
         for param in &procedure.parameters {
             if !param_names.insert(&param.name) {
-                return Err(DriftError::Other(
-                    format!("Duplicate parameter name: {}", param.name)
-                ));
+                return Err(DriftError::Other(format!(
+                    "Duplicate parameter name: {}",
+                    param.name
+                )));
             }
         }
 
@@ -541,7 +550,11 @@ impl ProcedureManager {
     fn validate_statements(&self, statements: &[ProcedureStatement]) -> Result<()> {
         for statement in statements {
             match statement {
-                ProcedureStatement::If { then_branch, else_branch, .. } => {
+                ProcedureStatement::If {
+                    then_branch,
+                    else_branch,
+                    ..
+                } => {
                     self.validate_statements(then_branch)?;
                     if let Some(else_stmts) = else_branch {
                         self.validate_statements(else_stmts)?;
@@ -576,7 +589,9 @@ impl ProcedureManager {
 
     /// Drop a stored procedure
     pub fn drop_procedure(&self, name: &str) -> Result<()> {
-        self.procedures.write().remove(name)
+        self.procedures
+            .write()
+            .remove(name)
             .ok_or_else(|| DriftError::Other(format!("Procedure '{}' not found", name)))?;
         self.compiled_cache.write().remove(name);
         Ok(())
@@ -626,19 +641,15 @@ mod tests {
 
         let procedure = StoredProcedure {
             name: "test_proc".to_string(),
-            parameters: vec![
-                ProcedureParameter {
-                    name: "input".to_string(),
-                    data_type: DataType::Int,
-                    mode: ParameterMode::In,
-                    default_value: None,
-                }
-            ],
+            parameters: vec![ProcedureParameter {
+                name: "input".to_string(),
+                data_type: DataType::Int,
+                mode: ParameterMode::In,
+                default_value: None,
+            }],
             returns: Some(DataType::Int),
             body: ProcedureBody {
-                statements: vec![
-                    ProcedureStatement::Return(Some("input * 2".to_string())),
-                ],
+                statements: vec![ProcedureStatement::Return(Some("input * 2".to_string()))],
                 declarations: vec![],
                 exception_handlers: vec![],
             },

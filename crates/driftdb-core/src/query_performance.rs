@@ -1,9 +1,9 @@
 use crate::errors::Result;
 use crate::query::Query;
+use parking_lot::RwLock;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use parking_lot::RwLock;
-use serde::{Serialize, Deserialize};
 
 /// Simplified Query Performance Optimizer
 pub struct QueryPerformanceOptimizer {

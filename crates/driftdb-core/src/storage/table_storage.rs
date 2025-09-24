@@ -1,15 +1,15 @@
+use fs2::FileExt;
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use fs2::FileExt;
 
+use crate::encryption::EncryptionService;
 use crate::errors::{DriftError, Result};
 use crate::events::Event;
 use crate::schema::Schema;
 use crate::storage::{Segment, SegmentWriter, TableMeta};
-use crate::encryption::EncryptionService;
 
 #[derive(Debug, Clone)]
 pub struct TableStats {
@@ -43,7 +43,8 @@ impl TableStorage {
             .write(true)
             .truncate(false)
             .open(&lock_path)?;
-        lock_file.try_lock_exclusive()
+        lock_file
+            .try_lock_exclusive()
             .map_err(|e| DriftError::Other(format!("Failed to acquire table lock: {}", e)))?;
 
         let schema_path = path.join("schema.yaml");
@@ -96,7 +97,8 @@ impl TableStorage {
             .write(true)
             .truncate(false)
             .open(&lock_path)?;
-        lock_file.try_lock_exclusive()
+        lock_file
+            .try_lock_exclusive()
             .map_err(|e| DriftError::Other(format!("Failed to acquire table lock: {}", e)))?;
 
         let schema = Schema::load_from_file(path.join("schema.yaml"))?;
@@ -141,10 +143,16 @@ impl TableStorage {
 
             if bytes_written > self.segment_rotation_threshold() {
                 meta.segment_count += 1;
-                let new_segment_path = self.path.join("segments")
+                let new_segment_path = self
+                    .path
+                    .join("segments")
                     .join(format!("{:08}.seg", meta.segment_count));
                 let new_segment = if let Some(ref encryption_service) = self.encryption_service {
-                    Segment::new_with_encryption(new_segment_path, meta.segment_count, encryption_service.clone())
+                    Segment::new_with_encryption(
+                        new_segment_path,
+                        meta.segment_count,
+                        encryption_service.clone(),
+                    )
                 } else {
                     Segment::new(new_segment_path, meta.segment_count)
                 };
@@ -179,7 +187,9 @@ impl TableStorage {
         let mut segment_files: Vec<_> = fs::read_dir(&segments_dir)?
             .filter_map(|entry| entry.ok())
             .filter(|entry| {
-                entry.path().extension()
+                entry
+                    .path()
+                    .extension()
                     .and_then(|s| s.to_str())
                     .map(|s| s == "seg")
                     .unwrap_or(false)
@@ -201,7 +211,10 @@ impl TableStorage {
         Ok(all_events)
     }
 
-    pub fn reconstruct_state_at(&self, sequence: Option<u64>) -> Result<HashMap<String, serde_json::Value>> {
+    pub fn reconstruct_state_at(
+        &self,
+        sequence: Option<u64>,
+    ) -> Result<HashMap<String, serde_json::Value>> {
         let target_seq = sequence.unwrap_or(u64::MAX);
 
         // OPTIMIZATION: Try to use a snapshot first
@@ -209,13 +222,10 @@ impl TableStorage {
         if let Ok(Some(snapshot)) = snapshot_manager.find_latest_before(target_seq) {
             // We have a snapshot before our target sequence!
             // Convert snapshot state from HashMap<String, String> to HashMap<String, serde_json::Value>
-            let mut state: HashMap<String, serde_json::Value> = snapshot.state
+            let mut state: HashMap<String, serde_json::Value> = snapshot
+                .state
                 .into_iter()
-                .filter_map(|(k, v)| {
-                    serde_json::from_str(&v)
-                        .ok()
-                        .map(|json_val| (k, json_val))
-                })
+                .filter_map(|(k, v)| serde_json::from_str(&v).ok().map(|json_val| (k, json_val)))
                 .collect();
 
             // Only read events AFTER the snapshot
@@ -232,8 +242,11 @@ impl TableStorage {
                     }
                     crate::events::EventType::Patch => {
                         if let Some(existing) = state.get_mut(&event.primary_key.to_string()) {
-                            if let (serde_json::Value::Object(existing_map), serde_json::Value::Object(patch_map)) =
-                                (existing, &event.payload) {
+                            if let (
+                                serde_json::Value::Object(existing_map),
+                                serde_json::Value::Object(patch_map),
+                            ) = (existing, &event.payload)
+                            {
                                 for (key, value) in patch_map {
                                     existing_map.insert(key.clone(), value.clone());
                                 }
@@ -264,8 +277,11 @@ impl TableStorage {
                 }
                 crate::events::EventType::Patch => {
                     if let Some(existing) = state.get_mut(&event.primary_key.to_string()) {
-                        if let (serde_json::Value::Object(existing_map), serde_json::Value::Object(patch_map)) =
-                            (existing, &event.payload) {
+                        if let (
+                            serde_json::Value::Object(existing_map),
+                            serde_json::Value::Object(patch_map),
+                        ) = (existing, &event.payload)
+                        {
                             for (key, value) in patch_map {
                                 existing_map.insert(key.clone(), value.clone());
                             }
@@ -295,7 +311,10 @@ impl TableStorage {
         Ok(filtered_events)
     }
 
-    pub fn find_sequence_at_timestamp(&self, timestamp: chrono::DateTime<chrono::Utc>) -> Result<Option<u64>> {
+    pub fn find_sequence_at_timestamp(
+        &self,
+        timestamp: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Option<u64>> {
         // Find the sequence number that corresponds to a given timestamp
         let events = self.read_all_events()?;
 
@@ -303,10 +322,8 @@ impl TableStorage {
         let mut latest_seq = None;
         for event in events {
             // Convert event timestamp to chrono
-            let event_ts = chrono::DateTime::from_timestamp(
-                event.timestamp.unix_timestamp(),
-                0
-            ).unwrap_or(chrono::Utc::now());
+            let event_ts = chrono::DateTime::from_timestamp(event.timestamp.unix_timestamp(), 0)
+                .unwrap_or(chrono::Utc::now());
 
             if event_ts <= timestamp {
                 latest_seq = Some(event.sequence);

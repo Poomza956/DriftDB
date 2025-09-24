@@ -144,9 +144,21 @@ pub trait StateMachine: Send + Sync {
 
 #[async_trait::async_trait]
 pub trait Transport: Send + Sync {
-    async fn send_request_vote(&self, target: &str, req: RequestVoteRequest) -> Result<RequestVoteResponse>;
-    async fn send_append_entries(&self, target: &str, req: AppendEntriesRequest) -> Result<AppendEntriesResponse>;
-    async fn send_install_snapshot(&self, target: &str, req: InstallSnapshotRequest) -> Result<InstallSnapshotResponse>;
+    async fn send_request_vote(
+        &self,
+        target: &str,
+        req: RequestVoteRequest,
+    ) -> Result<RequestVoteResponse>;
+    async fn send_append_entries(
+        &self,
+        target: &str,
+        req: AppendEntriesRequest,
+    ) -> Result<AppendEntriesResponse>;
+    async fn send_install_snapshot(
+        &self,
+        target: &str,
+        req: InstallSnapshotRequest,
+    ) -> Result<InstallSnapshotResponse>;
     async fn send_pre_vote(&self, target: &str, req: PreVoteRequest) -> Result<PreVoteResponse>;
 }
 
@@ -331,10 +343,7 @@ impl ConsensusEngine {
         *voted_for.write().unwrap() = Some(config.node_id.clone());
 
         let last_log_index = log.read().unwrap().len() as u64;
-        let last_log_term = log.read().unwrap()
-            .last()
-            .map(|e| e.term)
-            .unwrap_or(0);
+        let last_log_term = log.read().unwrap().last().map(|e| e.term).unwrap_or(0);
 
         let mut votes = 1;
         let majority = (config.peers.len() + 1) / 2 + 1;
@@ -381,10 +390,7 @@ impl ConsensusEngine {
         transport: &Arc<dyn Transport>,
     ) -> bool {
         let last_log_index = log.read().unwrap().len() as u64;
-        let last_log_term = log.read().unwrap()
-            .last()
-            .map(|e| e.term)
-            .unwrap_or(0);
+        let last_log_term = log.read().unwrap().last().map(|e| e.term).unwrap_or(0);
 
         let mut votes = 1;
         let majority = (config.peers.len() + 1) / 2 + 1;
@@ -530,7 +536,10 @@ impl ConsensusEngine {
             command,
             client_id: "client".to_string(),
             request_id: 0,
-            timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64,
+            timestamp: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64,
         };
 
         self.log.write().unwrap().push(entry.clone());
@@ -622,8 +631,8 @@ impl ConsensusEngine {
         let last_log_index = log.len() as u64;
         let last_log_term = log.last().map(|e| e.term).unwrap_or(0);
 
-        let log_ok = req.last_log_term > last_log_term ||
-            (req.last_log_term == last_log_term && req.last_log_index >= last_log_index);
+        let log_ok = req.last_log_term > last_log_term
+            || (req.last_log_term == last_log_term && req.last_log_index >= last_log_index);
 
         if log_ok {
             *self.voted_for.write().unwrap() = Some(req.candidate_id.clone());

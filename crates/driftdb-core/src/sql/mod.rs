@@ -6,18 +6,18 @@
 //! - FOR SYSTEM_TIME FROM TO queries
 //! - FOR SYSTEM_TIME ALL queries
 
-pub mod parser;
 pub mod executor;
-pub mod temporal;
 pub mod joins;
+pub mod parser;
+pub mod temporal;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlparser::ast::Statement;
 
-pub use parser::TemporalSqlParser;
-pub use parser::TemporalSqlParser as Parser;  // Alias for compatibility
 pub use executor::SqlExecutor;
+pub use parser::TemporalSqlParser;
+pub use parser::TemporalSqlParser as Parser; // Alias for compatibility
 
 // Simplified Executor wrapper that doesn't require mutable reference
 pub struct Executor;
@@ -27,7 +27,11 @@ impl Executor {
         Executor
     }
 
-    pub fn execute(&mut self, engine: &mut crate::engine::Engine, stmt: &TemporalStatement) -> crate::errors::Result<QueryResult> {
+    pub fn execute(
+        &mut self,
+        engine: &mut crate::engine::Engine,
+        stmt: &TemporalStatement,
+    ) -> crate::errors::Result<QueryResult> {
         // Use the SQL executor
         let mut executor = executor::SqlExecutor::new(engine);
         executor.execute_sql(stmt)
@@ -92,9 +96,16 @@ pub struct TemporalQueryResult {
 /// Query result types for SQL execution
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum QueryResult {
-    Success { message: String },
-    Records { columns: Vec<String>, rows: Vec<Vec<serde_json::Value>> },
-    Error { message: String },
+    Success {
+        message: String,
+    },
+    Records {
+        columns: Vec<String>,
+        rows: Vec<Vec<serde_json::Value>>,
+    },
+    Error {
+        message: String,
+    },
 }
 
 /// Metadata about temporal query execution

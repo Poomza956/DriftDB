@@ -7,19 +7,19 @@
 //! - Health monitoring and self-healing
 //! - Backup-based recovery as last resort
 
+use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use parking_lot::RwLock;
-use tracing::{info, warn, error, debug, instrument};
+use tracing::{debug, error, info, instrument, warn};
 
-use crate::errors::{DriftError, Result};
-use crate::wal::{WalManager, WalEntry, WalOperation};
 use crate::backup::BackupManager;
-use crate::storage::segment::Segment;
+use crate::errors::{DriftError, Result};
 use crate::monitoring::MonitoringSystem;
+use crate::storage::segment::Segment;
+use crate::wal::{WalEntry, WalManager, WalOperation};
 
 /// Recovery manager coordinates all error recovery operations
 pub struct RecoveryManager {
@@ -188,8 +188,11 @@ impl RecoveryManager {
         let time_taken = start_time.elapsed().unwrap_or_default();
         *self.last_recovery.write() = Some(SystemTime::now());
 
-        info!("Recovery completed in {:?}, {} operations performed",
-              time_taken, operations.len());
+        info!(
+            "Recovery completed in {:?}, {} operations performed",
+            time_taken,
+            operations.len()
+        );
 
         Ok(RecoveryResult {
             success: true,
@@ -230,17 +233,15 @@ impl RecoveryManager {
         info!("Replaying WAL from sequence {}", replay_from);
 
         // Replay WAL entries with timeout protection
-        let entries = match tokio::time::timeout(
-            timeout,
-            self.replay_wal_entries(replay_from)
-        ).await {
-            Ok(result) => result?,
-            Err(_) => {
-                error!("WAL recovery timed out after {:?}", timeout);
-                // Attempt partial recovery from backup
-                return self.attempt_backup_recovery().await;
-            }
-        };
+        let entries =
+            match tokio::time::timeout(timeout, self.replay_wal_entries(replay_from)).await {
+                Ok(result) => result?,
+                Err(_) => {
+                    error!("WAL recovery timed out after {:?}", timeout);
+                    // Attempt partial recovery from backup
+                    return self.attempt_backup_recovery().await;
+                }
+            };
 
         let operation = RecoveryOperation::WalReplay {
             entries_recovered: entries.len() as u64,
@@ -274,12 +275,14 @@ impl RecoveryManager {
 
         for entry in &entries {
             match &entry.operation {
-                WalOperation::TransactionBegin { transaction_id } |
-                WalOperation::TransactionCommit { transaction_id } |
-                WalOperation::TransactionAbort { transaction_id } => {
+                WalOperation::TransactionBegin { transaction_id }
+                | WalOperation::TransactionCommit { transaction_id }
+                | WalOperation::TransactionAbort { transaction_id } => {
                     transactions.entry(*transaction_id).or_default().push(entry);
                 }
-                WalOperation::Insert { .. } | WalOperation::Update { .. } | WalOperation::Delete { .. } => {
+                WalOperation::Insert { .. }
+                | WalOperation::Update { .. }
+                | WalOperation::Delete { .. } => {
                     if let Some(txn_id) = entry.transaction_id {
                         transactions.entry(txn_id).or_default().push(entry);
                     } else {
@@ -308,9 +311,9 @@ impl RecoveryManager {
     /// Replay a single transaction
     async fn replay_transaction(&self, entries: &[&WalEntry]) -> Result<()> {
         // Check if transaction was committed
-        let has_commit = entries.iter().any(|e| {
-            matches!(e.operation, WalOperation::TransactionCommit { .. })
-        });
+        let has_commit = entries
+            .iter()
+            .any(|e| matches!(e.operation, WalOperation::TransactionCommit { .. }));
 
         if !has_commit {
             debug!("Skipping uncommitted transaction during recovery");
@@ -319,8 +322,10 @@ impl RecoveryManager {
 
         // Apply all operations in the transaction
         for entry in entries {
-            if !matches!(entry.operation, WalOperation::TransactionBegin { .. } |
-                         WalOperation::TransactionCommit { .. }) {
+            if !matches!(
+                entry.operation,
+                WalOperation::TransactionBegin { .. } | WalOperation::TransactionCommit { .. }
+            ) {
                 self.replay_operation(entry).await?;
             }
         }
@@ -331,11 +336,15 @@ impl RecoveryManager {
     /// Replay a single WAL operation
     async fn replay_operation(&self, entry: &WalEntry) -> Result<()> {
         match &entry.operation {
-            WalOperation::Insert { table, row_id, data: _ } => {
+            WalOperation::Insert {
+                table,
+                row_id,
+                data: _,
+            } => {
                 debug!("Replaying insert: {}.{}", table, row_id);
                 // TODO: Apply insert operation to storage
             }
-            WalOperation::Update { table, row_id,  .. } => {
+            WalOperation::Update { table, row_id, .. } => {
                 debug!("Replaying update: {}.{}", table, row_id);
                 // TODO: Apply update operation to storage
             }
@@ -390,7 +399,10 @@ impl RecoveryManager {
             }
         }
 
-        info!("Corruption scan completed: {} segments repaired", repaired_count);
+        info!(
+            "Corruption scan completed: {} segments repaired",
+            repaired_count
+        );
         Ok(operations)
     }
 
@@ -428,8 +440,10 @@ impl RecoveryManager {
 
         match reader.verify_and_find_corruption()? {
             Some(corrupt_pos) => {
-                warn!("Found corruption in {:?} at position {}, truncating...",
-                      segment_path, corrupt_pos);
+                warn!(
+                    "Found corruption in {:?} at position {}, truncating...",
+                    segment_path, corrupt_pos
+                );
 
                 // Truncate segment at corruption point
                 segment.truncate_at(corrupt_pos)?;
@@ -476,10 +490,12 @@ impl RecoveryManager {
     }
 
     /// Attempt recovery from backup as last resort
-    async fn attempt_backup_recovery(&self) -> Result<(Option<RecoveryOperation>, Option<DataLossInfo>)> {
+    async fn attempt_backup_recovery(
+        &self,
+    ) -> Result<(Option<RecoveryOperation>, Option<DataLossInfo>)> {
         if !self.config.auto_backup_recovery_enabled {
             return Err(DriftError::Other(
-                "WAL recovery failed and automatic backup recovery is disabled".to_string()
+                "WAL recovery failed and automatic backup recovery is disabled".to_string(),
             ));
         }
 
@@ -492,7 +508,7 @@ impl RecoveryManager {
         // In a production system, would list backups and restore from latest
         // For now, return error indicating backup recovery not fully implemented
         return Err(DriftError::Other(
-            "Backup recovery not fully implemented - would restore from latest backup".to_string()
+            "Backup recovery not fully implemented - would restore from latest backup".to_string(),
         ));
 
         // TODO: Implement proper backup listing and restoration
@@ -517,11 +533,14 @@ impl RecoveryManager {
 
     /// Estimate data loss since a backup timestamp
     fn estimate_data_loss_since_backup(&self, backup_time: &SystemTime) -> Result<u64> {
-        let backup_millis = backup_time.duration_since(UNIX_EPOCH)
-            .unwrap_or_default().as_millis() as u64;
+        let backup_millis = backup_time
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
 
         let entries = self.wal_manager.replay_from_sequence(0)?;
-        let lost_entries = entries.iter()
+        let lost_entries = entries
+            .iter()
             .filter(|e| e.timestamp > backup_millis)
             .count();
 
@@ -557,13 +576,19 @@ impl RecoveryManager {
             match self.perform_health_check().await {
                 Ok(health_issues) => {
                     if !health_issues.is_empty() {
-                        warn!("Health issues detected: {} components unhealthy", health_issues.len());
+                        warn!(
+                            "Health issues detected: {} components unhealthy",
+                            health_issues.len()
+                        );
 
                         // Trigger proactive recovery for critical issues
                         for issue in health_issues {
                             if issue.status == HealthStatus::Critical {
                                 if let Err(e) = self.handle_health_issue(&issue).await {
-                                    error!("Failed to handle health issue for {}: {}", issue.component, e);
+                                    error!(
+                                        "Failed to handle health issue for {}: {}",
+                                        issue.component, e
+                                    );
                                 }
                             }
                         }
@@ -702,16 +727,20 @@ impl RecoveryManager {
 
         RecoveryStats {
             last_recovery: *self.last_recovery.read(),
-            healthy_components: health_status.values()
+            healthy_components: health_status
+                .values()
                 .filter(|h| h.status == HealthStatus::Healthy)
                 .count(),
-            degraded_components: health_status.values()
+            degraded_components: health_status
+                .values()
                 .filter(|h| h.status == HealthStatus::Degraded)
                 .count(),
-            critical_components: health_status.values()
+            critical_components: health_status
+                .values()
                 .filter(|h| h.status == HealthStatus::Critical)
                 .count(),
-            failed_components: health_status.values()
+            failed_components: health_status
+                .values()
                 .filter(|h| h.status == HealthStatus::Failed)
                 .count(),
         }
@@ -731,18 +760,16 @@ pub struct RecoveryStats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
     use crate::wal::WalConfig;
+    use tempfile::TempDir;
 
     #[tokio::test]
     async fn test_crash_detection() {
         let temp_dir = TempDir::new().unwrap();
         let data_path = temp_dir.path().to_path_buf();
 
-        let wal_manager = Arc::new(WalManager::new(
-            data_path.join("test.wal"),
-            WalConfig::default()
-        ).unwrap());
+        let wal_manager =
+            Arc::new(WalManager::new(data_path.join("test.wal"), WalConfig::default()).unwrap());
 
         let observability = Arc::new(ObservabilitySystem::new());
 
@@ -767,19 +794,23 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let data_path = temp_dir.path().to_path_buf();
 
-        let wal_manager = Arc::new(WalManager::new(
-            data_path.join("test.wal"),
-            WalConfig::default()
-        ).unwrap());
+        let wal_manager =
+            Arc::new(WalManager::new(data_path.join("test.wal"), WalConfig::default()).unwrap());
 
         // Log some operations
-        wal_manager.log_operation(WalOperation::TransactionBegin { transaction_id: 1 }).unwrap();
-        wal_manager.log_operation(WalOperation::Insert {
-            table: "users".to_string(),
-            row_id: "1".to_string(),
-            data: serde_json::json!({"name": "Alice"}),
-        }).unwrap();
-        wal_manager.log_operation(WalOperation::TransactionCommit { transaction_id: 1 }).unwrap();
+        wal_manager
+            .log_operation(WalOperation::TransactionBegin { transaction_id: 1 })
+            .unwrap();
+        wal_manager
+            .log_operation(WalOperation::Insert {
+                table: "users".to_string(),
+                row_id: "1".to_string(),
+                data: serde_json::json!({"name": "Alice"}),
+            })
+            .unwrap();
+        wal_manager
+            .log_operation(WalOperation::TransactionCommit { transaction_id: 1 })
+            .unwrap();
 
         let observability = Arc::new(ObservabilitySystem::new());
 

@@ -174,7 +174,9 @@ impl KeyManager {
         info!("Rotating key: {}", key_id);
 
         // Get the old key
-        let old_key = self.data_keys.read()
+        let old_key = self
+            .data_keys
+            .read()
             .get(key_id)
             .ok_or_else(|| DriftError::Other(format!("Key {} not found", key_id)))?
             .clone();
@@ -185,11 +187,14 @@ impl KeyManager {
         }
 
         // Generate new key with versioned ID
-        let new_key_id = format!("{}_v{}", key_id,
+        let new_key_id = format!(
+            "{}_v{}",
+            key_id,
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs())
-                .unwrap_or(0));
+                .unwrap_or(0)
+        );
         let new_key = self.derive_data_key(&new_key_id)?;
 
         // Re-encrypt data with new key
@@ -200,10 +205,12 @@ impl KeyManager {
             key_id: key_id.to_string(),
             algorithm: "AES-256-GCM".to_string(),
             created_at: old_key.metadata.created_at,
-            rotated_at: Some(std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0)),
+            rotated_at: Some(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0),
+            ),
             status: KeyStatus::Active,
         };
 
@@ -228,9 +235,12 @@ impl KeyManager {
         _old_key: &DataKey,
         _new_key: &[u8],
         old_key_id: &str,
-        new_key_id: &str
+        new_key_id: &str,
     ) -> Result<()> {
-        info!("Re-encrypting data from key {} to {}", old_key_id, new_key_id);
+        info!(
+            "Re-encrypting data from key {} to {}",
+            old_key_id, new_key_id
+        );
 
         // In a production system, this would:
         // 1. Scan all encrypted data tagged with old_key_id
@@ -303,7 +313,8 @@ impl EncryptionService {
         rand::thread_rng().fill_bytes(&mut nonce_bytes);
         let nonce = Nonce::from_slice(&nonce_bytes);
 
-        let ciphertext = cipher.encrypt(nonce, data)
+        let ciphertext = cipher
+            .encrypt(nonce, data)
             .map_err(|e| DriftError::Other(format!("Encryption failed: {}", e)))?;
 
         // Prepend nonce to ciphertext
@@ -325,7 +336,8 @@ impl EncryptionService {
         let key = Key::<Aes256Gcm>::from_slice(key);
         let cipher = Aes256Gcm::new(key);
 
-        let plaintext = cipher.decrypt(nonce, actual_ciphertext)
+        let plaintext = cipher
+            .decrypt(nonce, actual_ciphertext)
             .map_err(|e| DriftError::Other(format!("Decryption failed: {}", e)))?;
 
         Ok(plaintext)
@@ -344,7 +356,11 @@ impl EncryptionService {
     }
 
     /// Encrypt a field (for column-level encryption)
-    pub fn encrypt_field(&self, value: &serde_json::Value, field_name: &str) -> Result<serde_json::Value> {
+    pub fn encrypt_field(
+        &self,
+        value: &serde_json::Value,
+        field_name: &str,
+    ) -> Result<serde_json::Value> {
         let json_str = value.to_string();
         let encrypted = self.encrypt(json_str.as_bytes(), field_name)?;
         use base64::Engine;
@@ -357,12 +373,17 @@ impl EncryptionService {
     }
 
     /// Decrypt a field
-    pub fn decrypt_field(&self, value: &serde_json::Value, field_name: &str) -> Result<serde_json::Value> {
+    pub fn decrypt_field(
+        &self,
+        value: &serde_json::Value,
+        field_name: &str,
+    ) -> Result<serde_json::Value> {
         if let Some(obj) = value.as_object() {
             if obj.get("encrypted") == Some(&serde_json::json!(true)) {
                 if let Some(ciphertext) = obj.get("ciphertext").and_then(|v| v.as_str()) {
                     use base64::Engine;
-                    let decoded = base64::engine::general_purpose::STANDARD.decode(ciphertext)
+                    let decoded = base64::engine::general_purpose::STANDARD
+                        .decode(ciphertext)
                         .map_err(|e| DriftError::Other(format!("Base64 decode failed: {}", e)))?;
                     let decrypted = self.decrypt(&decoded, field_name)?;
                     let json_str = String::from_utf8(decrypted)

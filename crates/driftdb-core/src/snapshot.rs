@@ -58,8 +58,8 @@ impl Snapshot {
     pub fn load_from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
         let file = File::open(path)?;
         let reader = BufReader::new(file);
-        let compressed = std::io::Read::bytes(reader)
-            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let compressed =
+            std::io::Read::bytes(reader).collect::<std::result::Result<Vec<_>, _>>()?;
         let data = zstd::decode_all(&compressed[..])?;
         Ok(bincode::deserialize(&data)?)
     }

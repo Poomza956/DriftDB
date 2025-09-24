@@ -10,7 +10,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{SystemTime, Duration};
+use std::time::{Duration, SystemTime};
 
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
@@ -18,7 +18,9 @@ use serde_json::Value;
 use tracing::{debug, info, trace};
 
 use crate::errors::Result;
-use crate::optimizer::{TableStatistics, ColumnStatistics, IndexStatistics, Histogram, HistogramBucket};
+use crate::optimizer::{
+    ColumnStatistics, Histogram, HistogramBucket, IndexStatistics, TableStatistics,
+};
 
 /// Statistics collection configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -413,13 +415,20 @@ impl StatisticsManager {
             table_name: table_name.to_string(),
             row_count,
             column_count,
-            avg_row_size: if row_count > 0 { self.estimate_table_size(data) / row_count as u64 } else { 0 } as usize,
+            avg_row_size: if row_count > 0 {
+                self.estimate_table_size(data) / row_count as u64
+            } else {
+                0
+            } as usize,
             total_size_bytes: self.estimate_table_size(data),
             data_size_bytes: self.estimate_table_size(data),
             column_stats: column_stats.clone(),
             column_statistics: column_stats,
             index_stats: HashMap::new(),
-            last_updated: SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs(),
+            last_updated: SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
             collection_method: if use_sampling {
                 "SAMPLE".to_string()
             } else {
@@ -431,14 +440,18 @@ impl StatisticsManager {
         // Update global statistics
         {
             let mut stats = self.stats.write();
-            stats.tables.insert(table_name.to_string(), table_stats.clone());
+            stats
+                .tables
+                .insert(table_name.to_string(), table_stats.clone());
             stats.global.table_count = stats.tables.len();
             stats.global.total_rows = stats.tables.values().map(|t| t.row_count as u64).sum();
             stats.global.total_size_bytes = stats.tables.values().map(|t| t.data_size_bytes).sum();
         }
 
-        info!("Collected statistics for table '{}': {} rows, {} columns",
-              table_name, row_count, column_count);
+        info!(
+            "Collected statistics for table '{}': {} rows, {} columns",
+            table_name, row_count, column_count
+        );
 
         Ok(table_stats)
     }
@@ -490,7 +503,9 @@ impl StatisticsManager {
         // Calculate numeric statistics
         let (min_value, max_value, _avg_value) = if !numeric_values.is_empty() {
             let min = numeric_values.iter().fold(f64::INFINITY, |a, &b| a.min(b));
-            let max = numeric_values.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+            let max = numeric_values
+                .iter()
+                .fold(f64::NEG_INFINITY, |a, &b| a.max(b));
             let avg = numeric_values.iter().sum::<f64>() / numeric_values.len() as f64;
             (Some(min), Some(max), Some(avg))
         } else {
@@ -550,14 +565,17 @@ impl StatisticsManager {
         }
 
         let bucket_width = range / self.config.histogram_buckets as f64;
-        let mut buckets = vec![HistogramBucket {
-            lower_bound: serde_json::json!(0.0),
-            upper_bound: serde_json::json!(0.0),
-            frequency: 0,
-            min_value: serde_json::json!(0.0),
-            max_value: serde_json::json!(0.0),
-            distinct_count: 0,
-        }; self.config.histogram_buckets];
+        let mut buckets = vec![
+            HistogramBucket {
+                lower_bound: serde_json::json!(0.0),
+                upper_bound: serde_json::json!(0.0),
+                frequency: 0,
+                min_value: serde_json::json!(0.0),
+                max_value: serde_json::json!(0.0),
+                distinct_count: 0,
+            };
+            self.config.histogram_buckets
+        ];
 
         // Initialize bucket boundaries
         for (i, bucket) in buckets.iter_mut().enumerate() {
@@ -619,19 +637,25 @@ impl StatisticsManager {
 
             // Update global stats
             stats.global.total_queries += 1;
-            let total_time = stats.global.avg_query_time_ms * (stats.global.total_queries - 1) as f64;
-            stats.global.avg_query_time_ms = (total_time + execution.duration_ms as f64) / stats.global.total_queries as f64;
+            let total_time =
+                stats.global.avg_query_time_ms * (stats.global.total_queries - 1) as f64;
+            stats.global.avg_query_time_ms =
+                (total_time + execution.duration_ms as f64) / stats.global.total_queries as f64;
 
             // Update query type stats
-            let type_stats = stats.queries.by_type.entry(execution.query_type.clone()).or_insert(QueryTypeStats {
-                count: 0,
-                total_time_ms: 0,
-                avg_time_ms: 0.0,
-                min_time_ms: u64::MAX,
-                max_time_ms: 0,
-                total_rows: 0,
-                avg_rows: 0.0,
-            });
+            let type_stats = stats
+                .queries
+                .by_type
+                .entry(execution.query_type.clone())
+                .or_insert(QueryTypeStats {
+                    count: 0,
+                    total_time_ms: 0,
+                    avg_time_ms: 0.0,
+                    min_time_ms: u64::MAX,
+                    max_time_ms: 0,
+                    total_rows: 0,
+                    avg_rows: 0.0,
+                });
 
             type_stats.count += 1;
             type_stats.total_time_ms += execution.duration_ms;
@@ -797,7 +821,9 @@ mod tests {
             json!({"id": 3, "name": "Charlie", "age": 35, "salary": 70000.0}),
         ];
 
-        let stats = manager.collect_table_statistics("employees", &data).unwrap();
+        let stats = manager
+            .collect_table_statistics("employees", &data)
+            .unwrap();
 
         assert_eq!(stats.table_name, "employees");
         assert_eq!(stats.row_count, 3);

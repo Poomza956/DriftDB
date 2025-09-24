@@ -1,11 +1,11 @@
 use crate::{DriftError, Result};
+use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, RwLock};
-use std::io::{Read, Write, Seek, SeekFrom};
 use std::fs::{File, OpenOptions};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+use std::sync::{Arc, RwLock};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ColumnarConfig {
@@ -380,7 +380,9 @@ impl ColumnarStorage {
 
         let total_count = values.len();
 
-        if (distinct_count as f64) / (total_count as f64) < self.config.dictionary_encoding_threshold {
+        if (distinct_count as f64) / (total_count as f64)
+            < self.config.dictionary_encoding_threshold
+        {
             EncodingType::Dictionary
         } else {
             EncodingType::Plain
@@ -564,11 +566,12 @@ impl ColumnarStorage {
             CompressionType::None => Ok(data),
             CompressionType::Snappy => {
                 let mut encoder = snap::raw::Encoder::new();
-                encoder.compress_vec(&data).map_err(|e| DriftError::Other(e.to_string()))
+                encoder
+                    .compress_vec(&data)
+                    .map_err(|e| DriftError::Other(e.to_string()))
             }
             CompressionType::Zstd => {
-                zstd::encode_all(data.as_slice(), 3)
-                    .map_err(|e| DriftError::Other(e.to_string()))
+                zstd::encode_all(data.as_slice(), 3).map_err(|e| DriftError::Other(e.to_string()))
             }
             _ => Ok(data),
         }
@@ -612,8 +615,14 @@ impl ColumnarStorage {
         })
     }
 
-    fn read_column(&self, column_name: &str, predicate: Option<&Predicate>) -> Result<Vec<Option<Value>>> {
-        let _column_file = self.column_files.get(column_name)
+    fn read_column(
+        &self,
+        column_name: &str,
+        predicate: Option<&Predicate>,
+    ) -> Result<Vec<Option<Value>>> {
+        let _column_file = self
+            .column_files
+            .get(column_name)
             .ok_or_else(|| DriftError::Other(format!("Column {} not found", column_name)))?;
 
         let mut all_values = Vec::new();
@@ -640,7 +649,9 @@ impl ColumnarStorage {
             CompressionType::None => Ok(data.to_vec()),
             CompressionType::Snappy => {
                 let mut decoder = snap::raw::Decoder::new();
-                decoder.decompress_vec(data).map_err(|e| DriftError::Other(e.to_string()))
+                decoder
+                    .decompress_vec(data)
+                    .map_err(|e| DriftError::Other(e.to_string()))
             }
             CompressionType::Zstd => {
                 zstd::decode_all(data).map_err(|e| DriftError::Other(e.to_string()))
@@ -773,7 +784,11 @@ impl ColumnarStorage {
         }
     }
 
-    fn evaluate_predicate_on_stats(&self, _predicate: &Predicate, _stats: Option<&ColumnStatistics>) -> bool {
+    fn evaluate_predicate_on_stats(
+        &self,
+        _predicate: &Predicate,
+        _stats: Option<&ColumnStatistics>,
+    ) -> bool {
         true
     }
 }
@@ -886,6 +901,13 @@ impl ColumnarReader {
     }
 
     pub fn count(&self) -> Result<u64> {
-        Ok(self.storage.read().unwrap().metadata.read().unwrap().row_count)
+        Ok(self
+            .storage
+            .read()
+            .unwrap()
+            .metadata
+            .read()
+            .unwrap()
+            .row_count)
     }
 }

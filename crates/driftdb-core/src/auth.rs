@@ -1,6 +1,6 @@
 use crate::errors::{DriftError, Result};
-use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 use argon2::password_hash::{rand_core::OsRng, SaltString};
+use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
@@ -36,28 +36,67 @@ pub enum Permission {
     AlterDatabase,
 
     // Table-level permissions
-    CreateTable { database: Option<String> },
-    DropTable { database: Option<String>, table: Option<String> },
-    AlterTable { database: Option<String>, table: Option<String> },
+    CreateTable {
+        database: Option<String>,
+    },
+    DropTable {
+        database: Option<String>,
+        table: Option<String>,
+    },
+    AlterTable {
+        database: Option<String>,
+        table: Option<String>,
+    },
 
     // Data manipulation permissions
-    Select { database: Option<String>, table: Option<String>, columns: Option<Vec<String>> },
-    Insert { database: Option<String>, table: Option<String> },
-    Update { database: Option<String>, table: Option<String>, columns: Option<Vec<String>> },
-    Delete { database: Option<String>, table: Option<String> },
+    Select {
+        database: Option<String>,
+        table: Option<String>,
+        columns: Option<Vec<String>>,
+    },
+    Insert {
+        database: Option<String>,
+        table: Option<String>,
+    },
+    Update {
+        database: Option<String>,
+        table: Option<String>,
+        columns: Option<Vec<String>>,
+    },
+    Delete {
+        database: Option<String>,
+        table: Option<String>,
+    },
 
     // Index permissions
-    CreateIndex { database: Option<String>, table: Option<String> },
-    DropIndex { database: Option<String>, table: Option<String> },
+    CreateIndex {
+        database: Option<String>,
+        table: Option<String>,
+    },
+    DropIndex {
+        database: Option<String>,
+        table: Option<String>,
+    },
 
     // View permissions
-    CreateView { database: Option<String> },
-    DropView { database: Option<String> },
+    CreateView {
+        database: Option<String>,
+    },
+    DropView {
+        database: Option<String>,
+    },
 
     // Procedure permissions
-    CreateProcedure { database: Option<String> },
-    DropProcedure { database: Option<String> },
-    ExecuteProcedure { database: Option<String>, procedure: Option<String> },
+    CreateProcedure {
+        database: Option<String>,
+    },
+    DropProcedure {
+        database: Option<String>,
+    },
+    ExecuteProcedure {
+        database: Option<String>,
+        procedure: Option<String>,
+    },
 
     // User management permissions
     CreateUser,
@@ -155,12 +194,15 @@ impl AuthManager {
         let mut roles = self.roles.write().unwrap();
 
         // SuperAdmin role
-        roles.insert("superadmin".to_string(), Role {
-            name: "superadmin".to_string(),
-            permissions: vec![Permission::SuperUser].into_iter().collect(),
-            description: Some("Full system access".to_string()),
-            is_system: true,
-        });
+        roles.insert(
+            "superadmin".to_string(),
+            Role {
+                name: "superadmin".to_string(),
+                permissions: vec![Permission::SuperUser].into_iter().collect(),
+                description: Some("Full system access".to_string()),
+                is_system: true,
+            },
+        );
 
         // Admin role
         let admin_permissions = vec![
@@ -168,8 +210,14 @@ impl AuthManager {
             Permission::DropDatabase,
             Permission::AlterDatabase,
             Permission::CreateTable { database: None },
-            Permission::DropTable { database: None, table: None },
-            Permission::AlterTable { database: None, table: None },
+            Permission::DropTable {
+                database: None,
+                table: None,
+            },
+            Permission::AlterTable {
+                database: None,
+                table: None,
+            },
             Permission::CreateUser,
             Permission::DropUser,
             Permission::AlterUser,
@@ -178,61 +226,114 @@ impl AuthManager {
             Permission::ManageBackup,
             Permission::ManageReplication,
         ];
-        roles.insert("admin".to_string(), Role {
-            name: "admin".to_string(),
-            permissions: admin_permissions.into_iter().collect(),
-            description: Some("Database administration".to_string()),
-            is_system: true,
-        });
+        roles.insert(
+            "admin".to_string(),
+            Role {
+                name: "admin".to_string(),
+                permissions: admin_permissions.into_iter().collect(),
+                description: Some("Database administration".to_string()),
+                is_system: true,
+            },
+        );
 
         // Developer role
         let dev_permissions = vec![
             Permission::CreateTable { database: None },
-            Permission::AlterTable { database: None, table: None },
-            Permission::Select { database: None, table: None, columns: None },
-            Permission::Insert { database: None, table: None },
-            Permission::Update { database: None, table: None, columns: None },
-            Permission::Delete { database: None, table: None },
-            Permission::CreateIndex { database: None, table: None },
+            Permission::AlterTable {
+                database: None,
+                table: None,
+            },
+            Permission::Select {
+                database: None,
+                table: None,
+                columns: None,
+            },
+            Permission::Insert {
+                database: None,
+                table: None,
+            },
+            Permission::Update {
+                database: None,
+                table: None,
+                columns: None,
+            },
+            Permission::Delete {
+                database: None,
+                table: None,
+            },
+            Permission::CreateIndex {
+                database: None,
+                table: None,
+            },
             Permission::CreateView { database: None },
             Permission::CreateProcedure { database: None },
-            Permission::ExecuteProcedure { database: None, procedure: None },
+            Permission::ExecuteProcedure {
+                database: None,
+                procedure: None,
+            },
         ];
-        roles.insert("developer".to_string(), Role {
-            name: "developer".to_string(),
-            permissions: dev_permissions.into_iter().collect(),
-            description: Some("Development access".to_string()),
-            is_system: true,
-        });
+        roles.insert(
+            "developer".to_string(),
+            Role {
+                name: "developer".to_string(),
+                permissions: dev_permissions.into_iter().collect(),
+                description: Some("Development access".to_string()),
+                is_system: true,
+            },
+        );
 
         // Read-only role
-        roles.insert("readonly".to_string(), Role {
-            name: "readonly".to_string(),
-            permissions: vec![
-                Permission::Select { database: None, table: None, columns: None },
-                Permission::ViewSystemTables,
-            ].into_iter().collect(),
-            description: Some("Read-only access".to_string()),
-            is_system: true,
-        });
+        roles.insert(
+            "readonly".to_string(),
+            Role {
+                name: "readonly".to_string(),
+                permissions: vec![
+                    Permission::Select {
+                        database: None,
+                        table: None,
+                        columns: None,
+                    },
+                    Permission::ViewSystemTables,
+                ]
+                .into_iter()
+                .collect(),
+                description: Some("Read-only access".to_string()),
+                is_system: true,
+            },
+        );
 
         // Write-only role
-        roles.insert("writeonly".to_string(), Role {
-            name: "writeonly".to_string(),
-            permissions: vec![
-                Permission::Insert { database: None, table: None },
-                Permission::Update { database: None, table: None, columns: None },
-                Permission::Delete { database: None, table: None },
-            ].into_iter().collect(),
-            description: Some("Write-only access".to_string()),
-            is_system: true,
-        });
+        roles.insert(
+            "writeonly".to_string(),
+            Role {
+                name: "writeonly".to_string(),
+                permissions: vec![
+                    Permission::Insert {
+                        database: None,
+                        table: None,
+                    },
+                    Permission::Update {
+                        database: None,
+                        table: None,
+                        columns: None,
+                    },
+                    Permission::Delete {
+                        database: None,
+                        table: None,
+                    },
+                ]
+                .into_iter()
+                .collect(),
+                description: Some("Write-only access".to_string()),
+                is_system: true,
+            },
+        );
     }
 
     fn create_default_admin(&mut self) -> Result<()> {
         // Generate a secure random password for the default admin
-        use rand::{Rng, thread_rng};
         use rand::distributions::Alphanumeric;
+        use rand::{thread_rng, Rng};
 
         let random_password: String = thread_rng()
             .sample_iter(&Alphanumeric)
@@ -272,7 +373,8 @@ impl AuthManager {
         self.validate_password_strength(password)?;
 
         let salt = SaltString::generate(&mut OsRng);
-        let password_hash = self.argon2
+        let password_hash = self
+            .argon2
             .hash_password(password.as_bytes(), &salt)
             .map_err(|e| DriftError::Internal(format!("Failed to hash password: {}", e)))?;
 
@@ -288,19 +390,27 @@ impl AuthManager {
         }
 
         if self.config.password_require_uppercase && !password.chars().any(|c| c.is_uppercase()) {
-            return Err(DriftError::Validation("Password must contain at least one uppercase letter".to_string()));
+            return Err(DriftError::Validation(
+                "Password must contain at least one uppercase letter".to_string(),
+            ));
         }
 
         if self.config.password_require_lowercase && !password.chars().any(|c| c.is_lowercase()) {
-            return Err(DriftError::Validation("Password must contain at least one lowercase letter".to_string()));
+            return Err(DriftError::Validation(
+                "Password must contain at least one lowercase letter".to_string(),
+            ));
         }
 
         if self.config.password_require_digit && !password.chars().any(|c| c.is_ascii_digit()) {
-            return Err(DriftError::Validation("Password must contain at least one digit".to_string()));
+            return Err(DriftError::Validation(
+                "Password must contain at least one digit".to_string(),
+            ));
         }
 
         if self.config.password_require_special && !password.chars().any(|c| !c.is_alphanumeric()) {
-            return Err(DriftError::Validation("Password must contain at least one special character".to_string()));
+            return Err(DriftError::Validation(
+                "Password must contain at least one special character".to_string(),
+            ));
         }
 
         Ok(())
@@ -310,15 +420,27 @@ impl AuthManager {
         let parsed_hash = PasswordHash::new(hash)
             .map_err(|e| DriftError::Internal(format!("Invalid password hash: {}", e)))?;
 
-        Ok(self.argon2.verify_password(password.as_bytes(), &parsed_hash).is_ok())
+        Ok(self
+            .argon2
+            .verify_password(password.as_bytes(), &parsed_hash)
+            .is_ok())
     }
 
-    pub fn create_user(&mut self, username: String, password: String, email: Option<String>, roles: HashSet<String>) -> Result<Uuid> {
+    pub fn create_user(
+        &mut self,
+        username: String,
+        password: String,
+        email: Option<String>,
+        roles: HashSet<String>,
+    ) -> Result<Uuid> {
         // Check if username already exists
         {
             let username_index = self.username_index.read().unwrap();
             if username_index.contains_key(&username) {
-                return Err(DriftError::Conflict(format!("User '{}' already exists", username)));
+                return Err(DriftError::Conflict(format!(
+                    "User '{}' already exists",
+                    username
+                )));
             }
         }
 
@@ -327,7 +449,10 @@ impl AuthManager {
             let role_map = self.roles.read().unwrap();
             for role in &roles {
                 if !role_map.contains_key(role) {
-                    return Err(DriftError::NotFound(format!("Role '{}' does not exist", role)));
+                    return Err(DriftError::NotFound(format!(
+                        "Role '{}' does not exist",
+                        role
+                    )));
                 }
             }
         }
@@ -359,7 +484,9 @@ impl AuthManager {
             let failed_attempts = self.failed_attempts.read().unwrap();
             if let Some((attempts, last_attempt)) = failed_attempts.get(username) {
                 if *attempts >= self.config.max_failed_attempts {
-                    let elapsed = SystemTime::now().duration_since(*last_attempt).unwrap_or(Duration::ZERO);
+                    let elapsed = SystemTime::now()
+                        .duration_since(*last_attempt)
+                        .unwrap_or(Duration::ZERO);
                     if elapsed < self.config.lockout_duration {
                         return Err(DriftError::Unauthorized(format!(
                             "Account locked. Try again in {} seconds",
@@ -373,13 +500,17 @@ impl AuthManager {
         // Find user
         let user_id = {
             let username_index = self.username_index.read().unwrap();
-            username_index.get(username).copied()
+            username_index
+                .get(username)
+                .copied()
                 .ok_or_else(|| DriftError::Unauthorized("Invalid credentials".to_string()))?
         };
 
         let user = {
             let users = self.users.read().unwrap();
-            users.get(&user_id).cloned()
+            users
+                .get(&user_id)
+                .cloned()
                 .ok_or_else(|| DriftError::Unauthorized("Invalid credentials".to_string()))?
         };
 
@@ -391,7 +522,9 @@ impl AuthManager {
         if !self.verify_password(password, &user.password_hash)? {
             // Record failed attempt
             let mut failed_attempts = self.failed_attempts.write().unwrap();
-            let entry = failed_attempts.entry(username.to_string()).or_insert((0, SystemTime::now()));
+            let entry = failed_attempts
+                .entry(username.to_string())
+                .or_insert((0, SystemTime::now()));
             entry.0 += 1;
             entry.1 = SystemTime::now();
 
@@ -418,7 +551,12 @@ impl AuthManager {
         Ok(session.token)
     }
 
-    pub fn create_session(&mut self, user_id: Uuid, ip_address: Option<String>, user_agent: Option<String>) -> Result<Session> {
+    pub fn create_session(
+        &mut self,
+        user_id: Uuid,
+        ip_address: Option<String>,
+        user_agent: Option<String>,
+    ) -> Result<Session> {
         // Check max sessions
         {
             let user_sessions = self.user_sessions.read().unwrap();
@@ -450,14 +588,17 @@ impl AuthManager {
         let mut user_sessions = self.user_sessions.write().unwrap();
 
         sessions.insert(token.clone(), session.clone());
-        user_sessions.entry(user_id).or_insert_with(HashSet::new).insert(token);
+        user_sessions
+            .entry(user_id)
+            .or_insert_with(HashSet::new)
+            .insert(token);
 
         Ok(session)
     }
 
     fn generate_token(&self) -> String {
-        use rand::{Rng, thread_rng};
         use rand::distributions::Alphanumeric;
+        use rand::{thread_rng, Rng};
 
         thread_rng()
             .sample_iter(&Alphanumeric)
@@ -469,7 +610,8 @@ impl AuthManager {
     pub fn validate_session(&mut self, token: &str) -> Result<Session> {
         let mut sessions = self.sessions.write().unwrap();
 
-        let session = sessions.get_mut(token)
+        let session = sessions
+            .get_mut(token)
             .ok_or_else(|| DriftError::Unauthorized("Invalid or expired session".to_string()))?;
 
         let now = SystemTime::now();
@@ -507,7 +649,8 @@ impl AuthManager {
 
     pub fn check_permission(&self, user_id: Uuid, permission: &Permission) -> Result<bool> {
         let users = self.users.read().unwrap();
-        let user = users.get(&user_id)
+        let user = users
+            .get(&user_id)
             .ok_or_else(|| DriftError::NotFound(format!("User {} not found", user_id)))?;
 
         if !user.is_active {
@@ -538,34 +681,90 @@ impl AuthManager {
         Ok(false)
     }
 
-    fn check_wildcard_permission(&self, role_permissions: &HashSet<Permission>, requested: &Permission) -> bool {
+    fn check_wildcard_permission(
+        &self,
+        role_permissions: &HashSet<Permission>,
+        requested: &Permission,
+    ) -> bool {
         for perm in role_permissions {
             match (perm, requested) {
                 // Table-level wildcards
-                (Permission::Select { database: None, table: None, columns: None },
-                 Permission::Select { .. }) => return true,
+                (
+                    Permission::Select {
+                        database: None,
+                        table: None,
+                        columns: None,
+                    },
+                    Permission::Select { .. },
+                ) => return true,
 
-                (Permission::Insert { database: None, table: None },
-                 Permission::Insert { .. }) => return true,
+                (
+                    Permission::Insert {
+                        database: None,
+                        table: None,
+                    },
+                    Permission::Insert { .. },
+                ) => return true,
 
-                (Permission::Update { database: None, table: None, columns: None },
-                 Permission::Update { .. }) => return true,
+                (
+                    Permission::Update {
+                        database: None,
+                        table: None,
+                        columns: None,
+                    },
+                    Permission::Update { .. },
+                ) => return true,
 
-                (Permission::Delete { database: None, table: None },
-                 Permission::Delete { .. }) => return true,
+                (
+                    Permission::Delete {
+                        database: None,
+                        table: None,
+                    },
+                    Permission::Delete { .. },
+                ) => return true,
 
                 // Database-specific wildcards
-                (Permission::Select { database: Some(d1), table: None, columns: None },
-                 Permission::Select { database: Some(d2), .. }) if d1 == d2 => return true,
+                (
+                    Permission::Select {
+                        database: Some(d1),
+                        table: None,
+                        columns: None,
+                    },
+                    Permission::Select {
+                        database: Some(d2), ..
+                    },
+                ) if d1 == d2 => return true,
 
-                (Permission::Insert { database: Some(d1), table: None },
-                 Permission::Insert { database: Some(d2), .. }) if d1 == d2 => return true,
+                (
+                    Permission::Insert {
+                        database: Some(d1),
+                        table: None,
+                    },
+                    Permission::Insert {
+                        database: Some(d2), ..
+                    },
+                ) if d1 == d2 => return true,
 
-                (Permission::Update { database: Some(d1), table: None, columns: None },
-                 Permission::Update { database: Some(d2), .. }) if d1 == d2 => return true,
+                (
+                    Permission::Update {
+                        database: Some(d1),
+                        table: None,
+                        columns: None,
+                    },
+                    Permission::Update {
+                        database: Some(d2), ..
+                    },
+                ) if d1 == d2 => return true,
 
-                (Permission::Delete { database: Some(d1), table: None },
-                 Permission::Delete { database: Some(d2), .. }) if d1 == d2 => return true,
+                (
+                    Permission::Delete {
+                        database: Some(d1),
+                        table: None,
+                    },
+                    Permission::Delete {
+                        database: Some(d2), ..
+                    },
+                ) if d1 == d2 => return true,
 
                 _ => {}
             }
@@ -579,12 +778,16 @@ impl AuthManager {
         {
             let roles = self.roles.read().unwrap();
             if !roles.contains_key(role_name) {
-                return Err(DriftError::NotFound(format!("Role '{}' does not exist", role_name)));
+                return Err(DriftError::NotFound(format!(
+                    "Role '{}' does not exist",
+                    role_name
+                )));
             }
         }
 
         let mut users = self.users.write().unwrap();
-        let user = users.get_mut(&user_id)
+        let user = users
+            .get_mut(&user_id)
             .ok_or_else(|| DriftError::NotFound(format!("User {} not found", user_id)))?;
 
         user.roles.insert(role_name.to_string());
@@ -594,29 +797,44 @@ impl AuthManager {
 
     pub fn revoke_role(&mut self, user_id: Uuid, role_name: &str) -> Result<()> {
         let mut users = self.users.write().unwrap();
-        let user = users.get_mut(&user_id)
+        let user = users
+            .get_mut(&user_id)
             .ok_or_else(|| DriftError::NotFound(format!("User {} not found", user_id)))?;
 
         if !user.roles.remove(role_name) {
-            return Err(DriftError::NotFound(format!("User does not have role '{}'", role_name)));
+            return Err(DriftError::NotFound(format!(
+                "User does not have role '{}'",
+                role_name
+            )));
         }
 
         Ok(())
     }
 
-    pub fn create_custom_role(&mut self, name: String, permissions: HashSet<Permission>, description: Option<String>) -> Result<()> {
+    pub fn create_custom_role(
+        &mut self,
+        name: String,
+        permissions: HashSet<Permission>,
+        description: Option<String>,
+    ) -> Result<()> {
         let mut roles = self.roles.write().unwrap();
 
         if roles.contains_key(&name) {
-            return Err(DriftError::Conflict(format!("Role '{}' already exists", name)));
+            return Err(DriftError::Conflict(format!(
+                "Role '{}' already exists",
+                name
+            )));
         }
 
-        roles.insert(name.clone(), Role {
-            name,
-            permissions,
-            description,
-            is_system: false,
-        });
+        roles.insert(
+            name.clone(),
+            Role {
+                name,
+                permissions,
+                description,
+                is_system: false,
+            },
+        );
 
         Ok(())
     }
@@ -624,11 +842,14 @@ impl AuthManager {
     pub fn delete_role(&mut self, name: &str) -> Result<()> {
         let mut roles = self.roles.write().unwrap();
 
-        let role = roles.get(name)
+        let role = roles
+            .get(name)
             .ok_or_else(|| DriftError::NotFound(format!("Role '{}' not found", name)))?;
 
         if role.is_system {
-            return Err(DriftError::Validation("Cannot delete system role".to_string()));
+            return Err(DriftError::Validation(
+                "Cannot delete system role".to_string(),
+            ));
         }
 
         // Remove role from all users
@@ -644,14 +865,22 @@ impl AuthManager {
         Ok(())
     }
 
-    pub fn change_password(&mut self, user_id: Uuid, old_password: &str, new_password: &str) -> Result<()> {
+    pub fn change_password(
+        &mut self,
+        user_id: Uuid,
+        old_password: &str,
+        new_password: &str,
+    ) -> Result<()> {
         let mut users = self.users.write().unwrap();
-        let user = users.get_mut(&user_id)
+        let user = users
+            .get_mut(&user_id)
             .ok_or_else(|| DriftError::NotFound(format!("User {} not found", user_id)))?;
 
         // Verify old password
         if !self.verify_password(old_password, &user.password_hash)? {
-            return Err(DriftError::Unauthorized("Invalid current password".to_string()));
+            return Err(DriftError::Unauthorized(
+                "Invalid current password".to_string(),
+            ));
         }
 
         // Set new password
@@ -674,7 +903,8 @@ impl AuthManager {
 
     pub fn reset_password(&mut self, user_id: Uuid, new_password: &str) -> Result<()> {
         let mut users = self.users.write().unwrap();
-        let user = users.get_mut(&user_id)
+        let user = users
+            .get_mut(&user_id)
             .ok_or_else(|| DriftError::NotFound(format!("User {} not found", user_id)))?;
 
         user.password_hash = self.hash_password(new_password)?;
@@ -716,11 +946,13 @@ impl AuthManager {
 
     pub fn get_user_by_token(&self, token: &str) -> Result<User> {
         let sessions = self.sessions.read().unwrap();
-        let session = sessions.get(token)
+        let session = sessions
+            .get(token)
             .ok_or_else(|| DriftError::Unauthorized("Invalid session".to_string()))?;
 
         let users = self.users.read().unwrap();
-        users.get(&session.user_id)
+        users
+            .get(&session.user_id)
             .cloned()
             .ok_or_else(|| DriftError::NotFound("User not found".to_string()))
     }
@@ -735,8 +967,8 @@ pub struct AuthContext {
 
 impl AuthContext {
     pub fn has_permission(&self, permission: &Permission) -> bool {
-        self.effective_permissions.contains(&Permission::SuperUser) ||
-        self.effective_permissions.contains(permission)
+        self.effective_permissions.contains(&Permission::SuperUser)
+            || self.effective_permissions.contains(permission)
     }
 
     pub fn require_permission(&self, permission: &Permission) -> Result<()> {
@@ -771,12 +1003,14 @@ mod tests {
         let config = AuthConfig::default();
         let mut auth = AuthManager::new(config);
 
-        let user_id = auth.create_user(
-            "testuser".to_string(),
-            "TestPass123!".to_string(),
-            Some("test@example.com".to_string()),
-            vec!["readonly".to_string()].into_iter().collect(),
-        ).unwrap();
+        let user_id = auth
+            .create_user(
+                "testuser".to_string(),
+                "TestPass123!".to_string(),
+                Some("test@example.com".to_string()),
+                vec!["readonly".to_string()].into_iter().collect(),
+            )
+            .unwrap();
 
         let token = auth.authenticate("testuser", "TestPass123!").unwrap();
         let session = auth.validate_session(&token).unwrap();
@@ -789,16 +1023,31 @@ mod tests {
         let config = AuthConfig::default();
         let mut auth = AuthManager::new(config);
 
-        let user_id = auth.create_user(
-            "devuser".to_string(),
-            "DevPass123!".to_string(),
-            None,
-            vec!["developer".to_string()].into_iter().collect(),
-        ).unwrap();
+        let user_id = auth
+            .create_user(
+                "devuser".to_string(),
+                "DevPass123!".to_string(),
+                None,
+                vec!["developer".to_string()].into_iter().collect(),
+            )
+            .unwrap();
 
-        assert!(auth.check_permission(user_id, &Permission::CreateTable { database: None }).unwrap());
-        assert!(auth.check_permission(user_id, &Permission::Select { database: None, table: None, columns: None }).unwrap());
-        assert!(!auth.check_permission(user_id, &Permission::CreateUser).unwrap());
+        assert!(auth
+            .check_permission(user_id, &Permission::CreateTable { database: None })
+            .unwrap());
+        assert!(auth
+            .check_permission(
+                user_id,
+                &Permission::Select {
+                    database: None,
+                    table: None,
+                    columns: None
+                }
+            )
+            .unwrap());
+        assert!(!auth
+            .check_permission(user_id, &Permission::CreateUser)
+            .unwrap());
     }
 
     #[test]
@@ -812,7 +1061,8 @@ mod tests {
             "CorrectPass123!".to_string(),
             None,
             HashSet::new(),
-        ).unwrap();
+        )
+        .unwrap();
 
         // Try wrong password multiple times
         for _ in 0..3 {

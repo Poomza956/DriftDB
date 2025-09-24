@@ -8,12 +8,12 @@
 //! - Incremental index updates
 //! - GPU acceleration support (optional)
 
-use std::collections::{BinaryHeap, HashMap, HashSet};
-use std::cmp::Ordering;
-use std::sync::Arc;
-use parking_lot::RwLock;
-use serde::{Serialize, Deserialize};
 use ordered_float::OrderedFloat;
+use parking_lot::RwLock;
+use serde::{Deserialize, Serialize};
+use std::cmp::Ordering;
+use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::sync::Arc;
 use tracing::debug;
 
 use crate::errors::{DriftError, Result};
@@ -40,17 +40,17 @@ pub enum IndexType {
     Flat,
     /// HNSW - Hierarchical Navigable Small World
     HNSW {
-        m: usize,              // Number of connections
+        m: usize,               // Number of connections
         ef_construction: usize, // Size of dynamic candidate list
-        max_m: usize,          // Maximum connections per layer
-        seed: u64,             // Random seed
+        max_m: usize,           // Maximum connections per layer
+        seed: u64,              // Random seed
     },
     /// IVF - Inverted File Index
     IVF {
-        n_lists: usize,        // Number of inverted lists
-        n_probe: usize,        // Number of lists to probe
-        use_pq: bool,          // Use Product Quantization
-        pq_bits: Option<u8>,   // Bits for PQ (if used)
+        n_lists: usize,      // Number of inverted lists
+        n_probe: usize,      // Number of lists to probe
+        use_pq: bool,        // Use Product Quantization
+        pq_bits: Option<u8>, // Bits for PQ (if used)
     },
 }
 
@@ -81,7 +81,12 @@ pub trait VectorIndex: Send + Sync {
     fn remove(&mut self, id: &str) -> Result<()>;
 
     /// Search for k nearest neighbors
-    fn search(&self, query: &Vector, k: usize, filter: Option<&MetadataFilter>) -> Result<Vec<SearchResult>>;
+    fn search(
+        &self,
+        query: &Vector,
+        k: usize,
+        filter: Option<&MetadataFilter>,
+    ) -> Result<Vec<SearchResult>>;
 
     /// Get index statistics
     fn statistics(&self) -> IndexStatistics;
@@ -93,7 +98,9 @@ pub trait VectorIndex: Send + Sync {
     fn serialize(&self) -> Result<Vec<u8>>;
 
     /// Load index from bytes
-    fn deserialize(data: &[u8]) -> Result<Self> where Self: Sized;
+    fn deserialize(data: &[u8]) -> Result<Self>
+    where
+        Self: Sized;
 }
 
 /// Metadata filter for hybrid search
@@ -105,12 +112,30 @@ pub struct MetadataFilter {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FilterCondition {
-    Equals { field: String, value: serde_json::Value },
-    NotEquals { field: String, value: serde_json::Value },
-    GreaterThan { field: String, value: serde_json::Value },
-    LessThan { field: String, value: serde_json::Value },
-    In { field: String, values: Vec<serde_json::Value> },
-    Contains { field: String, value: String },
+    Equals {
+        field: String,
+        value: serde_json::Value,
+    },
+    NotEquals {
+        field: String,
+        value: serde_json::Value,
+    },
+    GreaterThan {
+        field: String,
+        value: serde_json::Value,
+    },
+    LessThan {
+        field: String,
+        value: serde_json::Value,
+    },
+    In {
+        field: String,
+        values: Vec<serde_json::Value>,
+    },
+    Contains {
+        field: String,
+        value: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -166,10 +191,11 @@ impl FlatIndex {
 impl VectorIndex for FlatIndex {
     fn add(&mut self, entry: VectorEntry) -> Result<()> {
         if entry.vector.len() != self.dimension {
-            return Err(DriftError::Other(
-                format!("Vector dimension mismatch: expected {}, got {}",
-                    self.dimension, entry.vector.len())
-            ));
+            return Err(DriftError::Other(format!(
+                "Vector dimension mismatch: expected {}, got {}",
+                self.dimension,
+                entry.vector.len()
+            )));
         }
 
         self.entries.insert(entry.id.clone(), entry);
@@ -179,25 +205,33 @@ impl VectorIndex for FlatIndex {
     }
 
     fn remove(&mut self, id: &str) -> Result<()> {
-        self.entries.remove(id)
+        self.entries
+            .remove(id)
             .ok_or_else(|| DriftError::Other(format!("Vector '{}' not found", id)))?;
         self.stats.total_vectors = self.entries.len();
         self.stats.remove_count += 1;
         Ok(())
     }
 
-    fn search(&self, query: &Vector, k: usize, filter: Option<&MetadataFilter>) -> Result<Vec<SearchResult>> {
+    fn search(
+        &self,
+        query: &Vector,
+        k: usize,
+        filter: Option<&MetadataFilter>,
+    ) -> Result<Vec<SearchResult>> {
         if query.len() != self.dimension {
-            return Err(DriftError::Other(
-                format!("Query dimension mismatch: expected {}, got {}",
-                    self.dimension, query.len())
-            ));
+            return Err(DriftError::Other(format!(
+                "Query dimension mismatch: expected {}, got {}",
+                self.dimension,
+                query.len()
+            )));
         }
 
         let start = std::time::Instant::now();
 
         // Calculate distances for all entries
-        let mut results: Vec<(f32, &VectorEntry)> = self.entries
+        let mut results: Vec<(f32, &VectorEntry)> = self
+            .entries
             .values()
             .filter(|entry| {
                 // Apply metadata filter if provided
@@ -305,8 +339,13 @@ impl HNSWIndex {
         level
     }
 
-    fn search_layer(&self, query: &Vector, entry_points: HashSet<String>, num_closest: usize, layer: usize)
-        -> Vec<(f32, String)> {
+    fn search_layer(
+        &self,
+        query: &Vector,
+        entry_points: HashSet<String>,
+        num_closest: usize,
+        layer: usize,
+    ) -> Vec<(f32, String)> {
         let mut visited = HashSet::new();
         let mut candidates = BinaryHeap::new();
         let mut nearest = BinaryHeap::new();
@@ -329,7 +368,8 @@ impl HNSWIndex {
 
         // Search expansion
         while let Some(current) = candidates.pop() {
-            let lower_bound = nearest.peek()
+            let lower_bound = nearest
+                .peek()
                 .map(|n| n.distance)
                 .unwrap_or(OrderedFloat(f32::INFINITY));
 
@@ -345,7 +385,8 @@ impl HNSWIndex {
 
                         if let Some(entry) = self.entries.get(neighbor) {
                             let dist = self.calculate_distance(query, &entry.vector);
-                            let upper_bound = nearest.peek()
+                            let upper_bound = nearest
+                                .peek()
                                 .map(|n| n.distance)
                                 .unwrap_or(OrderedFloat(f32::INFINITY));
 
@@ -370,10 +411,8 @@ impl HNSWIndex {
         }
 
         // Convert to sorted vector
-        let mut result: Vec<(f32, String)> = nearest
-            .into_iter()
-            .map(|c| (c.distance.0, c.id))
-            .collect();
+        let mut result: Vec<(f32, String)> =
+            nearest.into_iter().map(|c| (c.distance.0, c.id)).collect();
         result.sort_by_key(|(dist, _)| OrderedFloat(*dist));
         result
     }
@@ -406,7 +445,8 @@ impl VectorIndex for HNSWIndex {
         entry_points.insert(self.entry_point.as_ref().unwrap().clone());
 
         for layer_idx in (0..=level).rev() {
-            let candidates = self.search_layer(&entry.vector, entry_points.clone(), self.m, layer_idx);
+            let candidates =
+                self.search_layer(&entry.vector, entry_points.clone(), self.m, layer_idx);
 
             // Connect to M nearest neighbors at this layer
             let m = if layer_idx == 0 { self.max_m } else { self.m };
@@ -428,13 +468,20 @@ impl VectorIndex for HNSWIndex {
                         drop(neighbors);
 
                         // Calculate distances without holding any borrow
-                        let mut neighbor_distances: Vec<_> = neighbor_ids.iter()
+                        let mut neighbor_distances: Vec<_> = neighbor_ids
+                            .iter()
                             .filter_map(|n| self.entries.get(n))
-                            .map(|n| (self.calculate_distance(&neighbor_entry.vector, &n.vector), n.id.clone()))
+                            .map(|n| {
+                                (
+                                    self.calculate_distance(&neighbor_entry.vector, &n.vector),
+                                    n.id.clone(),
+                                )
+                            })
                             .collect();
                         neighbor_distances.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
 
-                        let keep: HashSet<_> = neighbor_distances.iter()
+                        let keep: HashSet<_> = neighbor_distances
+                            .iter()
                             .take(m)
                             .map(|(_, id)| id.clone())
                             .collect();
@@ -475,7 +522,12 @@ impl VectorIndex for HNSWIndex {
         }
     }
 
-    fn search(&self, query: &Vector, k: usize, filter: Option<&MetadataFilter>) -> Result<Vec<SearchResult>> {
+    fn search(
+        &self,
+        query: &Vector,
+        k: usize,
+        filter: Option<&MetadataFilter>,
+    ) -> Result<Vec<SearchResult>> {
         // For now, ignore metadata filter - would need to be implemented
         if filter.is_some() {
             debug!("Metadata filter not yet implemented for HNSW");
@@ -494,12 +546,15 @@ impl VectorIndex for HNSWIndex {
         let top_layer = self.layers.len().saturating_sub(1);
         let results = self.search_layer(query, entry_points, k, top_layer);
 
-        Ok(results.into_iter().map(|(distance, id)| SearchResult {
-            id,
-            score: -distance,  // Convert distance to similarity score
-            vector: None,
-            metadata: HashMap::new(),
-        }).collect())
+        Ok(results
+            .into_iter()
+            .map(|(distance, id)| SearchResult {
+                id,
+                score: -distance, // Convert distance to similarity score
+                vector: None,
+                metadata: HashMap::new(),
+            })
+            .collect())
     }
 
     fn statistics(&self) -> IndexStatistics {
@@ -521,12 +576,19 @@ impl VectorIndex for HNSWIndex {
 
     fn serialize(&self) -> Result<Vec<u8>> {
         // Would need proper serialization
-        Err(DriftError::Other("HNSW serialization not yet implemented".to_string()))
+        Err(DriftError::Other(
+            "HNSW serialization not yet implemented".to_string(),
+        ))
     }
 
-    fn deserialize(_data: &[u8]) -> Result<Self> where Self: Sized {
+    fn deserialize(_data: &[u8]) -> Result<Self>
+    where
+        Self: Sized,
+    {
         // Would need proper deserialization
-        Err(DriftError::Other("HNSW deserialization not yet implemented".to_string()))
+        Err(DriftError::Other(
+            "HNSW deserialization not yet implemented".to_string(),
+        ))
     }
 }
 
@@ -583,48 +645,50 @@ fn dot_product_distance(v1: &Vector, v2: &Vector) -> f32 {
 }
 
 fn manhattan_distance(v1: &Vector, v2: &Vector) -> f32 {
-    v1.iter()
-        .zip(v2.iter())
-        .map(|(a, b)| (a - b).abs())
-        .sum()
+    v1.iter().zip(v2.iter()).map(|(a, b)| (a - b).abs()).sum()
 }
 
 fn apply_filter(metadata: &HashMap<String, serde_json::Value>, filter: &MetadataFilter) -> bool {
-    let results: Vec<bool> = filter.conditions.iter().map(|condition| {
-        match condition {
-            FilterCondition::Equals { field, value } => {
-                metadata.get(field).map_or(false, |v| v == value)
+    let results: Vec<bool> = filter
+        .conditions
+        .iter()
+        .map(|condition| {
+            match condition {
+                FilterCondition::Equals { field, value } => {
+                    metadata.get(field).map_or(false, |v| v == value)
+                }
+                FilterCondition::NotEquals { field, value } => {
+                    metadata.get(field).map_or(true, |v| v != value)
+                }
+                FilterCondition::GreaterThan { field, value } => {
+                    metadata.get(field).map_or(false, |v| {
+                        // Simple comparison for numbers
+                        if let (Some(v_num), Some(val_num)) = (v.as_f64(), value.as_f64()) {
+                            v_num > val_num
+                        } else {
+                            false
+                        }
+                    })
+                }
+                FilterCondition::LessThan { field, value } => {
+                    metadata.get(field).map_or(false, |v| {
+                        if let (Some(v_num), Some(val_num)) = (v.as_f64(), value.as_f64()) {
+                            v_num < val_num
+                        } else {
+                            false
+                        }
+                    })
+                }
+                FilterCondition::In { field, values } => {
+                    metadata.get(field).map_or(false, |v| values.contains(v))
+                }
+                FilterCondition::Contains { field, value } => metadata
+                    .get(field)
+                    .and_then(|v| v.as_str())
+                    .map_or(false, |s| s.contains(value)),
             }
-            FilterCondition::NotEquals { field, value } => {
-                metadata.get(field).map_or(true, |v| v != value)
-            }
-            FilterCondition::GreaterThan { field, value } => {
-                metadata.get(field).map_or(false, |v| {
-                    // Simple comparison for numbers
-                    if let (Some(v_num), Some(val_num)) = (v.as_f64(), value.as_f64()) {
-                        v_num > val_num
-                    } else {
-                        false
-                    }
-                })
-            }
-            FilterCondition::LessThan { field, value } => {
-                metadata.get(field).map_or(false, |v| {
-                    if let (Some(v_num), Some(val_num)) = (v.as_f64(), value.as_f64()) {
-                        v_num < val_num
-                    } else {
-                        false
-                    }
-                })
-            }
-            FilterCondition::In { field, values } => {
-                metadata.get(field).map_or(false, |v| values.contains(v))
-            }
-            FilterCondition::Contains { field, value } => {
-                metadata.get(field).and_then(|v| v.as_str()).map_or(false, |s| s.contains(value))
-            }
-        }
-    }).collect();
+        })
+        .collect();
 
     match filter.combine {
         CombineOp::And => results.iter().all(|&r| r),
@@ -667,12 +731,14 @@ impl VectorSearchManager {
     ) -> Result<()> {
         let index: Box<dyn VectorIndex> = match index_type {
             IndexType::Flat => Box::new(FlatIndex::new(dimension, metric)),
-            IndexType::HNSW { m, ef_construction, .. } => {
-                Box::new(HNSWIndex::new(dimension, metric, m, ef_construction))
-            }
+            IndexType::HNSW {
+                m, ef_construction, ..
+            } => Box::new(HNSWIndex::new(dimension, metric, m, ef_construction)),
             IndexType::IVF { .. } => {
                 // TODO: Implement IVF index
-                return Err(DriftError::Other("IVF index not yet implemented".to_string()));
+                return Err(DriftError::Other(
+                    "IVF index not yet implemented".to_string(),
+                ));
             }
         };
 
@@ -683,13 +749,10 @@ impl VectorSearchManager {
     }
 
     /// Add vector to index
-    pub fn add_vector(
-        &self,
-        index_name: &str,
-        entry: VectorEntry,
-    ) -> Result<()> {
+    pub fn add_vector(&self, index_name: &str, entry: VectorEntry) -> Result<()> {
         let mut indices = self.indices.write();
-        let index = indices.get_mut(index_name)
+        let index = indices
+            .get_mut(index_name)
             .ok_or_else(|| DriftError::Other(format!("Index '{}' not found", index_name)))?;
 
         index.add(entry)?;
@@ -707,7 +770,8 @@ impl VectorSearchManager {
         filter: Option<&MetadataFilter>,
     ) -> Result<Vec<SearchResult>> {
         let indices = self.indices.read();
-        let index = indices.get(index_name)
+        let index = indices
+            .get(index_name)
             .ok_or_else(|| DriftError::Other(format!("Index '{}' not found", index_name)))?;
 
         let results = index.search(query, k, filter)?;
@@ -718,7 +782,9 @@ impl VectorSearchManager {
 
     /// Drop an index
     pub fn drop_index(&self, name: &str) -> Result<()> {
-        self.indices.write().remove(name)
+        self.indices
+            .write()
+            .remove(name)
             .ok_or_else(|| DriftError::Other(format!("Index '{}' not found", name)))?;
         self.stats.write().total_indices -= 1;
 

@@ -6,36 +6,40 @@ use std::sync::Arc;
 use std::time::SystemTime;
 use tracing::{debug, info, warn};
 
+use crate::audit::{
+    AuditAction, AuditConfig, AuditEvent, AuditEventType, AuditSystem, RiskLevel, UserInfo,
+};
+use crate::backup_enhanced::{
+    BackupConfig, BackupResult, EnhancedBackupManager, RestoreOptions, RestoreResult,
+};
+use crate::consensus::{ConsensusConfig, ConsensusEngine};
+use crate::constraints::ConstraintManager;
+use crate::distributed_coordinator::{ClusterStatus, DistributedCoordinator};
+use crate::encryption::{EncryptionConfig, EncryptionService};
+use crate::error_recovery::{RecoveryConfig, RecoveryManager, RecoveryResult};
 use crate::errors::{DriftError, Result};
 use crate::events::Event;
+use crate::fulltext::{SearchConfig, SearchManager, SearchQuery, SearchResults};
 use crate::index::IndexManager;
+use crate::monitoring::{MonitoringConfig, MonitoringSystem, SystemMetrics};
+use crate::mvcc::IsolationLevel as MVCCIsolationLevel;
+use crate::observability::Metrics;
+use crate::procedures::{ProcedureDefinition, ProcedureManager, ProcedureResult};
 use crate::query::{Query, QueryResult};
+use crate::query_performance::{OptimizationConfig, QueryPerformanceOptimizer};
+use crate::raft::RaftNode;
+use crate::replication::{NodeRole, ReplicationConfig, ReplicationCoordinator};
 use crate::schema::{ColumnDef, Schema};
+use crate::security_monitor::{SecurityConfig, SecurityMonitor};
+use crate::sequences::SequenceManager;
 use crate::snapshot::SnapshotManager;
+use crate::stats::{DatabaseStatistics, QueryExecution, StatisticsManager, StatsConfig};
 use crate::storage::{Segment, TableStorage};
 use crate::transaction::{IsolationLevel, TransactionManager};
-use crate::constraints::ConstraintManager;
-use crate::sequences::SequenceManager;
-use crate::views::{ViewManager, ViewDefinition, ViewBuilder};
-use crate::fulltext::{SearchManager, SearchConfig, SearchQuery, SearchResults};
-use crate::triggers::{TriggerManager, TriggerDefinition};
-use crate::wal::{WalManager, WalConfig};
-use crate::procedures::{ProcedureManager, ProcedureDefinition, ProcedureResult};
-use crate::stats::{StatisticsManager, StatsConfig, DatabaseStatistics, QueryExecution};
-use crate::encryption::{EncryptionService, EncryptionConfig};
-use crate::replication::{ReplicationCoordinator, ReplicationConfig, NodeRole};
-use crate::raft::RaftNode;
-use crate::consensus::{ConsensusEngine, ConsensusConfig};
-use crate::distributed_coordinator::{DistributedCoordinator, ClusterStatus};
 use crate::transaction_coordinator::{TransactionCoordinator, TransactionStats};
-use crate::mvcc::{IsolationLevel as MVCCIsolationLevel};
-use crate::error_recovery::{RecoveryManager, RecoveryConfig, RecoveryResult};
-use crate::monitoring::{MonitoringSystem, SystemMetrics, MonitoringConfig};
-use crate::observability::Metrics;
-use crate::backup_enhanced::{EnhancedBackupManager, BackupConfig, BackupResult, RestoreResult, RestoreOptions};
-use crate::audit::{AuditSystem, AuditConfig, AuditEvent, AuditEventType, AuditAction, UserInfo, RiskLevel};
-use crate::security_monitor::{SecurityMonitor, SecurityConfig};
-use crate::query_performance::{QueryPerformanceOptimizer, OptimizationConfig};
+use crate::triggers::{TriggerDefinition, TriggerManager};
+use crate::views::{ViewBuilder, ViewDefinition, ViewManager};
+use crate::wal::{WalConfig, WalManager};
 
 /// Table statistics
 #[derive(Debug, Clone)]
@@ -90,7 +94,7 @@ impl Engine {
 
         let wal_manager = Arc::new(WalManager::new(
             base_path.clone().join("wal.log"),
-            WalConfig::default()
+            WalConfig::default(),
         )?);
 
         let metrics = Arc::new(Metrics::new());
@@ -122,10 +126,7 @@ impl Engine {
             replication_coordinator: None,
             raft_node: None,
             distributed_coordinator: None,
-            transaction_coordinator: Arc::new(TransactionCoordinator::new(
-                wal_manager,
-                None,
-            )),
+            transaction_coordinator: Arc::new(TransactionCoordinator::new(wal_manager, None)),
             recovery_manager,
             monitoring,
             backup_manager: None,
@@ -165,9 +166,11 @@ impl Engine {
         info!("Performing startup recovery check...");
         let recovery_result = engine.recovery_manager.perform_startup_recovery().await?;
         if !recovery_result.operations_performed.is_empty() {
-            info!("Recovery completed: {} operations performed in {:?}",
-                  recovery_result.operations_performed.len(),
-                  recovery_result.time_taken);
+            info!(
+                "Recovery completed: {} operations performed in {:?}",
+                recovery_result.operations_performed.len(),
+                recovery_result.time_taken
+            );
         }
 
         Ok(engine)
@@ -179,10 +182,7 @@ impl Engine {
         fs::create_dir_all(base_path.join("tables"))?;
 
         let wal_path = base_path.join("wal.log");
-        let wal_manager = Arc::new(WalManager::new(
-            wal_path,
-            WalConfig::default()
-        )?);
+        let wal_manager = Arc::new(WalManager::new(wal_path, WalConfig::default())?);
 
         let metrics = Arc::new(Metrics::new());
         let monitoring = Arc::new(MonitoringSystem::new(metrics, MonitoringConfig::default()));
@@ -213,10 +213,7 @@ impl Engine {
             replication_coordinator: None,
             raft_node: None,
             distributed_coordinator: None,
-            transaction_coordinator: Arc::new(TransactionCoordinator::new(
-                wal_manager,
-                None,
-            )),
+            transaction_coordinator: Arc::new(TransactionCoordinator::new(wal_manager, None)),
             recovery_manager,
             monitoring,
             backup_manager: None,
@@ -227,7 +224,11 @@ impl Engine {
     }
 
     fn load_table(&mut self, table_name: &str) -> Result<()> {
-        let storage = Arc::new(TableStorage::open(&self.base_path, table_name, self.encryption_service.clone())?);
+        let storage = Arc::new(TableStorage::open(
+            &self.base_path,
+            table_name,
+            self.encryption_service.clone(),
+        )?);
 
         let mut index_mgr = IndexManager::new(storage.path());
         index_mgr.load_indexes(&storage.schema().indexed_columns())?;
@@ -235,8 +236,10 @@ impl Engine {
         let snapshot_mgr = SnapshotManager::new(storage.path());
 
         self.tables.insert(table_name.to_string(), storage.clone());
-        self.indexes.insert(table_name.to_string(), Arc::new(RwLock::new(index_mgr)));
-        self.snapshots.insert(table_name.to_string(), Arc::new(snapshot_mgr));
+        self.indexes
+            .insert(table_name.to_string(), Arc::new(RwLock::new(index_mgr)));
+        self.snapshots
+            .insert(table_name.to_string(), Arc::new(snapshot_mgr));
 
         Ok(())
     }
@@ -270,9 +273,9 @@ impl Engine {
         info!("Enabling distributed consensus for node: {}", node_id);
 
         // Initialize distributed coordinator if not already present
-        let _coordinator = self.distributed_coordinator.get_or_insert_with(|| {
-            Arc::new(DistributedCoordinator::new(node_id.clone()))
-        });
+        let _coordinator = self
+            .distributed_coordinator
+            .get_or_insert_with(|| Arc::new(DistributedCoordinator::new(node_id.clone())));
 
         // Configure consensus
         let config = ConsensusConfig {
@@ -311,9 +314,9 @@ impl Engine {
 
         // Initialize distributed coordinator if not already present
         let node_id = format!("node_{}", std::process::id());
-        let _coordinator = self.distributed_coordinator.get_or_insert_with(|| {
-            Arc::new(DistributedCoordinator::new(node_id.clone()))
-        });
+        let _coordinator = self
+            .distributed_coordinator
+            .get_or_insert_with(|| Arc::new(DistributedCoordinator::new(node_id.clone())));
 
         // Configure replication (similar approach as consensus)
         let mut new_coordinator = DistributedCoordinator::new(node_id.clone());
@@ -358,16 +361,18 @@ impl Engine {
 
     /// Get cluster status
     pub fn cluster_status(&self) -> Option<ClusterStatus> {
-        self.distributed_coordinator.as_ref().map(|coordinator| {
-            coordinator.cluster_status()
-        })
+        self.distributed_coordinator
+            .as_ref()
+            .map(|coordinator| coordinator.cluster_status())
     }
 
     /// Trigger leadership election
     pub fn trigger_leadership_election(&self) -> Result<bool> {
         match &self.distributed_coordinator {
             Some(coordinator) => coordinator.trigger_election(),
-            None => Err(DriftError::Other("Distributed coordination not enabled".into())),
+            None => Err(DriftError::Other(
+                "Distributed coordination not enabled".into(),
+            )),
         }
     }
 
@@ -381,19 +386,25 @@ impl Engine {
 
     /// Get current consensus state
     pub fn consensus_state(&self) -> Option<String> {
-        self.cluster_status().map(|status| status.status_description())
+        self.cluster_status()
+            .map(|status| status.status_description())
     }
 
     /// Get replication status
     pub fn replication_status(&self) -> Option<String> {
         self.cluster_status().map(|status| {
-            format!("Role: {:?}, Peers: {}/{} healthy",
-                    status.role, status.healthy_peers, status.peer_count)
+            format!(
+                "Role: {:?}, Peers: {}/{} healthy",
+                status.role, status.healthy_peers, status.peer_count
+            )
         })
     }
 
     /// Begin a new MVCC transaction with full ACID guarantees
-    pub fn begin_mvcc_transaction(&self, isolation_level: IsolationLevel) -> Result<Arc<crate::mvcc::MVCCTransaction>> {
+    pub fn begin_mvcc_transaction(
+        &self,
+        isolation_level: IsolationLevel,
+    ) -> Result<Arc<crate::mvcc::MVCCTransaction>> {
         let mvcc_isolation = match isolation_level {
             IsolationLevel::ReadUncommitted => MVCCIsolationLevel::ReadUncommitted,
             IsolationLevel::ReadCommitted => MVCCIsolationLevel::ReadCommitted,
@@ -401,11 +412,16 @@ impl Engine {
             IsolationLevel::Serializable => MVCCIsolationLevel::Serializable,
         };
 
-        self.transaction_coordinator.begin_transaction(mvcc_isolation)
+        self.transaction_coordinator
+            .begin_transaction(mvcc_isolation)
     }
 
     /// Execute a function within an MVCC transaction with automatic commit/rollback
-    pub fn execute_mvcc_transaction<F, R>(&self, isolation_level: IsolationLevel, operation: F) -> Result<R>
+    pub fn execute_mvcc_transaction<F, R>(
+        &self,
+        isolation_level: IsolationLevel,
+        operation: F,
+    ) -> Result<R>
     where
         F: Fn(&Arc<crate::mvcc::MVCCTransaction>) -> Result<R> + Send + Sync,
         R: Send,
@@ -417,7 +433,8 @@ impl Engine {
             IsolationLevel::Serializable => MVCCIsolationLevel::Serializable,
         };
 
-        self.transaction_coordinator.execute_transaction(mvcc_isolation, operation)
+        self.transaction_coordinator
+            .execute_transaction(mvcc_isolation, operation)
     }
 
     /// Get transaction statistics
@@ -437,7 +454,10 @@ impl Engine {
         indexed_columns: Vec<String>,
     ) -> Result<()> {
         if self.tables.contains_key(name) {
-            return Err(DriftError::Other(format!("Table '{}' already exists", name)));
+            return Err(DriftError::Other(format!(
+                "Table '{}' already exists",
+                name
+            )));
         }
 
         let mut columns = vec![ColumnDef {
@@ -459,7 +479,11 @@ impl Engine {
         let schema = Schema::new(name.to_string(), primary_key.to_string(), columns);
         schema.validate()?;
 
-        let storage = Arc::new(TableStorage::create(&self.base_path, schema.clone(), self.encryption_service.clone())?);
+        let storage = Arc::new(TableStorage::create(
+            &self.base_path,
+            schema.clone(),
+            self.encryption_service.clone(),
+        )?);
 
         let mut index_mgr = IndexManager::new(storage.path());
         index_mgr.load_indexes(&schema.indexed_columns())?;
@@ -467,8 +491,10 @@ impl Engine {
         let snapshot_mgr = SnapshotManager::new(storage.path());
 
         self.tables.insert(name.to_string(), storage);
-        self.indexes.insert(name.to_string(), Arc::new(RwLock::new(index_mgr)));
-        self.snapshots.insert(name.to_string(), Arc::new(snapshot_mgr));
+        self.indexes
+            .insert(name.to_string(), Arc::new(RwLock::new(index_mgr)));
+        self.snapshots
+            .insert(name.to_string(), Arc::new(snapshot_mgr));
 
         Ok(())
     }
@@ -480,13 +506,20 @@ impl Engine {
         columns: Vec<ColumnDef>,
     ) -> Result<()> {
         if self.tables.contains_key(name) {
-            return Err(DriftError::Other(format!("Table '{}' already exists", name)));
+            return Err(DriftError::Other(format!(
+                "Table '{}' already exists",
+                name
+            )));
         }
 
         let schema = Schema::new(name.to_string(), primary_key.to_string(), columns);
         schema.validate()?;
 
-        let storage = Arc::new(TableStorage::create(&self.base_path, schema.clone(), self.encryption_service.clone())?);
+        let storage = Arc::new(TableStorage::create(
+            &self.base_path,
+            schema.clone(),
+            self.encryption_service.clone(),
+        )?);
 
         let mut index_mgr = IndexManager::new(storage.path());
         index_mgr.load_indexes(&schema.indexed_columns())?;
@@ -494,8 +527,73 @@ impl Engine {
         let snapshot_mgr = SnapshotManager::new(storage.path());
 
         self.tables.insert(name.to_string(), storage);
-        self.indexes.insert(name.to_string(), Arc::new(RwLock::new(index_mgr)));
-        self.snapshots.insert(name.to_string(), Arc::new(snapshot_mgr));
+        self.indexes
+            .insert(name.to_string(), Arc::new(RwLock::new(index_mgr)));
+        self.snapshots
+            .insert(name.to_string(), Arc::new(snapshot_mgr));
+
+        Ok(())
+    }
+
+    /// Drop a table and all its associated data
+    pub fn drop_table(&mut self, name: &str) -> Result<()> {
+        // Check if table exists
+        if !self.tables.contains_key(name) {
+            return Err(DriftError::TableNotFound(name.to_string()));
+        }
+
+        // Remove from all internal structures
+        self.tables.remove(name);
+        self.indexes.remove(name);
+        self.snapshots.remove(name);
+
+        // Delete physical files
+        let table_path = self.base_path.join(name);
+        if table_path.exists() {
+            std::fs::remove_dir_all(&table_path)?;
+        }
+
+        Ok(())
+    }
+
+    /// Create an index on a column of an existing table
+    pub fn create_index(
+        &mut self,
+        table_name: &str,
+        column_name: &str,
+        _index_name: Option<&str>,
+    ) -> Result<()> {
+        // Check if table exists
+        let storage = self
+            .tables
+            .get(table_name)
+            .ok_or_else(|| DriftError::TableNotFound(table_name.to_string()))?
+            .clone();
+
+        // Get the index manager for this table
+        let index_mgr = self
+            .indexes
+            .get(table_name)
+            .ok_or_else(|| DriftError::TableNotFound(table_name.to_string()))?;
+
+        let mut index_mgr = index_mgr.write();
+
+        // Check if index already exists
+        if index_mgr.get_index(column_name).is_some() {
+            return Err(DriftError::Other(format!(
+                "Index already exists on column '{}'",
+                column_name
+            )));
+        }
+
+        // Get current table state to build the index
+        let state = storage.reconstruct_state_at(None)?;
+
+        // Build the index from existing data
+        index_mgr.build_index_from_data(column_name, &state)?;
+
+        // Update the table schema to include this indexed column
+        // Note: This is simplified - in a full implementation we'd update the schema metadata
 
         Ok(())
     }
@@ -550,10 +648,13 @@ impl Engine {
 
         let snapshots = snapshot_mgr.list_snapshots()?;
         if snapshots.is_empty() {
-            return Err(DriftError::Other("No snapshots available for compaction".into()));
+            return Err(DriftError::Other(
+                "No snapshots available for compaction".into(),
+            ));
         }
 
-        let latest_snapshot_seq = *snapshots.last()
+        let latest_snapshot_seq = *snapshots
+            .last()
             .ok_or_else(|| DriftError::Other("Snapshots list unexpectedly empty".into()))?;
         let latest_snapshot = snapshot_mgr
             .find_latest_before(u64::MAX)?
@@ -586,7 +687,9 @@ impl Engine {
         let mut segment_files: Vec<_> = fs::read_dir(&segments_dir)?
             .filter_map(|entry| entry.ok())
             .filter(|entry| {
-                entry.path().extension()
+                entry
+                    .path()
+                    .extension()
                     .and_then(|s| s.to_str())
                     .map(|s| s == "seg" && !entry.path().to_string_lossy().contains("compacted"))
                     .unwrap_or(false)
@@ -631,7 +734,9 @@ impl Engine {
             let mut segment_files: Vec<_> = fs::read_dir(&segments_dir)?
                 .filter_map(|entry| entry.ok())
                 .filter(|entry| {
-                    entry.path().extension()
+                    entry
+                        .path()
+                        .extension()
                         .and_then(|s| s.to_str())
                         .map(|s| s == "seg")
                         .unwrap_or(false)
@@ -687,7 +792,12 @@ impl Engine {
         self.transaction_manager.write().add_write(txn_id, event)
     }
 
-    pub fn read_in_transaction(&self, txn_id: u64, table: &str, key: &str) -> Result<Option<serde_json::Value>> {
+    pub fn read_in_transaction(
+        &self,
+        txn_id: u64,
+        table: &str,
+        key: &str,
+    ) -> Result<Option<serde_json::Value>> {
         // First check transaction's write set
         let txn_mgr = self.transaction_manager.read();
         let active_txns = txn_mgr.active_transactions.read();
@@ -703,11 +813,16 @@ impl Engine {
             let _snapshot_version = txn_guard.snapshot_version;
             drop(txn_guard);
         } else {
-            return Err(DriftError::Other(format!("Transaction {} not found", txn_id)));
+            return Err(DriftError::Other(format!(
+                "Transaction {} not found",
+                txn_id
+            )));
         }
 
         // Read from storage at snapshot version
-        let storage = self.tables.get(table)
+        let storage = self
+            .tables
+            .get(table)
             .ok_or_else(|| DriftError::TableNotFound(table.to_string()))?;
 
         // Get state at snapshot version (simplified - in production would use snapshot version)
@@ -718,8 +833,15 @@ impl Engine {
 
     pub fn query(&self, query: &Query) -> Result<QueryResult> {
         match query {
-            Query::Select { table, conditions, as_of, .. } => {
-                let storage = self.tables.get(table)
+            Query::Select {
+                table,
+                conditions,
+                as_of,
+                ..
+            } => {
+                let storage = self
+                    .tables
+                    .get(table)
                     .ok_or_else(|| DriftError::TableNotFound(table.clone()))?;
 
                 // Determine the target sequence number based on as_of clause
@@ -759,7 +881,9 @@ impl Engine {
 
                 Ok(QueryResult::Rows { data: results })
             }
-            _ => Ok(QueryResult::Error { message: "Query type not supported in this method".to_string() })
+            _ => Ok(QueryResult::Error {
+                message: "Query type not supported in this method".to_string(),
+            }),
         }
     }
 
@@ -770,7 +894,9 @@ impl Engine {
 
     /// Get storage size information for a table
     pub fn get_table_size(&self, table_name: &str) -> Result<u64> {
-        let storage = self.tables.get(table_name)
+        let storage = self
+            .tables
+            .get(table_name)
             .ok_or_else(|| DriftError::TableNotFound(table_name.to_string()))?;
 
         storage.calculate_size_bytes()
@@ -778,7 +904,9 @@ impl Engine {
 
     /// Get storage breakdown for a table by component
     pub fn get_table_storage_breakdown(&self, table_name: &str) -> Result<HashMap<String, u64>> {
-        let storage = self.tables.get(table_name)
+        let storage = self
+            .tables
+            .get(table_name)
             .ok_or_else(|| DriftError::TableNotFound(table_name.to_string()))?;
 
         storage.get_storage_breakdown()
@@ -786,7 +914,9 @@ impl Engine {
 
     /// Get table statistics including row count and size
     pub fn get_table_stats(&self, table_name: &str) -> Result<TableStats> {
-        let storage = self.tables.get(table_name)
+        let storage = self
+            .tables
+            .get(table_name)
             .ok_or_else(|| DriftError::TableNotFound(table_name.to_string()))?;
 
         let row_count = storage.count_records()?;
@@ -844,7 +974,8 @@ impl Engine {
         as_of: Option<crate::query::AsOf>,
         limit: Option<usize>,
     ) -> Result<Vec<serde_json::Value>> {
-        self.view_manager.query_view(view_name, conditions, as_of, limit)
+        self.view_manager
+            .query_view(view_name, conditions, as_of, limit)
     }
 
     /// List all views
@@ -870,7 +1001,8 @@ impl Engine {
         column: String,
         config: SearchConfig,
     ) -> Result<()> {
-        self.search_manager.create_index(name, table, column, config)
+        self.search_manager
+            .create_index(name, table, column, config)
     }
 
     /// Drop a search index
@@ -879,8 +1011,14 @@ impl Engine {
     }
 
     /// Index a document for full-text search
-    pub fn index_document(&self, index_name: &str, document_id: String, content: String) -> Result<()> {
-        self.search_manager.index_document(index_name, document_id, content)
+    pub fn index_document(
+        &self,
+        index_name: &str,
+        document_id: String,
+        content: String,
+    ) -> Result<()> {
+        self.search_manager
+            .index_document(index_name, document_id, content)
     }
 
     /// Perform a full-text search
@@ -916,7 +1054,8 @@ impl Engine {
 
     /// Enable or disable a trigger
     pub fn set_trigger_enabled(&self, trigger_name: &str, enabled: bool) -> Result<()> {
-        self.trigger_manager.set_trigger_enabled(trigger_name, enabled)
+        self.trigger_manager
+            .set_trigger_enabled(trigger_name, enabled)
     }
 
     /// List all triggers
@@ -948,7 +1087,7 @@ impl Engine {
             event,
             old_row,
             new_row,
-            transaction_id: None,  // Could get from transaction_manager if needed
+            transaction_id: None, // Could get from transaction_manager if needed
             user: "system".to_string(),
             timestamp: std::time::SystemTime::now(),
             metadata: std::collections::HashMap::new(),
@@ -991,8 +1130,13 @@ impl Engine {
     }
 
     /// Collect statistics for a table
-    pub fn collect_table_stats(&self, table_name: &str) -> Result<crate::optimizer::TableStatistics> {
-        let storage = self.tables.get(table_name)
+    pub fn collect_table_stats(
+        &self,
+        table_name: &str,
+    ) -> Result<crate::optimizer::TableStatistics> {
+        let storage = self
+            .tables
+            .get(table_name)
             .ok_or_else(|| DriftError::TableNotFound(table_name.to_string()))?;
 
         // Get current state of the table
@@ -1046,10 +1190,17 @@ impl Engine {
     }
 
     /// Collect real statistics for a table
-    pub fn collect_table_statistics(&self, table_name: &str) -> Result<crate::optimizer::TableStatistics> {
-        use crate::optimizer::{TableStatistics, ColumnStatistics, IndexStatistics, Histogram, HistogramBucket};
+    pub fn collect_table_statistics(
+        &self,
+        table_name: &str,
+    ) -> Result<crate::optimizer::TableStatistics> {
+        use crate::optimizer::{
+            ColumnStatistics, Histogram, HistogramBucket, IndexStatistics, TableStatistics,
+        };
 
-        let storage = self.tables.get(table_name)
+        let storage = self
+            .tables
+            .get(table_name)
             .ok_or_else(|| DriftError::TableNotFound(table_name.to_string()))?;
 
         // Get current state to analyze
@@ -1057,10 +1208,12 @@ impl Engine {
         let row_count = current_state.len();
 
         // Calculate average row size
-        let total_size: usize = current_state.values()
-            .map(|v| v.to_string().len())
-            .sum();
-        let avg_row_size = if row_count > 0 { total_size / row_count } else { 0 };
+        let total_size: usize = current_state.values().map(|v| v.to_string().len()).sum();
+        let avg_row_size = if row_count > 0 {
+            total_size / row_count
+        } else {
+            0
+        };
 
         // Get actual storage size
         let total_size_bytes = storage.calculate_size_bytes()?;
@@ -1092,7 +1245,8 @@ impl Engine {
 
             // Find min/max values
             let (min_value, max_value) = if !values.is_empty() {
-                let sorted: Vec<String> = values.iter()
+                let sorted: Vec<String> = values
+                    .iter()
                     .filter_map(|v| {
                         v.as_str()
                             .map(String::from)
@@ -1144,14 +1298,17 @@ impl Engine {
                 None
             };
 
-            column_stats.insert(column.name.clone(), ColumnStatistics {
-                column_name: column.name.clone(),
-                distinct_values: distinct_count,
-                null_count,
-                min_value,
-                max_value,
-                histogram,
-            });
+            column_stats.insert(
+                column.name.clone(),
+                ColumnStatistics {
+                    column_name: column.name.clone(),
+                    distinct_values: distinct_count,
+                    null_count,
+                    min_value,
+                    max_value,
+                    histogram,
+                },
+            );
         }
 
         // Collect index statistics
@@ -1164,12 +1321,15 @@ impl Engine {
                     // Count unique keys in the index
                     let unique_keys = index.len();
 
-                    index_stats.insert(index_name.clone(), IndexStatistics {
-                        index_name: index_name.clone(),
-                        unique_keys,
-                        depth: 3, // B-tree typical depth
-                        size_bytes: unique_keys as u64 * 64, // Estimate
-                    });
+                    index_stats.insert(
+                        index_name.clone(),
+                        IndexStatistics {
+                            index_name: index_name.clone(),
+                            unique_keys,
+                            depth: 3,                            // B-tree typical depth
+                            size_bytes: unique_keys as u64 * 64, // Estimate
+                        },
+                    );
                 }
             }
         }
@@ -1201,7 +1361,9 @@ impl Engine {
 
     /// Get all data from a table (for SQL SELECT support)
     pub fn get_table_data(&self, table_name: &str) -> Result<Vec<serde_json::Value>> {
-        let storage = self.tables.get(table_name)
+        let storage = self
+            .tables
+            .get(table_name)
             .ok_or_else(|| DriftError::TableNotFound(table_name.to_string()))?;
 
         // Get the current state of the table (None means latest)
@@ -1226,8 +1388,15 @@ impl Engine {
     }
 
     /// Look up rows using an index
-    pub fn lookup_by_index(&self, table_name: &str, column: &str, value: &serde_json::Value) -> Result<Vec<String>> {
-        let index_mgr = self.indexes.get(table_name)
+    pub fn lookup_by_index(
+        &self,
+        table_name: &str,
+        column: &str,
+        value: &serde_json::Value,
+    ) -> Result<Vec<String>> {
+        let index_mgr = self
+            .indexes
+            .get(table_name)
             .ok_or_else(|| DriftError::Other(format!("No indexes for table: {}", table_name)))?;
 
         let mgr_guard = index_mgr.read();
@@ -1251,8 +1420,14 @@ impl Engine {
     }
 
     /// Get a single row by primary key
-    pub fn get_row(&self, table_name: &str, primary_key: &str) -> Result<Option<serde_json::Value>> {
-        let storage = self.tables.get(table_name)
+    pub fn get_row(
+        &self,
+        table_name: &str,
+        primary_key: &str,
+    ) -> Result<Option<serde_json::Value>> {
+        let storage = self
+            .tables
+            .get(table_name)
             .ok_or_else(|| DriftError::TableNotFound(table_name.to_string()))?;
 
         let state = storage.reconstruct_state_at(None)?;
@@ -1261,7 +1436,9 @@ impl Engine {
 
     /// Insert a record into a table (for SQL INSERT support)
     pub fn insert_record(&mut self, table_name: &str, mut record: serde_json::Value) -> Result<()> {
-        let storage = self.tables.get(table_name)
+        let storage = self
+            .tables
+            .get(table_name)
             .ok_or_else(|| DriftError::TableNotFound(table_name.to_string()))?
             .clone();
 
@@ -1271,7 +1448,8 @@ impl Engine {
         // Validate constraints and apply defaults
         {
             let constraint_mgr = self.constraint_manager.write();
-            constraint_mgr.validate_insert(schema, &mut record, self)
+            constraint_mgr
+                .validate_insert(schema, &mut record, self)
                 .map_err(|e| DriftError::Other(format!("Constraint violation: {}", e)))?;
         }
 
@@ -1281,7 +1459,10 @@ impl Engine {
                 // If column is missing or null, check if it has auto-increment
                 if obj.get(&column.name).map_or(true, |v| v.is_null()) {
                     // Try to get auto-increment value
-                    if let Ok(next_val) = self.sequence_manager.next_auto_increment(table_name, &column.name) {
+                    if let Ok(next_val) = self
+                        .sequence_manager
+                        .next_auto_increment(table_name, &column.name)
+                    {
                         obj.insert(column.name.clone(), serde_json::json!(next_val));
                     }
                 }
@@ -1290,8 +1471,11 @@ impl Engine {
 
         // Extract primary key from record
         let primary_key_field = &storage.schema().primary_key;
-        let primary_key = record.get(primary_key_field)
-            .ok_or_else(|| DriftError::Other(format!("Missing primary key field: {}", primary_key_field)))?
+        let primary_key = record
+            .get(primary_key_field)
+            .ok_or_else(|| {
+                DriftError::Other(format!("Missing primary key field: {}", primary_key_field))
+            })?
             .clone();
 
         let event = Event::new_insert(table_name.to_string(), primary_key, record);
@@ -1301,8 +1485,15 @@ impl Engine {
     }
 
     /// Update a record in a table (for SQL UPDATE support)
-    pub fn update_record(&mut self, table_name: &str, primary_key: serde_json::Value, record: serde_json::Value) -> Result<()> {
-        let _storage = self.tables.get(table_name)
+    pub fn update_record(
+        &mut self,
+        table_name: &str,
+        primary_key: serde_json::Value,
+        record: serde_json::Value,
+    ) -> Result<()> {
+        let _storage = self
+            .tables
+            .get(table_name)
             .ok_or_else(|| DriftError::TableNotFound(table_name.to_string()))?
             .clone();
 
@@ -1314,8 +1505,14 @@ impl Engine {
     }
 
     /// Delete a record from a table (for SQL DELETE support)
-    pub fn delete_record(&mut self, table_name: &str, primary_key: serde_json::Value) -> Result<()> {
-        let _storage = self.tables.get(table_name)
+    pub fn delete_record(
+        &mut self,
+        table_name: &str,
+        primary_key: serde_json::Value,
+    ) -> Result<()> {
+        let _storage = self
+            .tables
+            .get(table_name)
             .ok_or_else(|| DriftError::TableNotFound(table_name.to_string()))?
             .clone();
 
@@ -1336,7 +1533,9 @@ impl Engine {
         default_value: Option<serde_json::Value>,
     ) -> Result<()> {
         // Get the table storage
-        let storage = self.tables.get(table)
+        let storage = self
+            .tables
+            .get(table)
             .ok_or_else(|| DriftError::TableNotFound(table.to_string()))?
             .clone();
 
@@ -1348,7 +1547,10 @@ impl Engine {
 
         // Check if column already exists
         if schema.columns.iter().any(|c| c.name == column.name) {
-            return Err(DriftError::Other(format!("Column {} already exists", column.name)));
+            return Err(DriftError::Other(format!(
+                "Column {} already exists",
+                column.name
+            )));
         }
 
         // Add the new column to schema
@@ -1375,7 +1577,7 @@ impl Engine {
                     primary_key,
                     serde_json::json!({
                         &column.name: default.clone()
-                    })
+                    }),
                 );
 
                 // Use the engine's apply_event method to ensure proper handling
@@ -1408,8 +1610,15 @@ impl Engine {
     }
 
     /// Apply a schema migration to rename a column
-    pub fn migrate_rename_column(&mut self, table: &str, old_name: &str, new_name: &str) -> Result<()> {
-        let storage = self.tables.get(table)
+    pub fn migrate_rename_column(
+        &mut self,
+        table: &str,
+        old_name: &str,
+        new_name: &str,
+    ) -> Result<()> {
+        let storage = self
+            .tables
+            .get(table)
             .ok_or_else(|| DriftError::TableNotFound(table.to_string()))?
             .clone();
 
@@ -1453,7 +1662,7 @@ impl Engine {
                 let patch_event = crate::events::Event::new_patch(
                     table.to_string(),
                     primary_key,
-                    serde_json::Value::Object(patch)
+                    serde_json::Value::Object(patch),
                 );
 
                 self.apply_event(patch_event)?;
@@ -1464,8 +1673,14 @@ impl Engine {
     }
 
     /// Get table data at a specific sequence number (time travel)
-    pub fn get_table_data_at(&self, table_name: &str, sequence: u64) -> Result<Vec<serde_json::Value>> {
-        let storage = self.tables.get(table_name)
+    pub fn get_table_data_at(
+        &self,
+        table_name: &str,
+        sequence: u64,
+    ) -> Result<Vec<serde_json::Value>> {
+        let storage = self
+            .tables
+            .get(table_name)
             .ok_or_else(|| DriftError::TableNotFound(table_name.to_string()))?;
 
         // Get the state at the specified sequence
@@ -1517,16 +1732,21 @@ impl Engine {
 
         if closest_sequence == 0 {
             // No events found before this timestamp
-            return Err(DriftError::InvalidQuery(
-                format!("No data found before timestamp {}", timestamp)
-            ));
+            return Err(DriftError::InvalidQuery(format!(
+                "No data found before timestamp {}",
+                timestamp
+            )));
         }
 
         Ok(closest_sequence)
     }
 
     /// Get table data at a specific timestamp (time travel)
-    pub fn get_table_data_at_timestamp(&self, table_name: &str, timestamp: time::OffsetDateTime) -> Result<Vec<serde_json::Value>> {
+    pub fn get_table_data_at_timestamp(
+        &self,
+        table_name: &str,
+        timestamp: time::OffsetDateTime,
+    ) -> Result<Vec<serde_json::Value>> {
         // Find the sequence number for this timestamp
         let sequence = self.find_sequence_for_timestamp(timestamp)?;
 
@@ -1594,7 +1814,8 @@ impl Engine {
 
     /// Handle panic recovery for a specific thread
     pub fn handle_panic(&self, thread_id: &str, panic_info: &str) -> Result<()> {
-        self.recovery_manager.handle_panic_recovery(thread_id, panic_info)
+        self.recovery_manager
+            .handle_panic_recovery(thread_id, panic_info)
     }
 
     /// Mark clean shutdown for crash detection
@@ -1655,32 +1876,53 @@ impl Engine {
     }
 
     /// Create a full backup
-    pub async fn create_full_backup(&self, tags: Option<std::collections::HashMap<String, String>>) -> Result<BackupResult> {
-        let backup_manager = self.backup_manager.as_ref()
+    pub async fn create_full_backup(
+        &self,
+        tags: Option<std::collections::HashMap<String, String>>,
+    ) -> Result<BackupResult> {
+        let backup_manager = self
+            .backup_manager
+            .as_ref()
             .ok_or_else(|| DriftError::Other("Backup system not enabled".to_string()))?;
 
         backup_manager.write().create_full_backup(tags).await
     }
 
     /// Create an incremental backup
-    pub async fn create_incremental_backup(&self, tags: Option<std::collections::HashMap<String, String>>) -> Result<BackupResult> {
-        let backup_manager = self.backup_manager.as_ref()
+    pub async fn create_incremental_backup(
+        &self,
+        tags: Option<std::collections::HashMap<String, String>>,
+    ) -> Result<BackupResult> {
+        let backup_manager = self
+            .backup_manager
+            .as_ref()
             .ok_or_else(|| DriftError::Other("Backup system not enabled".to_string()))?;
 
         backup_manager.write().create_incremental_backup(tags).await
     }
 
     /// Restore from backup
-    pub async fn restore_from_backup(&self, backup_id: &str, options: RestoreOptions) -> Result<RestoreResult> {
-        let backup_manager = self.backup_manager.as_ref()
+    pub async fn restore_from_backup(
+        &self,
+        backup_id: &str,
+        options: RestoreOptions,
+    ) -> Result<RestoreResult> {
+        let backup_manager = self
+            .backup_manager
+            .as_ref()
             .ok_or_else(|| DriftError::Other("Backup system not enabled".to_string()))?;
 
-        backup_manager.write().restore_backup(backup_id, options).await
+        backup_manager
+            .write()
+            .restore_backup(backup_id, options)
+            .await
     }
 
     /// List all available backups
     pub fn list_backups(&self) -> Result<Vec<crate::backup_enhanced::BackupMetadata>> {
-        let backup_manager = self.backup_manager.as_ref()
+        let backup_manager = self
+            .backup_manager
+            .as_ref()
             .ok_or_else(|| DriftError::Other("Backup system not enabled".to_string()))?;
 
         let backup_manager_read = backup_manager.read();
@@ -1690,7 +1932,9 @@ impl Engine {
 
     /// Delete a backup
     pub async fn delete_backup(&self, backup_id: &str) -> Result<()> {
-        let backup_manager = self.backup_manager.as_ref()
+        let backup_manager = self
+            .backup_manager
+            .as_ref()
             .ok_or_else(|| DriftError::Other("Backup system not enabled".to_string()))?;
 
         backup_manager.write().delete_backup(backup_id).await
@@ -1698,7 +1942,9 @@ impl Engine {
 
     /// Apply retention policy to clean up old backups
     pub async fn apply_backup_retention(&self) -> Result<Vec<String>> {
-        let backup_manager = self.backup_manager.as_ref()
+        let backup_manager = self
+            .backup_manager
+            .as_ref()
             .ok_or_else(|| DriftError::Other("Backup system not enabled".to_string()))?;
 
         backup_manager.write().apply_retention_policy().await
@@ -1706,14 +1952,17 @@ impl Engine {
 
     /// Verify backup integrity
     pub async fn verify_backup(&self, backup_id: &str) -> Result<bool> {
-        let backup_manager = self.backup_manager.as_ref()
+        let backup_manager = self
+            .backup_manager
+            .as_ref()
             .ok_or_else(|| DriftError::Other("Backup system not enabled".to_string()))?;
 
         // Find backup metadata
         let backup_path = {
             let manager = backup_manager.read();
             let backups = manager.list_backups();
-            let _backup_metadata = backups.iter()
+            let _backup_metadata = backups
+                .iter()
                 .find(|b| b.backup_id == backup_id)
                 .ok_or_else(|| DriftError::Other(format!("Backup not found: {}", backup_id)))?;
 
@@ -1731,7 +1980,9 @@ impl Engine {
 
     /// Get backup system statistics
     pub fn backup_stats(&self) -> Result<BackupStats> {
-        let backup_manager = self.backup_manager.as_ref()
+        let backup_manager = self
+            .backup_manager
+            .as_ref()
             .ok_or_else(|| DriftError::Other("Backup system not enabled".to_string()))?;
 
         let backup_manager_read = backup_manager.read();
@@ -1741,11 +1992,28 @@ impl Engine {
         let total_size: u64 = backups.iter().map(|b| b.total_size_bytes).sum();
         let compressed_size: u64 = backups.iter().map(|b| b.compressed_size_bytes).sum();
 
-        let full_backups = backups.iter().filter(|b| matches!(b.backup_type, crate::backup_enhanced::BackupType::Full)).count();
-        let incremental_backups = backups.iter().filter(|b| matches!(b.backup_type, crate::backup_enhanced::BackupType::Incremental)).count();
+        let full_backups = backups
+            .iter()
+            .filter(|b| matches!(b.backup_type, crate::backup_enhanced::BackupType::Full))
+            .count();
+        let incremental_backups = backups
+            .iter()
+            .filter(|b| {
+                matches!(
+                    b.backup_type,
+                    crate::backup_enhanced::BackupType::Incremental
+                )
+            })
+            .count();
 
-        let oldest_backup = backups.iter().min_by_key(|b| b.timestamp).map(|b| b.timestamp);
-        let newest_backup = backups.iter().max_by_key(|b| b.timestamp).map(|b| b.timestamp);
+        let oldest_backup = backups
+            .iter()
+            .min_by_key(|b| b.timestamp)
+            .map(|b| b.timestamp);
+        let newest_backup = backups
+            .iter()
+            .max_by_key(|b| b.timestamp)
+            .map(|b| b.timestamp);
 
         Ok(BackupStats {
             total_backups,
@@ -1753,7 +2021,11 @@ impl Engine {
             incremental_backups,
             total_size_bytes: total_size,
             compressed_size_bytes: compressed_size,
-            compression_ratio: if total_size > 0 { compressed_size as f64 / total_size as f64 } else { 0.0 },
+            compression_ratio: if total_size > 0 {
+                compressed_size as f64 / total_size as f64
+            } else {
+                0.0
+            },
             oldest_backup,
             newest_backup,
         })
@@ -1909,7 +2181,11 @@ impl Engine {
     }
 
     /// Export audit logs
-    pub fn export_audit_logs(&self, format: crate::audit::ExportFormat, output: &Path) -> Result<()> {
+    pub fn export_audit_logs(
+        &self,
+        format: crate::audit::ExportFormat,
+        output: &Path,
+    ) -> Result<()> {
         if let Some(ref audit) = self.audit_system {
             audit.export_logs(format, output)
         } else {
@@ -1927,7 +2203,10 @@ impl Engine {
     }
 
     /// Register a custom audit processor
-    pub fn register_audit_processor(&self, processor: Box<dyn crate::audit::AuditProcessor>) -> Result<()> {
+    pub fn register_audit_processor(
+        &self,
+        processor: Box<dyn crate::audit::AuditProcessor>,
+    ) -> Result<()> {
         if let Some(ref audit) = self.audit_system {
             audit.register_processor(processor);
             Ok(())
@@ -2002,7 +2281,9 @@ impl Engine {
 
     /// Get security statistics
     pub fn security_stats(&self) -> Option<crate::security_monitor::SecurityStats> {
-        self.security_monitor.as_ref().map(|monitor| monitor.get_stats())
+        self.security_monitor
+            .as_ref()
+            .map(|monitor| monitor.get_stats())
     }
 
     /// Get active security threats
@@ -2035,7 +2316,7 @@ impl Engine {
     /// Get compliance violations
     pub fn get_compliance_violations(
         &self,
-        framework: Option<crate::security_monitor::ComplianceFramework>
+        framework: Option<crate::security_monitor::ComplianceFramework>,
     ) -> Vec<crate::security_monitor::ComplianceViolation> {
         if let Some(ref monitor) = self.security_monitor {
             monitor.get_compliance_violations(framework)
@@ -2049,16 +2330,25 @@ impl Engine {
         if let Some(ref monitor) = self.security_monitor {
             monitor.acknowledge_alert(alert_id, user)
         } else {
-            Err(DriftError::Other("Security monitoring not enabled".to_string()))
+            Err(DriftError::Other(
+                "Security monitoring not enabled".to_string(),
+            ))
         }
     }
 
     /// Resolve a security alert
-    pub fn resolve_security_alert(&self, alert_id: uuid::Uuid, user: &str, resolution_notes: &str) -> Result<()> {
+    pub fn resolve_security_alert(
+        &self,
+        alert_id: uuid::Uuid,
+        user: &str,
+        resolution_notes: &str,
+    ) -> Result<()> {
         if let Some(ref monitor) = self.security_monitor {
             monitor.resolve_alert(alert_id, user, resolution_notes)
         } else {
-            Err(DriftError::Other("Security monitoring not enabled".to_string()))
+            Err(DriftError::Other(
+                "Security monitoring not enabled".to_string(),
+            ))
         }
     }
 
@@ -2125,7 +2415,10 @@ impl Engine {
 
     /// Enable query performance optimization
     pub fn enable_query_optimization(&mut self, config: OptimizationConfig) -> Result<()> {
-        info!("Enabling query performance optimization with config: {:?}", config);
+        info!(
+            "Enabling query performance optimization with config: {:?}",
+            config
+        );
 
         let optimizer = QueryPerformanceOptimizer::new(config)?;
         self.query_performance = Some(Arc::new(optimizer));

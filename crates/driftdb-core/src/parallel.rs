@@ -8,8 +8,8 @@
 //! - Result aggregation
 //! - Adaptive parallelism based on data size
 
-use std::sync::Arc;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use parking_lot::RwLock;
 use rayon::prelude::*;
@@ -21,8 +21,8 @@ use crate::query::WhereCondition;
 
 /// Helper function to compare JSON values
 fn compare_json_values(a: &Value, b: &Value) -> std::cmp::Ordering {
-    use std::cmp::Ordering;
     use serde_json::Value as V;
+    use std::cmp::Ordering;
 
     match (a, b) {
         (V::Null, V::Null) => Ordering::Equal,
@@ -35,7 +35,7 @@ fn compare_json_values(a: &Value, b: &Value) -> std::cmp::Ordering {
                 (Some(a), Some(b)) => a.partial_cmp(&b).unwrap_or(Ordering::Equal),
                 _ => Ordering::Equal,
             }
-        },
+        }
         (V::String(a), V::String(b)) => a.cmp(b),
         (V::Array(a), V::Array(b)) => a.len().cmp(&b.len()),
         (V::Object(a), V::Object(b)) => a.len().cmp(&b.len()),
@@ -250,28 +250,26 @@ impl ParallelExecutor {
     }
 
     /// Group data by a column value (parallel)
-    fn parallel_group_by(&self, data: Vec<Value>, group_key: &str) -> Result<Vec<(String, Vec<Value>)>> {
+    fn parallel_group_by(
+        &self,
+        data: Vec<Value>,
+        group_key: &str,
+    ) -> Result<Vec<(String, Vec<Value>)>> {
         let groups: HashMap<String, Vec<Value>> = self.thread_pool.install(|| {
             data.into_par_iter()
-                .fold(
-                    HashMap::new,
-                    |mut acc, row| {
-                        if let Some(key_value) = row.get(group_key) {
-                            let key = key_value.to_string();
-                            acc.entry(key).or_insert_with(Vec::new).push(row);
-                        }
-                        acc
-                    },
-                )
-                .reduce(
-                    HashMap::new,
-                    |mut acc, map| {
-                        for (key, mut values) in map {
-                            acc.entry(key).or_insert_with(Vec::new).append(&mut values);
-                        }
-                        acc
-                    },
-                )
+                .fold(HashMap::new, |mut acc, row| {
+                    if let Some(key_value) = row.get(group_key) {
+                        let key = key_value.to_string();
+                        acc.entry(key).or_insert_with(Vec::new).push(row);
+                    }
+                    acc
+                })
+                .reduce(HashMap::new, |mut acc, map| {
+                    for (key, mut values) in map {
+                        acc.entry(key).or_insert_with(Vec::new).append(&mut values);
+                    }
+                    acc
+                })
         });
 
         Ok(groups.into_iter().collect())
@@ -317,20 +315,18 @@ impl ParallelExecutor {
                     serde_json::json!(avg)
                 }
             }
-            AggregateType::Min => {
-                data.iter()
-                    .filter_map(|row| row.get(&func.column))
-                    .min_by(|a, b| compare_json_values(a, b))
-                    .cloned()
-                    .unwrap_or(Value::Null)
-            }
-            AggregateType::Max => {
-                data.iter()
-                    .filter_map(|row| row.get(&func.column))
-                    .max_by(|a, b| compare_json_values(a, b))
-                    .cloned()
-                    .unwrap_or(Value::Null)
-            }
+            AggregateType::Min => data
+                .iter()
+                .filter_map(|row| row.get(&func.column))
+                .min_by(|a, b| compare_json_values(a, b))
+                .cloned()
+                .unwrap_or(Value::Null),
+            AggregateType::Max => data
+                .iter()
+                .filter_map(|row| row.get(&func.column))
+                .max_by(|a, b| compare_json_values(a, b))
+                .cloned()
+                .unwrap_or(Value::Null),
         }
     }
 
@@ -343,44 +339,41 @@ impl ParallelExecutor {
         left_key: &str,
         right_key: &str,
     ) -> Result<Vec<Value>> {
-        if !self.config.parallel_joins ||
-           left_data.len() < self.config.min_rows_for_parallel {
+        if !self.config.parallel_joins || left_data.len() < self.config.min_rows_for_parallel {
             return self.sequential_join(left_data, right_data, join_type, left_key, right_key);
         }
 
-        debug!("Executing parallel join: {} x {} rows", left_data.len(), right_data.len());
+        debug!(
+            "Executing parallel join: {} x {} rows",
+            left_data.len(),
+            right_data.len()
+        );
 
         // Build hash index on the smaller dataset
-        let (build_data, probe_data, build_key, probe_key) =
-            if left_data.len() <= right_data.len() {
-                (left_data, right_data, left_key, right_key)
-            } else {
-                (right_data, left_data, right_key, left_key)
-            };
+        let (build_data, probe_data, build_key, probe_key) = if left_data.len() <= right_data.len()
+        {
+            (left_data, right_data, left_key, right_key)
+        } else {
+            (right_data, left_data, right_key, left_key)
+        };
 
         // Build hash index in parallel
         let index: HashMap<String, Vec<Value>> = self.thread_pool.install(|| {
             build_data
                 .into_par_iter()
-                .fold(
-                    HashMap::new,
-                    |mut acc, row| {
-                        if let Some(key_value) = row.get(build_key) {
-                            let key = key_value.to_string();
-                            acc.entry(key).or_insert_with(Vec::new).push(row);
-                        }
-                        acc
-                    },
-                )
-                .reduce(
-                    HashMap::new,
-                    |mut acc, map| {
-                        for (key, mut values) in map {
-                            acc.entry(key).or_insert_with(Vec::new).append(&mut values);
-                        }
-                        acc
-                    },
-                )
+                .fold(HashMap::new, |mut acc, row| {
+                    if let Some(key_value) = row.get(build_key) {
+                        let key = key_value.to_string();
+                        acc.entry(key).or_insert_with(Vec::new).push(row);
+                    }
+                    acc
+                })
+                .reduce(HashMap::new, |mut acc, map| {
+                    for (key, mut values) in map {
+                        acc.entry(key).or_insert_with(Vec::new).append(&mut values);
+                    }
+                    acc
+                })
         });
 
         // Probe and join in parallel
@@ -401,7 +394,8 @@ impl ParallelExecutor {
 
                                 // Merge both rows
                                 if let (Value::Object(left_map), Value::Object(right_map)) =
-                                    (probe_row.clone(), build_row.clone()) {
+                                    (probe_row.clone(), build_row.clone())
+                                {
                                     for (k, v) in left_map {
                                         result[format!("left_{}", k)] = v;
                                     }
@@ -448,7 +442,8 @@ impl ParallelExecutor {
 
                         // Merge both rows
                         if let (Value::Object(left_map), Value::Object(right_map)) =
-                            (left_row.clone(), right_row.clone()) {
+                            (left_row.clone(), right_row.clone())
+                        {
                             for (k, v) in left_map {
                                 result[format!("left_{}", k)] = v;
                             }
@@ -481,14 +476,16 @@ impl ParallelExecutor {
                         if let (Some(a), Some(b)) = (field_value.as_f64(), cond.value.as_f64()) {
                             a > b
                         } else {
-                            compare_json_values(field_value, &cond.value) == std::cmp::Ordering::Greater
+                            compare_json_values(field_value, &cond.value)
+                                == std::cmp::Ordering::Greater
                         }
                     }
                     "<" => {
                         if let (Some(a), Some(b)) = (field_value.as_f64(), cond.value.as_f64()) {
                             a < b
                         } else {
-                            compare_json_values(field_value, &cond.value) == std::cmp::Ordering::Less
+                            compare_json_values(field_value, &cond.value)
+                                == std::cmp::Ordering::Less
                         }
                     }
                     ">=" => {
@@ -508,7 +505,9 @@ impl ParallelExecutor {
                         }
                     }
                     "LIKE" => {
-                        if let (Some(text), Some(pattern)) = (field_value.as_str(), cond.value.as_str()) {
+                        if let (Some(text), Some(pattern)) =
+                            (field_value.as_str(), cond.value.as_str())
+                        {
                             // Simple LIKE pattern matching (% = any chars, _ = single char)
                             let pattern = pattern.replace("%", ".*").replace("_", ".");
                             regex::Regex::new(&format!("^{}$", pattern))
@@ -594,7 +593,8 @@ mod tests {
         let executor = ParallelExecutor::new(ParallelConfig {
             min_rows_for_parallel: 2,
             ..Default::default()
-        }).unwrap();
+        })
+        .unwrap();
 
         let data = vec![
             (json!(1), json!({"id": 1, "name": "Alice", "age": 30})),
@@ -602,13 +602,11 @@ mod tests {
             (json!(3), json!({"id": 3, "name": "Charlie", "age": 35})),
         ];
 
-        let conditions = vec![
-            WhereCondition {
-                column: "age".to_string(),
-                operator: ">".to_string(),
-                value: json!(25),
-            }
-        ];
+        let conditions = vec![WhereCondition {
+            column: "age".to_string(),
+            operator: ">".to_string(),
+            value: json!(25),
+        }];
 
         let results = executor.parallel_select(data, &conditions, None).unwrap();
         assert_eq!(results.len(), 2);
@@ -638,11 +636,9 @@ mod tests {
             },
         ];
 
-        let results = executor.parallel_aggregate(
-            data,
-            Some("category"),
-            &aggregations
-        ).unwrap();
+        let results = executor
+            .parallel_aggregate(data, Some("category"), &aggregations)
+            .unwrap();
 
         assert_eq!(results.len(), 2);
     }
@@ -662,13 +658,9 @@ mod tests {
             json!({"user_id": 2, "order": "B456"}),
         ];
 
-        let results = executor.parallel_join(
-            left_data,
-            right_data,
-            JoinType::Inner,
-            "id",
-            "user_id"
-        ).unwrap();
+        let results = executor
+            .parallel_join(left_data, right_data, JoinType::Inner, "id", "user_id")
+            .unwrap();
 
         assert_eq!(results.len(), 3);
     }
@@ -683,30 +675,33 @@ mod tests {
         });
 
         // Test equality
-        assert!(ParallelExecutor::matches_conditions(&row, &[
-            WhereCondition {
+        assert!(ParallelExecutor::matches_conditions(
+            &row,
+            &[WhereCondition {
                 column: "name".to_string(),
                 operator: "=".to_string(),
                 value: json!("Alice"),
-            }
-        ]));
+            }]
+        ));
 
         // Test greater than
-        assert!(ParallelExecutor::matches_conditions(&row, &[
-            WhereCondition {
+        assert!(ParallelExecutor::matches_conditions(
+            &row,
+            &[WhereCondition {
                 column: "age".to_string(),
                 operator: ">".to_string(),
                 value: json!(25),
-            }
-        ]));
+            }]
+        ));
 
         // Test IN operator
-        assert!(ParallelExecutor::matches_conditions(&row, &[
-            WhereCondition {
+        assert!(ParallelExecutor::matches_conditions(
+            &row,
+            &[WhereCondition {
                 column: "city".to_string(),
                 operator: "IN".to_string(),
                 value: json!(["New York", "Boston", "Chicago"]),
-            }
-        ]));
+            }]
+        ));
     }
 }

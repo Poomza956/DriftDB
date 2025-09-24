@@ -1,16 +1,22 @@
 //! SQL execution engine for DriftDB
 
-use sqlparser::ast::{Statement, Query as SqlQuery, Select, SetExpr, SetOperator, SetQuantifier, TableFactor, TableWithJoins, JoinOperator, BinaryOperator, SelectItem, Expr, Function, FunctionArg, FunctionArgExpr, FunctionArguments, GroupByExpr, OrderByExpr, Offset, FromTable};
-use sqlparser::parser::Parser;
-use sqlparser::dialect::GenericDialect;
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use sqlparser::ast::{
+    BinaryOperator, Expr, FromTable, Function, FunctionArg, FunctionArgExpr, FunctionArguments,
+    GroupByExpr, JoinOperator, Offset, OrderByExpr, Query as SqlQuery, Select, SelectItem, SetExpr,
+    SetOperator, SetQuantifier, Statement, TableFactor, TableWithJoins,
+};
+use sqlparser::dialect::GenericDialect;
+use sqlparser::parser::Parser;
 use std::cell::RefCell;
+use std::collections::HashMap;
 
-use crate::query::{Query, QueryResult, WhereCondition};
 use crate::engine::Engine;
 use crate::errors::{DriftError, Result};
-use crate::window::{WindowExecutor, WindowQuery, WindowFunctionCall, WindowFunction, WindowSpec, OrderColumn};
+use crate::query::{Query, QueryResult, WhereCondition};
+use crate::window::{
+    OrderColumn, WindowExecutor, WindowFunction, WindowFunctionCall, WindowQuery, WindowSpec,
+};
 
 thread_local! {
     static IN_VIEW_EXECUTION: RefCell<bool> = RefCell::new(false);
@@ -20,11 +26,14 @@ thread_local! {
 }
 
 /// Execute SQL query with parameters (prevents SQL injection)
-pub fn execute_sql_with_params(engine: &mut Engine, sql: &str, params: &[Value]) -> Result<QueryResult> {
+pub fn execute_sql_with_params(
+    engine: &mut Engine,
+    sql: &str,
+    params: &[Value],
+) -> Result<QueryResult> {
     // Parse SQL but keep parameters separate
     let dialect = GenericDialect {};
-    let ast = Parser::parse_sql(&dialect, sql)
-        .map_err(|e| DriftError::Parse(e.to_string()))?;
+    let ast = Parser::parse_sql(&dialect, sql).map_err(|e| DriftError::Parse(e.to_string()))?;
 
     if ast.is_empty() {
         return Err(DriftError::InvalidQuery("Empty SQL statement".to_string()));
@@ -42,11 +51,16 @@ pub fn execute_sql_with_params(engine: &mut Engine, sql: &str, params: &[Value])
     // Execute with parameter binding using the same match logic as execute_sql
     let result = match &ast[0] {
         Statement::Query(query) => execute_sql_query(engine, query),
-        Statement::CreateTable(create_table) => {
-            execute_create_table(engine, &create_table.name, &create_table.columns, &create_table.constraints)
-        }
+        Statement::CreateTable(create_table) => execute_create_table(
+            engine,
+            &create_table.name,
+            &create_table.columns,
+            &create_table.constraints,
+        ),
         // Add other statement types as needed for parameterized execution
-        _ => Err(DriftError::InvalidQuery("Statement type not supported with parameters".to_string())),
+        _ => Err(DriftError::InvalidQuery(
+            "Statement type not supported with parameters".to_string(),
+        )),
     };
 
     // Clear parameters after execution
@@ -60,8 +74,7 @@ pub fn execute_sql_with_params(engine: &mut Engine, sql: &str, params: &[Value])
 /// Execute SQL query (legacy - use execute_sql_with_params for safety)
 pub fn execute_sql(engine: &mut Engine, sql: &str) -> Result<QueryResult> {
     let dialect = GenericDialect {};
-    let ast = Parser::parse_sql(&dialect, sql)
-        .map_err(|e| DriftError::Parse(e.to_string()))?;
+    let ast = Parser::parse_sql(&dialect, sql).map_err(|e| DriftError::Parse(e.to_string()))?;
 
     if ast.is_empty() {
         return Err(DriftError::InvalidQuery("Empty SQL statement".to_string()));
@@ -79,37 +92,67 @@ pub fn execute_sql(engine: &mut Engine, sql: &str) -> Result<QueryResult> {
             let sql_view_mgr = SqlViewManager::new(view_mgr);
             sql_view_mgr.create_view_from_sql(engine, sql)?;
             Ok(crate::query::QueryResult::Success {
-                message: "View created successfully".to_string()
+                message: "View created successfully".to_string(),
             })
         }
-        Statement::CreateTable(create_table) => {
-            execute_create_table(engine, &create_table.name, &create_table.columns, &create_table.constraints)
-        }
-        Statement::CreateIndex(create_index) => {
-            execute_create_index(engine, &create_index.name, &create_index.table_name, &create_index.columns, create_index.unique)
-        }
-        Statement::Drop { object_type, names, cascade, .. } => {
-            match object_type {
-                sqlparser::ast::ObjectType::View => {
-                    if let Some(name) = names.first() {
-                        execute_drop_view(engine, name, *cascade)
-                    } else {
-                        Err(DriftError::InvalidQuery("DROP VIEW requires a view name".to_string()))
-                    }
+        Statement::CreateTable(create_table) => execute_create_table(
+            engine,
+            &create_table.name,
+            &create_table.columns,
+            &create_table.constraints,
+        ),
+        Statement::CreateIndex(create_index) => execute_create_index(
+            engine,
+            &create_index.name,
+            &create_index.table_name,
+            &create_index.columns,
+            create_index.unique,
+        ),
+        Statement::Drop {
+            object_type,
+            names,
+            cascade,
+            ..
+        } => match object_type {
+            sqlparser::ast::ObjectType::Table => {
+                if let Some(name) = names.first() {
+                    execute_drop_table(engine, name)
+                } else {
+                    Err(DriftError::InvalidQuery(
+                        "DROP TABLE requires a table name".to_string(),
+                    ))
                 }
-                _ => Err(DriftError::InvalidQuery(format!("DROP {} not yet supported", object_type)))
             }
-        }
+            sqlparser::ast::ObjectType::View => {
+                if let Some(name) = names.first() {
+                    execute_drop_view(engine, name, *cascade)
+                } else {
+                    Err(DriftError::InvalidQuery(
+                        "DROP VIEW requires a view name".to_string(),
+                    ))
+                }
+            }
+            _ => Err(DriftError::InvalidQuery(format!(
+                "DROP {} not yet supported",
+                object_type
+            ))),
+        },
         Statement::Insert(insert) => {
             if let Some(src) = &insert.source {
                 execute_sql_insert(engine, &insert.table_name, &insert.columns, src)
             } else {
-                Err(DriftError::InvalidQuery("INSERT requires VALUES or SELECT".to_string()))
+                Err(DriftError::InvalidQuery(
+                    "INSERT requires VALUES or SELECT".to_string(),
+                ))
             }
         }
-        Statement::Update { table, assignments, from: _, selection, .. } => {
-            execute_sql_update(engine, table, assignments, selection)
-        }
+        Statement::Update {
+            table,
+            assignments,
+            from: _,
+            selection,
+            ..
+        } => execute_sql_update(engine, table, assignments, selection),
         Statement::Delete(delete) => {
             // Use 'tables' if not empty (MySQL multi-table delete)
             if !delete.tables.is_empty() {
@@ -117,12 +160,15 @@ pub fn execute_sql(engine: &mut Engine, sql: &str) -> Result<QueryResult> {
             } else {
                 // Extract tables from the FromTable enum
                 let from_tables = match &delete.from {
-                    FromTable::WithFromKeyword(tables) | FromTable::WithoutKeyword(tables) => tables,
+                    FromTable::WithFromKeyword(tables) | FromTable::WithoutKeyword(tables) => {
+                        tables
+                    }
                 };
 
                 if !from_tables.is_empty() {
                     // Convert from TableWithJoins to ObjectName
-                    let table_names: Vec<sqlparser::ast::ObjectName> = from_tables.iter()
+                    let table_names: Vec<sqlparser::ast::ObjectName> = from_tables
+                        .iter()
                         .filter_map(|t| {
                             if let TableFactor::Table { name, .. } = &t.relation {
                                 Some(name.clone())
@@ -133,15 +179,20 @@ pub fn execute_sql(engine: &mut Engine, sql: &str) -> Result<QueryResult> {
                         .collect();
                     execute_sql_delete(engine, &table_names, &delete.selection)
                 } else {
-                    Err(DriftError::InvalidQuery("DELETE requires FROM clause".to_string()))
+                    Err(DriftError::InvalidQuery(
+                        "DELETE requires FROM clause".to_string(),
+                    ))
                 }
             }
         }
         Statement::StartTransaction { .. } => {
-            // Check if already in a transaction
+            // Check if already in a transaction - if so, just return success (idempotent)
             let existing_txn = CURRENT_TRANSACTION.with(|txn| txn.borrow().clone());
             if existing_txn.is_some() {
-                return Err(DriftError::InvalidQuery("Already in a transaction".to_string()));
+                // Already in a transaction, make BEGIN idempotent
+                return Ok(crate::query::QueryResult::Success {
+                    message: "BEGIN".to_string(),
+                });
             }
 
             // Default to READ COMMITTED if not specified
@@ -154,7 +205,7 @@ pub fn execute_sql(engine: &mut Engine, sql: &str) -> Result<QueryResult> {
             });
 
             Ok(QueryResult::Success {
-                message: format!("Transaction {} started", txn_id)
+                message: format!("Transaction {} started", txn_id),
             })
         }
         Statement::Commit { .. } => {
@@ -170,12 +221,12 @@ pub fn execute_sql(engine: &mut Engine, sql: &str) -> Result<QueryResult> {
                 });
 
                 Ok(QueryResult::Success {
-                    message: format!("Transaction {} committed", transaction_id)
+                    message: format!("Transaction {} committed", transaction_id),
                 })
             } else {
                 // No active transaction - just succeed (no-op)
                 Ok(QueryResult::Success {
-                    message: "COMMIT (no active transaction)".to_string()
+                    message: "COMMIT (no active transaction)".to_string(),
                 })
             }
         }
@@ -192,17 +243,23 @@ pub fn execute_sql(engine: &mut Engine, sql: &str) -> Result<QueryResult> {
                 });
 
                 Ok(QueryResult::Success {
-                    message: format!("Transaction {} rolled back", transaction_id)
+                    message: format!("Transaction {} rolled back", transaction_id),
                 })
             } else {
-                Err(DriftError::InvalidQuery("No active transaction to rollback".to_string()))
+                Err(DriftError::InvalidQuery(
+                    "No active transaction to rollback".to_string(),
+                ))
             }
         }
-        Statement::AlterTable { name, operations, .. } => {
+        Statement::AlterTable {
+            name, operations, ..
+        } => {
             if !operations.is_empty() {
                 execute_alter_table(engine, name, &operations[0])
             } else {
-                Err(DriftError::InvalidQuery("No ALTER TABLE operation specified".to_string()))
+                Err(DriftError::InvalidQuery(
+                    "No ALTER TABLE operation specified".to_string(),
+                ))
             }
         }
         Statement::Explain { statement, .. } => {
@@ -216,12 +273,14 @@ pub fn execute_sql(engine: &mut Engine, sql: &str) -> Result<QueryResult> {
                 let _ = engine.collect_table_statistics(&table);
             }
             Ok(QueryResult::Success {
-                message: "Statistics updated for all tables".to_string()
+                message: "Statistics updated for all tables".to_string(),
             })
         }
         Statement::Truncate { table_names, .. } => {
             if table_names.is_empty() {
-                return Err(DriftError::InvalidQuery("TRUNCATE requires at least one table".to_string()));
+                return Err(DriftError::InvalidQuery(
+                    "TRUNCATE requires at least one table".to_string(),
+                ));
             }
             let table_name = table_names[0].name.to_string();
 
@@ -242,9 +301,8 @@ pub fn execute_sql(engine: &mut Engine, sql: &str) -> Result<QueryResult> {
                         if let Some(row_obj) = row.as_object() {
                             // Get primary key from schema
                             let primary_key = engine.get_table_primary_key(&table_name)?;
-                            let pk_value = row_obj.get(&primary_key)
-                                .cloned()
-                                .unwrap_or(Value::Null);
+                            let pk_value =
+                                row_obj.get(&primary_key).cloned().unwrap_or(Value::Null);
 
                             let delete_query = Query::SoftDelete {
                                 table: table_name.clone(),
@@ -257,18 +315,21 @@ pub fn execute_sql(engine: &mut Engine, sql: &str) -> Result<QueryResult> {
                     }
 
                     Ok(QueryResult::Success {
-                        message: format!("Table '{}' truncated - {} rows deleted", table_name, delete_count),
+                        message: format!(
+                            "Table '{}' truncated - {} rows deleted",
+                            table_name, delete_count
+                        ),
                     })
                 }
                 _ => Ok(QueryResult::Success {
                     message: format!("Table '{}' was already empty", table_name),
-                })
+                }),
             }
         }
         // TODO: Add CALL statement support when sqlparser structure is confirmed
         // Statement::Call(...) => execute_call_procedure(...)
         _ => Err(DriftError::InvalidQuery(
-            "SQL statement type not yet supported".to_string()
+            "SQL statement type not yet supported".to_string(),
         )),
     }
 }
@@ -308,7 +369,12 @@ fn execute_recursive_cte(
     let query = &cte.query;
 
     match query.body.as_ref() {
-        SetExpr::SetOperation { op: SetOperator::Union, left, right, set_quantifier } => {
+        SetExpr::SetOperation {
+            op: SetOperator::Union,
+            left,
+            right,
+            set_quantifier,
+        } => {
             // Left is the anchor (base case), right is the recursive part
 
             // Step 1: Execute the anchor query to get initial results
@@ -358,8 +424,8 @@ fn execute_recursive_cte(
                     locks: vec![],
                     limit_by: vec![],
                     for_clause: None,
-                format_clause: None,
-                settings: None,
+                    format_clause: None,
+                    settings: None,
                 };
 
                 // Set recursive CTE flag
@@ -367,7 +433,8 @@ fn execute_recursive_cte(
                     *flag.borrow_mut() = true;
                 });
 
-                let recursive_result = execute_query_with_ctes(engine, &Box::new(recursive_query), &temp_cte_context)?;
+                let recursive_result =
+                    execute_query_with_ctes(engine, &Box::new(recursive_query), &temp_cte_context)?;
 
                 // Clear recursive CTE flag
                 IN_RECURSIVE_CTE.with(|flag| {
@@ -439,7 +506,7 @@ fn execute_query_with_ctes(
                                         format!("{:?}", expr).chars().take(50).collect::<String>()
                                     }
                                 }
-                                _ => format!("{:?}", expr).chars().take(50).collect::<String>()
+                                _ => format!("{:?}", expr).chars().take(50).collect::<String>(),
                             };
                             row.insert(col_name, value);
                         }
@@ -450,7 +517,9 @@ fn execute_query_with_ctes(
                         _ => {}
                     }
                 }
-                return Ok(QueryResult::Rows { data: vec![Value::Object(row)] });
+                return Ok(QueryResult::Rows {
+                    data: vec![Value::Object(row)],
+                });
             }
 
             // Execute the base query (with or without JOINs)
@@ -483,10 +552,7 @@ fn execute_query_with_ctes(
                         0
                     };
 
-                    data = data.into_iter()
-                        .skip(offset)
-                        .take(limit)
-                        .collect();
+                    data = data.into_iter().skip(offset).take(limit).collect();
                 }
 
                 // Apply projection after ORDER BY and LIMIT
@@ -494,9 +560,14 @@ fn execute_query_with_ctes(
                 if let SetExpr::Select(select) = query.body.as_ref() {
                     // Check if this needs projection (non-aggregate queries)
                     let has_aggregates = select.projection.iter().any(|item| {
-                        matches!(item,
-                            SelectItem::UnnamedExpr(Expr::Function(_)) |
-                            SelectItem::ExprWithAlias { expr: Expr::Function(_), .. })
+                        matches!(
+                            item,
+                            SelectItem::UnnamedExpr(Expr::Function(_))
+                                | SelectItem::ExprWithAlias {
+                                    expr: Expr::Function(_),
+                                    ..
+                                }
+                        )
                     });
 
                     // Always process scalar subqueries first before applying projection
@@ -512,10 +583,15 @@ fn execute_query_with_ctes(
                 Ok(result)
             }
         }
-        SetExpr::SetOperation { op, set_quantifier, left, right } => {
-            execute_set_operation(engine, op, set_quantifier, left, right)
-        }
-        _ => Err(DriftError::InvalidQuery("Query type not supported".to_string())),
+        SetExpr::SetOperation {
+            op,
+            set_quantifier,
+            left,
+            right,
+        } => execute_set_operation(engine, op, set_quantifier, left, right),
+        _ => Err(DriftError::InvalidQuery(
+            "Query type not supported".to_string(),
+        )),
     }
 }
 
@@ -537,8 +613,8 @@ fn execute_set_operation(
         locks: vec![],
         limit_by: vec![],
         for_clause: None,
-                format_clause: None,
-                settings: None,
+        format_clause: None,
+        settings: None,
     });
 
     let right_query = Box::new(SqlQuery {
@@ -551,8 +627,8 @@ fn execute_set_operation(
         locks: vec![],
         limit_by: vec![],
         for_clause: None,
-                format_clause: None,
-                settings: None,
+        format_clause: None,
+        settings: None,
     });
 
     let left_result = execute_sql_query(engine, &left_query)?;
@@ -561,19 +637,15 @@ fn execute_set_operation(
     match (left_result, right_result) {
         (QueryResult::Rows { data: left_data }, QueryResult::Rows { data: right_data }) => {
             let result = match op {
-                SetOperator::Union => {
-                    perform_union(left_data, right_data, set_quantifier)
-                }
-                SetOperator::Intersect => {
-                    perform_intersect(left_data, right_data, set_quantifier)
-                }
-                SetOperator::Except => {
-                    perform_except(left_data, right_data, set_quantifier)
-                }
+                SetOperator::Union => perform_union(left_data, right_data, set_quantifier),
+                SetOperator::Intersect => perform_intersect(left_data, right_data, set_quantifier),
+                SetOperator::Except => perform_except(left_data, right_data, set_quantifier),
             };
             Ok(QueryResult::Rows { data: result })
         }
-        _ => Err(DriftError::InvalidQuery("Set operation requires SELECT queries".to_string())),
+        _ => Err(DriftError::InvalidQuery(
+            "Set operation requires SELECT queries".to_string(),
+        )),
     }
 }
 
@@ -590,11 +662,16 @@ fn perform_union(left: Vec<Value>, right: Vec<Value>, quantifier: &SetQuantifier
     }
 }
 
-fn perform_intersect(left: Vec<Value>, right: Vec<Value>, _quantifier: &SetQuantifier) -> Vec<Value> {
+fn perform_intersect(
+    left: Vec<Value>,
+    right: Vec<Value>,
+    _quantifier: &SetQuantifier,
+) -> Vec<Value> {
     let mut result = Vec::new();
 
     // Extract values from the first column of right rows for comparison
-    let right_values: std::collections::HashSet<String> = right.iter()
+    let right_values: std::collections::HashSet<String> = right
+        .iter()
         .filter_map(|row| {
             if let Some(obj) = row.as_object() {
                 // Get the first value from the object
@@ -626,7 +703,8 @@ fn perform_intersect(left: Vec<Value>, right: Vec<Value>, _quantifier: &SetQuant
 
 fn perform_except(left: Vec<Value>, right: Vec<Value>, _quantifier: &SetQuantifier) -> Vec<Value> {
     // Extract values from the first column of right rows for comparison
-    let right_values: std::collections::HashSet<String> = right.iter()
+    let right_values: std::collections::HashSet<String> = right
+        .iter()
         .filter_map(|row| {
             if let Some(obj) = row.as_object() {
                 // Get the first value from the object
@@ -675,9 +753,14 @@ fn execute_simple_select_with_ctes(
 
         // Check if we need to handle aggregates
         let has_aggregates = select.projection.iter().any(|item| {
-            matches!(item,
-                SelectItem::UnnamedExpr(Expr::Function(_)) |
-                SelectItem::ExprWithAlias { expr: Expr::Function(_), .. })
+            matches!(
+                item,
+                SelectItem::UnnamedExpr(Expr::Function(_))
+                    | SelectItem::ExprWithAlias {
+                        expr: Expr::Function(_),
+                        ..
+                    }
+            )
         });
 
         // Always process scalar subqueries first (they can be in aggregate or non-aggregate queries)
@@ -703,7 +786,8 @@ fn execute_simple_select(engine: &mut Engine, select: &Select) -> Result<QueryRe
 
     if !is_in_view && !engine.list_tables().contains(&table_name) {
         // Check if it's a view
-        let view_definition = engine.list_views()
+        let view_definition = engine
+            .list_views()
             .into_iter()
             .find(|v| v.name == table_name);
 
@@ -726,9 +810,14 @@ fn execute_simple_select(engine: &mut Engine, select: &Select) -> Result<QueryRe
             if let Ok(QueryResult::Rows { data }) = view_result {
                 // Check if we need aggregations
                 let has_aggregates = select.projection.iter().any(|item| {
-                    matches!(item,
-                        SelectItem::UnnamedExpr(Expr::Function(_)) |
-                        SelectItem::ExprWithAlias { expr: Expr::Function(_), .. })
+                    matches!(
+                        item,
+                        SelectItem::UnnamedExpr(Expr::Function(_))
+                            | SelectItem::ExprWithAlias {
+                                expr: Expr::Function(_),
+                                ..
+                            }
+                    )
                 });
 
                 // Always process scalar subqueries first (they can be in aggregate or non-aggregate queries)
@@ -751,30 +840,37 @@ fn execute_simple_select(engine: &mut Engine, select: &Select) -> Result<QueryRe
     // Check if this is an aggregation query or has window functions
     let has_aggregates = select.projection.iter().any(|item| {
         match item {
-            SelectItem::UnnamedExpr(Expr::Function(func)) |
-            SelectItem::ExprWithAlias { expr: Expr::Function(func), .. } => {
+            SelectItem::UnnamedExpr(Expr::Function(func))
+            | SelectItem::ExprWithAlias {
+                expr: Expr::Function(func),
+                ..
+            } => {
                 // Aggregate functions don't have an OVER clause
                 func.over.is_none()
             }
-            _ => false
+            _ => false,
         }
     });
 
     let has_window_functions = select.projection.iter().any(|item| {
         match item {
-            SelectItem::UnnamedExpr(Expr::Function(func)) |
-            SelectItem::ExprWithAlias { expr: Expr::Function(func), .. } => {
+            SelectItem::UnnamedExpr(Expr::Function(func))
+            | SelectItem::ExprWithAlias {
+                expr: Expr::Function(func),
+                ..
+            } => {
                 // Window functions have an OVER clause
                 func.over.is_some()
             }
-            _ => false
+            _ => false,
         }
     });
 
     // Check if WHERE clause contains subqueries
-    let has_subqueries = select.selection.as_ref().map_or(false, |expr| {
-        contains_subquery(expr)
-    });
+    let has_subqueries = select
+        .selection
+        .as_ref()
+        .map_or(false, |expr| contains_subquery(expr));
 
     // Check if this might be a correlated subquery
     let is_correlated = OUTER_ROW_CONTEXT.with(|context| context.borrow().is_some());
@@ -818,7 +914,8 @@ fn execute_simple_select(engine: &mut Engine, select: &Select) -> Result<QueryRe
     }
 
     // Check if there's a GROUP BY clause
-    let has_group_by = matches!(&select.group_by, GroupByExpr::Expressions(exprs, _) if !exprs.is_empty());
+    let has_group_by =
+        matches!(&select.group_by, GroupByExpr::Expressions(exprs, _) if !exprs.is_empty());
 
     // Handle window functions first (they operate on ungrouped data)
     if has_window_functions {
@@ -837,7 +934,9 @@ fn execute_simple_select(engine: &mut Engine, select: &Select) -> Result<QueryRe
         if let QueryResult::Rows { data } = result {
             // Process scalar subqueries before returning
             let data_with_subqueries = process_scalar_subqueries(engine, data, &select.projection)?;
-            return Ok(QueryResult::Rows { data: data_with_subqueries });
+            return Ok(QueryResult::Rows {
+                data: data_with_subqueries,
+            });
         }
         return Ok(result);
     }
@@ -888,7 +987,8 @@ fn execute_join_select_with_ctes(
         }
 
         // Left table is not a CTE but we have CTE joins, get left table data
-        let left_view = engine.list_views()
+        let left_view = engine
+            .list_views()
             .into_iter()
             .find(|v| v.name == left_table);
 
@@ -960,9 +1060,7 @@ fn execute_join_select_with_ctes(
             JoinOperator::LeftOuter(constraint) => {
                 perform_left_join(joined_rows, right_rows, constraint)?
             }
-            JoinOperator::CrossJoin => {
-                perform_cross_join(joined_rows, right_rows)
-            }
+            JoinOperator::CrossJoin => perform_cross_join(joined_rows, right_rows),
             JoinOperator::RightOuter(constraint) => {
                 // RIGHT JOIN is LEFT JOIN with swapped tables
                 perform_left_join(right_rows, joined_rows, constraint)?
@@ -972,7 +1070,7 @@ fn execute_join_select_with_ctes(
             }
             _ => {
                 return Err(DriftError::InvalidQuery(
-                    "JOIN type not yet supported".to_string()
+                    "JOIN type not yet supported".to_string(),
                 ));
             }
         };
@@ -987,17 +1085,26 @@ fn execute_join_select_with_ctes(
 
     // Check if this is an aggregation query
     let has_aggregates = select.projection.iter().any(|item| {
-        matches!(item, SelectItem::UnnamedExpr(Expr::Function(_)) |
-                      SelectItem::ExprWithAlias { expr: Expr::Function(_), .. })
+        matches!(
+            item,
+            SelectItem::UnnamedExpr(Expr::Function(_))
+                | SelectItem::ExprWithAlias {
+                    expr: Expr::Function(_),
+                    ..
+                }
+        )
     });
 
     // Check if there's a GROUP BY clause
-    let has_group_by = matches!(&select.group_by, GroupByExpr::Expressions(exprs, _) if !exprs.is_empty());
+    let has_group_by =
+        matches!(&select.group_by, GroupByExpr::Expressions(exprs, _) if !exprs.is_empty());
 
     // If no aggregates and no GROUP BY, apply column projection and return
     if !has_aggregates && !has_group_by {
         let projected_rows = project_columns(filtered_rows, select)?;
-        return Ok(QueryResult::Rows { data: projected_rows });
+        return Ok(QueryResult::Rows {
+            data: projected_rows,
+        });
     }
 
     // Process aggregations if needed
@@ -1015,7 +1122,8 @@ fn execute_join_select(engine: &mut Engine, select: &Select) -> Result<QueryResu
     let left_table = extract_table_name(&select.from[0].relation)?;
 
     // Check if left table is a view
-    let left_view = engine.list_views()
+    let left_view = engine
+        .list_views()
         .into_iter()
         .find(|v| v.name == left_table);
 
@@ -1058,7 +1166,8 @@ fn execute_join_select(engine: &mut Engine, select: &Select) -> Result<QueryResu
         let right_table = extract_table_name_from_join(&join.relation)?;
 
         // Check if right table is a view
-        let right_view = engine.list_views()
+        let right_view = engine
+            .list_views()
             .into_iter()
             .find(|v| v.name == right_table);
 
@@ -1104,9 +1213,7 @@ fn execute_join_select(engine: &mut Engine, select: &Select) -> Result<QueryResu
             JoinOperator::LeftOuter(constraint) => {
                 perform_left_join(joined_rows, right_rows, constraint)?
             }
-            JoinOperator::CrossJoin => {
-                perform_cross_join(joined_rows, right_rows)
-            }
+            JoinOperator::CrossJoin => perform_cross_join(joined_rows, right_rows),
             JoinOperator::RightOuter(constraint) => {
                 // RIGHT JOIN is LEFT JOIN with swapped tables
                 perform_left_join(right_rows, joined_rows, constraint)?
@@ -1116,7 +1223,7 @@ fn execute_join_select(engine: &mut Engine, select: &Select) -> Result<QueryResu
             }
             _ => {
                 return Err(DriftError::InvalidQuery(
-                    "JOIN type not yet supported".to_string()
+                    "JOIN type not yet supported".to_string(),
                 ));
             }
         };
@@ -1131,17 +1238,26 @@ fn execute_join_select(engine: &mut Engine, select: &Select) -> Result<QueryResu
 
     // Check if this is an aggregation query
     let has_aggregates = select.projection.iter().any(|item| {
-        matches!(item, SelectItem::UnnamedExpr(Expr::Function(_)) |
-                      SelectItem::ExprWithAlias { expr: Expr::Function(_), .. })
+        matches!(
+            item,
+            SelectItem::UnnamedExpr(Expr::Function(_))
+                | SelectItem::ExprWithAlias {
+                    expr: Expr::Function(_),
+                    ..
+                }
+        )
     });
 
     // Check if there's a GROUP BY clause
-    let has_group_by = matches!(&select.group_by, GroupByExpr::Expressions(exprs, _) if !exprs.is_empty());
+    let has_group_by =
+        matches!(&select.group_by, GroupByExpr::Expressions(exprs, _) if !exprs.is_empty());
 
     // If no aggregates and no GROUP BY, apply column projection and return
     if !has_aggregates && !has_group_by {
         let projected_rows = project_columns(filtered_rows, select)?;
-        return Ok(QueryResult::Rows { data: projected_rows });
+        return Ok(QueryResult::Rows {
+            data: projected_rows,
+        });
     }
 
     // Process aggregations
@@ -1167,23 +1283,20 @@ fn perform_inner_join(
     for left_row in &left_rows {
         for right_row in &right_rows {
             // Handle both unprefixed and prefixed column names in join condition
-            let left_val = left_row.get(&left_col)
-                .or_else(|| {
-                    // Try with various table prefixes
-                    left_row.as_object().and_then(|obj| {
-                        obj.iter().find(|(k, _)| {
-                            k.ends_with(&format!("_{}", left_col))
-                        }).map(|(_, v)| v)
-                    })
-                });
+            let left_val = left_row.get(&left_col).or_else(|| {
+                // Try with various table prefixes
+                left_row.as_object().and_then(|obj| {
+                    obj.iter()
+                        .find(|(k, _)| k.ends_with(&format!("_{}", left_col)))
+                        .map(|(_, v)| v)
+                })
+            });
             let right_val = right_row.get(&right_col);
 
             if let (Some(l_val), Some(r_val)) = (left_val, right_val) {
                 if l_val == r_val {
                     // Merge rows - use table prefixes for disambiguation
-                    let mut merged = left_row.as_object()
-                        .cloned()
-                        .unwrap_or_default();
+                    let mut merged = left_row.as_object().cloned().unwrap_or_default();
 
                     if let Some(right_obj) = right_row.as_object() {
                         for (key, value) in right_obj {
@@ -1226,17 +1339,17 @@ fn perform_left_join(
 
         for right_row in &right_rows {
             // Handle both unprefixed and prefixed column names in join condition
-            let left_val = left_row.get(&left_col)
+            let left_val = left_row
+                .get(&left_col)
                 .or_else(|| left_row.get(&format!("right_{}", left_col)));
-            let right_val = right_row.get(&right_col)
+            let right_val = right_row
+                .get(&right_col)
                 .or_else(|| right_row.get(&format!("right_{}", right_col)));
 
             if let (Some(l_val), Some(r_val)) = (left_val, right_val) {
                 if l_val == r_val {
                     // Merge rows
-                    let mut merged = left_row.as_object()
-                        .cloned()
-                        .unwrap_or_default();
+                    let mut merged = left_row.as_object().cloned().unwrap_or_default();
 
                     if let Some(right_obj) = right_row.as_object() {
                         for (key, value) in right_obj {
@@ -1284,9 +1397,7 @@ fn perform_full_outer_join(
             if let (Some(l_val), Some(r_val)) = (left_val, right_val) {
                 if l_val == r_val {
                     // Merge rows
-                    let mut merged = left_row.as_object()
-                        .cloned()
-                        .unwrap_or_default();
+                    let mut merged = left_row.as_object().cloned().unwrap_or_default();
 
                     if let Some(right_obj) = right_row.as_object() {
                         for (key, value) in right_obj {
@@ -1326,9 +1437,7 @@ fn perform_cross_join(left_rows: Vec<Value>, right_rows: Vec<Value>) -> Vec<Valu
 
     for left_row in &left_rows {
         for right_row in &right_rows {
-            let mut merged = left_row.as_object()
-                .cloned()
-                .unwrap_or_default();
+            let mut merged = left_row.as_object().cloned().unwrap_or_default();
 
             if let Some(right_obj) = right_row.as_object() {
                 for (key, value) in right_obj {
@@ -1343,9 +1452,7 @@ fn perform_cross_join(left_rows: Vec<Value>, right_rows: Vec<Value>) -> Vec<Valu
     result
 }
 
-fn extract_join_columns(
-    constraint: &sqlparser::ast::JoinConstraint,
-) -> Result<(String, String)> {
+fn extract_join_columns(constraint: &sqlparser::ast::JoinConstraint) -> Result<(String, String)> {
     match constraint {
         sqlparser::ast::JoinConstraint::On(expr) => {
             // Parse ON condition (simplified - assumes single equality)
@@ -1357,19 +1464,21 @@ fn extract_join_columns(
                 }
             }
             Err(DriftError::InvalidQuery(
-                "Complex JOIN conditions not yet supported".to_string()
+                "Complex JOIN conditions not yet supported".to_string(),
             ))
         }
         sqlparser::ast::JoinConstraint::Using(columns) => {
             if columns.is_empty() {
-                Err(DriftError::InvalidQuery("USING clause requires columns".to_string()))
+                Err(DriftError::InvalidQuery(
+                    "USING clause requires columns".to_string(),
+                ))
             } else {
                 let col = columns[0].value.clone();
                 Ok((col.clone(), col))
             }
         }
         _ => Err(DriftError::InvalidQuery(
-            "JOIN constraint type not supported".to_string()
+            "JOIN constraint type not supported".to_string(),
         )),
     }
 }
@@ -1379,12 +1488,13 @@ fn extract_column_from_expr(expr: &sqlparser::ast::Expr) -> Result<String> {
         sqlparser::ast::Expr::Identifier(ident) => Ok(ident.value.clone()),
         sqlparser::ast::Expr::CompoundIdentifier(idents) => {
             // Take the last part (column name)
-            idents.last()
+            idents
+                .last()
                 .map(|i| i.value.clone())
                 .ok_or_else(|| DriftError::InvalidQuery("Invalid column reference".to_string()))
         }
         _ => Err(DriftError::InvalidQuery(
-            "Expected column reference in JOIN condition".to_string()
+            "Expected column reference in JOIN condition".to_string(),
         )),
     }
 }
@@ -1423,7 +1533,9 @@ fn execute_sql_insert(
             // INSERT INTO ... SELECT
             execute_insert_select(engine, &table, columns, select)
         }
-        _ => Err(DriftError::InvalidQuery("Unsupported INSERT source".to_string())),
+        _ => Err(DriftError::InvalidQuery(
+            "Unsupported INSERT source".to_string(),
+        )),
     }
 }
 
@@ -1444,8 +1556,8 @@ fn execute_insert_select(
         locks: vec![],
         limit_by: vec![],
         for_clause: None,
-                format_clause: None,
-                settings: None,
+        format_clause: None,
+        settings: None,
     });
 
     let result = execute_sql_query(engine, &query)?;
@@ -1456,10 +1568,9 @@ fn execute_insert_select(
 
             // Get table columns if not specified
             let target_columns = if columns.is_empty() {
-                engine.get_table_columns(table)
-                    .map_err(|_| DriftError::InvalidQuery(
-                        format!("Table '{}' not found", table)
-                    ))?
+                engine
+                    .get_table_columns(table)
+                    .map_err(|_| DriftError::InvalidQuery(format!("Table '{}' not found", table)))?
             } else {
                 columns.iter().map(|c| c.value.clone()).collect()
             };
@@ -1472,7 +1583,8 @@ fn execute_insert_select(
                     // Map values to target columns
                     for (i, col) in target_columns.iter().enumerate() {
                         // Try to get value by column name or by position
-                        let value = row_obj.get(col)
+                        let value = row_obj
+                            .get(col)
                             .or_else(|| {
                                 // If columns don't match by name, use positional mapping
                                 row_obj.values().nth(i)
@@ -1498,7 +1610,9 @@ fn execute_insert_select(
                 message: format!("Inserted {} rows", insert_count),
             })
         }
-        _ => Err(DriftError::InvalidQuery("SELECT query returned no data".to_string())),
+        _ => Err(DriftError::InvalidQuery(
+            "SELECT query returned no data".to_string(),
+        )),
     }
 }
 
@@ -1508,21 +1622,21 @@ fn execute_insert_values(
     columns: &[sqlparser::ast::Ident],
     values: &[Expr],
 ) -> Result<QueryResult> {
-
     // Build data object
     let mut data = serde_json::Map::new();
     if columns.is_empty() {
         // No explicit columns provided - get schema from table
-        let table_columns = engine.get_table_columns(&table)
-            .map_err(|_| DriftError::InvalidQuery(
-                format!("Table '{}' not found", table)
-            ))?;
+        let table_columns = engine
+            .get_table_columns(&table)
+            .map_err(|_| DriftError::InvalidQuery(format!("Table '{}' not found", table)))?;
 
         if values.len() != table_columns.len() {
-            return Err(DriftError::InvalidQuery(
-                format!("Column count mismatch: table {} has {} columns but {} values provided",
-                        table, table_columns.len(), values.len())
-            ));
+            return Err(DriftError::InvalidQuery(format!(
+                "Column count mismatch: table {} has {} columns but {} values provided",
+                table,
+                table_columns.len(),
+                values.len()
+            )));
         }
 
         for (i, value_expr) in values.iter().enumerate() {
@@ -1530,18 +1644,20 @@ fn execute_insert_values(
             if let Some(col_name) = table_columns.get(i) {
                 data.insert(col_name.clone(), value);
             } else {
-                return Err(DriftError::InvalidQuery(
-                    format!("Column index {} out of range for table {}", i, table)
-                ));
+                return Err(DriftError::InvalidQuery(format!(
+                    "Column index {} out of range for table {}",
+                    i, table
+                )));
             }
         }
     } else {
         // Explicit columns provided - INSERT INTO table (col1, col2) VALUES (val1, val2)
         if columns.len() != values.len() {
-            return Err(DriftError::InvalidQuery(
-                format!("Column count mismatch: {} columns but {} values",
-                    columns.len(), values.len())
-            ));
+            return Err(DriftError::InvalidQuery(format!(
+                "Column count mismatch: {} columns but {} values",
+                columns.len(),
+                values.len()
+            )));
         }
 
         for (i, column) in columns.iter().enumerate() {
@@ -1554,9 +1670,10 @@ fn execute_insert_values(
         // Verify primary key is included
         let primary_key = engine.get_table_primary_key(&table)?;
         if !data.contains_key(&primary_key) {
-            return Err(DriftError::InvalidQuery(
-                format!("Primary key '{}' must be specified in INSERT", primary_key)
-            ));
+            return Err(DriftError::InvalidQuery(format!(
+                "Primary key '{}' must be specified in INSERT",
+                primary_key
+            )));
         }
     }
 
@@ -1574,10 +1691,15 @@ fn execute_insert_values(
     let final_data = match trigger_result {
         crate::triggers::TriggerResult::ModifyRow(modified) => modified,
         crate::triggers::TriggerResult::Skip => {
-            return Ok(QueryResult::Success { message: "Row skipped by trigger".to_string() });
+            return Ok(QueryResult::Success {
+                message: "Row skipped by trigger".to_string(),
+            });
         }
         crate::triggers::TriggerResult::Abort(msg) => {
-            return Err(DriftError::InvalidQuery(format!("Trigger aborted: {}", msg)));
+            return Err(DriftError::InvalidQuery(format!(
+                "Trigger aborted: {}",
+                msg
+            )));
         }
         crate::triggers::TriggerResult::Continue => new_row,
     };
@@ -1605,7 +1727,7 @@ fn extract_table_name(table: &TableFactor) -> Result<String> {
     match table {
         TableFactor::Table { name, .. } => Ok(name.to_string()),
         _ => Err(DriftError::InvalidQuery(
-            "Complex table expressions not supported".to_string()
+            "Complex table expressions not supported".to_string(),
         )),
     }
 }
@@ -1628,9 +1750,11 @@ fn parse_where_clause(expr: &sqlparser::ast::Expr) -> Result<Vec<WhereCondition>
                 BinaryOperator::LtEq => "<=",
                 BinaryOperator::Gt => ">",
                 BinaryOperator::GtEq => ">=",
-                _ => return Err(DriftError::InvalidQuery(
-                    "Operator not supported in WHERE clause".to_string()
-                )),
+                _ => {
+                    return Err(DriftError::InvalidQuery(
+                        "Operator not supported in WHERE clause".to_string(),
+                    ))
+                }
             };
 
             Ok(vec![WhereCondition {
@@ -1662,8 +1786,8 @@ fn sql_value_to_json(val: &sqlparser::ast::Value) -> Result<Value> {
                 Ok(json!(n))
             }
         }
-        sqlparser::ast::Value::SingleQuotedString(s) |
-        sqlparser::ast::Value::DoubleQuotedString(s) => Ok(json!(s)),
+        sqlparser::ast::Value::SingleQuotedString(s)
+        | sqlparser::ast::Value::DoubleQuotedString(s) => Ok(json!(s)),
         sqlparser::ast::Value::Boolean(b) => Ok(json!(b)),
         sqlparser::ast::Value::Null => Ok(Value::Null),
         _ => Ok(Value::Null),
@@ -1688,14 +1812,13 @@ fn execute_simple_aggregation(rows: &[Value], select: &Select) -> Result<Vec<Val
 
     for item in &select.projection {
         match item {
-            SelectItem::UnnamedExpr(expr) |
-            SelectItem::ExprWithAlias { expr, .. } => {
+            SelectItem::UnnamedExpr(expr) | SelectItem::ExprWithAlias { expr, .. } => {
                 let (col_name, value) = evaluate_expression(expr, rows)?;
                 result_row.insert(col_name, value);
             }
             SelectItem::Wildcard(_) => {
                 return Err(DriftError::InvalidQuery(
-                    "Cannot use * with aggregate functions".to_string()
+                    "Cannot use * with aggregate functions".to_string(),
                 ));
             }
             _ => {}
@@ -1705,7 +1828,11 @@ fn execute_simple_aggregation(rows: &[Value], select: &Select) -> Result<Vec<Val
     Ok(vec![json!(result_row)])
 }
 
-fn execute_group_by_aggregation(rows: &[Value], select: &Select, group_exprs: &[Expr]) -> Result<Vec<Value>> {
+fn execute_group_by_aggregation(
+    rows: &[Value],
+    select: &Select,
+    group_exprs: &[Expr],
+) -> Result<Vec<Value>> {
     // Group rows by the GROUP BY expressions
     let mut groups: HashMap<String, Vec<Value>> = HashMap::new();
 
@@ -1752,7 +1879,8 @@ fn execute_group_by_aggregation(rows: &[Value], select: &Select, group_exprs: &[
             for group_expr in group_exprs {
                 match group_expr {
                     Expr::Identifier(ident) => {
-                        let value = first_row.get(&ident.value)
+                        let value = first_row
+                            .get(&ident.value)
                             .or_else(|| first_row.get(&format!("right_{}", ident.value)))
                             .or_else(|| first_row.get(&format!("left_{}", ident.value)));
 
@@ -1762,7 +1890,8 @@ fn execute_group_by_aggregation(rows: &[Value], select: &Select, group_exprs: &[
                     }
                     Expr::CompoundIdentifier(idents) => {
                         if let Some(column) = idents.last() {
-                            let value = first_row.get(&column.value)
+                            let value = first_row
+                                .get(&column.value)
                                 .or_else(|| first_row.get(&format!("right_{}", column.value)))
                                 .or_else(|| first_row.get(&format!("left_{}", column.value)));
 
@@ -1783,7 +1912,10 @@ fn execute_group_by_aggregation(rows: &[Value], select: &Select, group_exprs: &[
                     let (col_name, value) = evaluate_aggregate_function(func, &group_rows)?;
                     result_row.insert(col_name, value);
                 }
-                SelectItem::ExprWithAlias { expr: Expr::Function(func), alias } => {
+                SelectItem::ExprWithAlias {
+                    expr: Expr::Function(func),
+                    alias,
+                } => {
                     let (_, value) = evaluate_aggregate_function(func, &group_rows)?;
                     result_row.insert(alias.value.clone(), value);
                 }
@@ -1803,13 +1935,18 @@ fn execute_group_by_aggregation(rows: &[Value], select: &Select, group_exprs: &[
                         if let Some(first_row) = group_rows.first() {
                             if let Some(val) = first_row.get(&column.value) {
                                 result_row.insert(column.value.clone(), val.clone());
-                            } else if let Some(val) = first_row.get(&format!("right_{}", column.value)) {
+                            } else if let Some(val) =
+                                first_row.get(&format!("right_{}", column.value))
+                            {
                                 result_row.insert(column.value.clone(), val.clone());
                             }
                         }
                     }
                 }
-                SelectItem::ExprWithAlias { expr: Expr::Identifier(ident), alias } => {
+                SelectItem::ExprWithAlias {
+                    expr: Expr::Identifier(ident),
+                    alias,
+                } => {
                     if let Some(first_row) = group_rows.first() {
                         if let Some(val) = first_row.get(&ident.value) {
                             result_row.insert(alias.value.clone(), val.clone());
@@ -1839,7 +1976,9 @@ fn evaluate_expression(expr: &Expr, rows: &[Value]) -> Result<(String, Value)> {
             // For non-aggregate columns in simple aggregation
             Ok((ident.value.clone(), Value::Null))
         }
-        _ => Err(DriftError::InvalidQuery("Unsupported expression type".to_string())),
+        _ => Err(DriftError::InvalidQuery(
+            "Unsupported expression type".to_string(),
+        )),
     }
 }
 
@@ -1852,12 +1991,12 @@ fn evaluate_aggregate_function(func: &Function, rows: &[Value]) -> Result<(Strin
             match &list.args[0] {
                 FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Identifier(ident))) => {
                     Some(ident.value.clone())
-            }
-            FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::CompoundIdentifier(parts))) => {
-                // Handle table.column notation (e.g., p.budget)
-                parts.last().map(|ident| ident.value.clone())
-            }
-            FunctionArg::Unnamed(FunctionArgExpr::Wildcard) => None, // For COUNT(*)
+                }
+                FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::CompoundIdentifier(parts))) => {
+                    // Handle table.column notation (e.g., p.budget)
+                    parts.last().map(|ident| ident.value.clone())
+                }
+                FunctionArg::Unnamed(FunctionArgExpr::Wildcard) => None, // For COUNT(*)
                 _ => None,
             }
         }
@@ -1903,18 +2042,22 @@ fn evaluate_aggregate_function(func: &Function, rows: &[Value]) -> Result<(Strin
         }
         "SUM" => {
             if let Some(col) = column {
-                let sum: f64 = rows.iter()
+                let sum: f64 = rows
+                    .iter()
                     .filter_map(|row| get_column_value(row, &col))
                     .filter_map(|v| v.as_f64().or_else(|| v.as_i64().map(|i| i as f64)))
                     .sum();
                 Ok((result_name, json!(sum)))
             } else {
-                Err(DriftError::InvalidQuery("SUM requires a column".to_string()))
+                Err(DriftError::InvalidQuery(
+                    "SUM requires a column".to_string(),
+                ))
             }
         }
         "AVG" => {
             if let Some(col) = column {
-                let values: Vec<f64> = rows.iter()
+                let values: Vec<f64> = rows
+                    .iter()
                     .filter_map(|row| get_column_value(row, &col))
                     .filter_map(|v| v.as_f64().or_else(|| v.as_i64().map(|i| i as f64)))
                     .collect();
@@ -1926,46 +2069,51 @@ fn evaluate_aggregate_function(func: &Function, rows: &[Value]) -> Result<(Strin
                     Ok((result_name, json!(avg)))
                 }
             } else {
-                Err(DriftError::InvalidQuery("AVG requires a column".to_string()))
+                Err(DriftError::InvalidQuery(
+                    "AVG requires a column".to_string(),
+                ))
             }
         }
         "MIN" => {
             if let Some(col) = column {
-                let min = rows.iter()
+                let min = rows
+                    .iter()
                     .filter_map(|row| get_column_value(row, &col))
                     .filter(|v| !v.is_null())
-                    .min_by(|a, b| {
-                        match (a.as_f64(), b.as_f64()) {
-                            (Some(a_val), Some(b_val)) => a_val.partial_cmp(&b_val).unwrap(),
-                            _ => std::cmp::Ordering::Equal,
-                        }
+                    .min_by(|a, b| match (a.as_f64(), b.as_f64()) {
+                        (Some(a_val), Some(b_val)) => a_val.partial_cmp(&b_val).unwrap(),
+                        _ => std::cmp::Ordering::Equal,
                     });
 
                 Ok((result_name, min.unwrap_or(Value::Null)))
             } else {
-                Err(DriftError::InvalidQuery("MIN requires a column".to_string()))
+                Err(DriftError::InvalidQuery(
+                    "MIN requires a column".to_string(),
+                ))
             }
         }
         "MAX" => {
             if let Some(col) = column {
-                let max = rows.iter()
+                let max = rows
+                    .iter()
                     .filter_map(|row| get_column_value(row, &col))
                     .filter(|v| !v.is_null())
-                    .max_by(|a, b| {
-                        match (a.as_f64(), b.as_f64()) {
-                            (Some(a_val), Some(b_val)) => a_val.partial_cmp(&b_val).unwrap(),
-                            _ => std::cmp::Ordering::Equal,
-                        }
+                    .max_by(|a, b| match (a.as_f64(), b.as_f64()) {
+                        (Some(a_val), Some(b_val)) => a_val.partial_cmp(&b_val).unwrap(),
+                        _ => std::cmp::Ordering::Equal,
                     });
 
                 Ok((result_name, max.unwrap_or(Value::Null)))
             } else {
-                Err(DriftError::InvalidQuery("MAX requires a column".to_string()))
+                Err(DriftError::InvalidQuery(
+                    "MAX requires a column".to_string(),
+                ))
             }
         }
-        _ => Err(DriftError::InvalidQuery(
-            format!("Unsupported aggregate function: {}", func_name)
-        )),
+        _ => Err(DriftError::InvalidQuery(format!(
+            "Unsupported aggregate function: {}",
+            func_name
+        ))),
     }
 }
 
@@ -1993,9 +2141,17 @@ fn filter_aggregated_rows(rows: Vec<Value>, having: &Expr) -> Result<Vec<Value>>
     Ok(filtered)
 }
 
-fn evaluate_where_expression_with_engine(engine: &mut Engine, expr: &Expr, row: &Value) -> Result<bool> {
+fn evaluate_where_expression_with_engine(
+    engine: &mut Engine,
+    expr: &Expr,
+    row: &Value,
+) -> Result<bool> {
     match expr {
-        Expr::InSubquery { expr, subquery, negated } => {
+        Expr::InSubquery {
+            expr,
+            subquery,
+            negated,
+        } => {
             // Execute the subquery
             let subquery_result = execute_subquery(engine, subquery)?;
             let left_val = evaluate_value_expression(expr, row)?;
@@ -2003,7 +2159,11 @@ fn evaluate_where_expression_with_engine(engine: &mut Engine, expr: &Expr, row: 
             let is_in = subquery_result.iter().any(|val| val == &left_val);
             Ok(if *negated { !is_in } else { is_in })
         }
-        Expr::InList { expr, list, negated } => {
+        Expr::InList {
+            expr,
+            list,
+            negated,
+        } => {
             let left_val = evaluate_value_expression(expr, row)?;
             let mut values = Vec::new();
             for item in list {
@@ -2038,12 +2198,12 @@ fn evaluate_where_expression_with_engine(engine: &mut Engine, expr: &Expr, row: 
             let subquery_result = execute_subquery(engine, subquery)?;
             if subquery_result.len() != 1 {
                 return Err(DriftError::InvalidQuery(
-                    "Scalar subquery must return exactly one value".to_string()
+                    "Scalar subquery must return exactly one value".to_string(),
                 ));
             }
             Ok(!subquery_result[0].is_null())
         }
-Expr::BinaryOp { left, op, right } => {
+        Expr::BinaryOp { left, op, right } => {
             // Check if right side is a subquery
             match right.as_ref() {
                 Expr::Subquery(subquery) => {
@@ -2051,7 +2211,7 @@ Expr::BinaryOp { left, op, right } => {
                     let subquery_result = execute_subquery(engine, subquery)?;
                     if subquery_result.len() != 1 {
                         return Err(DriftError::InvalidQuery(
-                            "Scalar subquery must return exactly one value".to_string()
+                            "Scalar subquery must return exactly one value".to_string(),
                         ));
                     }
                     let left_val = evaluate_value_expression(left, row)?;
@@ -2060,19 +2220,29 @@ Expr::BinaryOp { left, op, right } => {
                     match op {
                         BinaryOperator::Eq => Ok(left_val == *right_val),
                         BinaryOperator::NotEq => Ok(left_val != *right_val),
-                        BinaryOperator::Lt => compare_values(&left_val, right_val, |cmp| cmp == std::cmp::Ordering::Less),
-                        BinaryOperator::LtEq => compare_values(&left_val, right_val, |cmp| cmp != std::cmp::Ordering::Greater),
-                        BinaryOperator::Gt => compare_values(&left_val, right_val, |cmp| cmp == std::cmp::Ordering::Greater),
-                        BinaryOperator::GtEq => compare_values(&left_val, right_val, |cmp| cmp != std::cmp::Ordering::Less),
+                        BinaryOperator::Lt => compare_values(&left_val, right_val, |cmp| {
+                            cmp == std::cmp::Ordering::Less
+                        }),
+                        BinaryOperator::LtEq => compare_values(&left_val, right_val, |cmp| {
+                            cmp != std::cmp::Ordering::Greater
+                        }),
+                        BinaryOperator::Gt => compare_values(&left_val, right_val, |cmp| {
+                            cmp == std::cmp::Ordering::Greater
+                        }),
+                        BinaryOperator::GtEq => compare_values(&left_val, right_val, |cmp| {
+                            cmp != std::cmp::Ordering::Less
+                        }),
                         BinaryOperator::And => {
-                            Ok(evaluate_where_expression_with_engine(engine, left, row)? &&
-                               evaluate_where_expression_with_engine(engine, right, row)?)
+                            Ok(evaluate_where_expression_with_engine(engine, left, row)?
+                                && evaluate_where_expression_with_engine(engine, right, row)?)
                         }
                         BinaryOperator::Or => {
-                            Ok(evaluate_where_expression_with_engine(engine, left, row)? ||
-                               evaluate_where_expression_with_engine(engine, right, row)?)
+                            Ok(evaluate_where_expression_with_engine(engine, left, row)?
+                                || evaluate_where_expression_with_engine(engine, right, row)?)
                         }
-                        _ => Err(DriftError::InvalidQuery("Unsupported operator with subquery".to_string())),
+                        _ => Err(DriftError::InvalidQuery(
+                            "Unsupported operator with subquery".to_string(),
+                        )),
                     }
                 }
                 _ => {
@@ -2083,19 +2253,29 @@ Expr::BinaryOp { left, op, right } => {
                     match op {
                         BinaryOperator::Eq => Ok(left_val == right_val),
                         BinaryOperator::NotEq => Ok(left_val != right_val),
-                        BinaryOperator::Lt => compare_values(&left_val, &right_val, |cmp| cmp == std::cmp::Ordering::Less),
-                        BinaryOperator::LtEq => compare_values(&left_val, &right_val, |cmp| cmp != std::cmp::Ordering::Greater),
-                        BinaryOperator::Gt => compare_values(&left_val, &right_val, |cmp| cmp == std::cmp::Ordering::Greater),
-                        BinaryOperator::GtEq => compare_values(&left_val, &right_val, |cmp| cmp != std::cmp::Ordering::Less),
+                        BinaryOperator::Lt => compare_values(&left_val, &right_val, |cmp| {
+                            cmp == std::cmp::Ordering::Less
+                        }),
+                        BinaryOperator::LtEq => compare_values(&left_val, &right_val, |cmp| {
+                            cmp != std::cmp::Ordering::Greater
+                        }),
+                        BinaryOperator::Gt => compare_values(&left_val, &right_val, |cmp| {
+                            cmp == std::cmp::Ordering::Greater
+                        }),
+                        BinaryOperator::GtEq => compare_values(&left_val, &right_val, |cmp| {
+                            cmp != std::cmp::Ordering::Less
+                        }),
                         BinaryOperator::And => {
-                            Ok(evaluate_where_expression_with_engine(engine, left, row)? &&
-                               evaluate_where_expression_with_engine(engine, right, row)?)
+                            Ok(evaluate_where_expression_with_engine(engine, left, row)?
+                                && evaluate_where_expression_with_engine(engine, right, row)?)
                         }
                         BinaryOperator::Or => {
-                            Ok(evaluate_where_expression_with_engine(engine, left, row)? ||
-                               evaluate_where_expression_with_engine(engine, right, row)?)
+                            Ok(evaluate_where_expression_with_engine(engine, left, row)?
+                                || evaluate_where_expression_with_engine(engine, right, row)?)
                         }
-                        _ => Err(DriftError::InvalidQuery("Unsupported WHERE operator".to_string())),
+                        _ => Err(DriftError::InvalidQuery(
+                            "Unsupported WHERE operator".to_string(),
+                        )),
                     }
                 }
             }
@@ -2107,9 +2287,7 @@ Expr::BinaryOp { left, op, right } => {
 fn contains_subquery(expr: &Expr) -> bool {
     match expr {
         Expr::InSubquery { .. } | Expr::Exists { .. } | Expr::Subquery(_) => true,
-        Expr::BinaryOp { left, right, .. } => {
-            contains_subquery(left) || contains_subquery(right)
-        }
+        Expr::BinaryOp { left, right, .. } => contains_subquery(left) || contains_subquery(right),
         Expr::InList { .. } => false,
         _ => false,
     }
@@ -2118,13 +2296,11 @@ fn contains_subquery(expr: &Expr) -> bool {
 #[allow(dead_code)]
 fn substitute_outer_refs(expr: Expr, outer_row: &Value) -> Result<Expr> {
     match expr {
-        Expr::BinaryOp { left, op, right } => {
-            Ok(Expr::BinaryOp {
-                left: Box::new(substitute_outer_refs(*left, outer_row)?),
-                op,
-                right: Box::new(substitute_outer_refs(*right, outer_row)?),
-            })
-        }
+        Expr::BinaryOp { left, op, right } => Ok(Expr::BinaryOp {
+            left: Box::new(substitute_outer_refs(*left, outer_row)?),
+            op,
+            right: Box::new(substitute_outer_refs(*right, outer_row)?),
+        }),
         Expr::CompoundIdentifier(parts) if parts.len() == 2 => {
             // This might be an outer table reference like u.id
             // Try to get the value from outer_row
@@ -2164,7 +2340,11 @@ fn execute_subquery(engine: &mut Engine, subquery: &Box<SqlQuery>) -> Result<Vec
     execute_subquery_with_context(engine, subquery, None)
 }
 
-fn execute_subquery_with_context(engine: &mut Engine, subquery: &Box<SqlQuery>, outer_row: Option<&Value>) -> Result<Vec<Value>> {
+fn execute_subquery_with_context(
+    engine: &mut Engine,
+    subquery: &Box<SqlQuery>,
+    outer_row: Option<&Value>,
+) -> Result<Vec<Value>> {
     // Set outer row context if provided
     if let Some(row) = outer_row {
         OUTER_ROW_CONTEXT.with(|context| {
@@ -2207,17 +2387,29 @@ fn evaluate_where_expression(expr: &Expr, row: &Value) -> Result<bool> {
             match op {
                 BinaryOperator::Eq => Ok(left_val == right_val),
                 BinaryOperator::NotEq => Ok(left_val != right_val),
-                BinaryOperator::Lt => compare_values(&left_val, &right_val, |cmp| cmp == std::cmp::Ordering::Less),
-                BinaryOperator::LtEq => compare_values(&left_val, &right_val, |cmp| cmp != std::cmp::Ordering::Greater),
-                BinaryOperator::Gt => compare_values(&left_val, &right_val, |cmp| cmp == std::cmp::Ordering::Greater),
-                BinaryOperator::GtEq => compare_values(&left_val, &right_val, |cmp| cmp != std::cmp::Ordering::Less),
+                BinaryOperator::Lt => {
+                    compare_values(&left_val, &right_val, |cmp| cmp == std::cmp::Ordering::Less)
+                }
+                BinaryOperator::LtEq => compare_values(&left_val, &right_val, |cmp| {
+                    cmp != std::cmp::Ordering::Greater
+                }),
+                BinaryOperator::Gt => compare_values(&left_val, &right_val, |cmp| {
+                    cmp == std::cmp::Ordering::Greater
+                }),
+                BinaryOperator::GtEq => {
+                    compare_values(&left_val, &right_val, |cmp| cmp != std::cmp::Ordering::Less)
+                }
                 BinaryOperator::And => {
-                    Ok(evaluate_where_expression(left, row)? && evaluate_where_expression(right, row)?)
+                    Ok(evaluate_where_expression(left, row)?
+                        && evaluate_where_expression(right, row)?)
                 }
                 BinaryOperator::Or => {
-                    Ok(evaluate_where_expression(left, row)? || evaluate_where_expression(right, row)?)
+                    Ok(evaluate_where_expression(left, row)?
+                        || evaluate_where_expression(right, row)?)
                 }
-                _ => Err(DriftError::InvalidQuery("Unsupported WHERE operator".to_string())),
+                _ => Err(DriftError::InvalidQuery(
+                    "Unsupported WHERE operator".to_string(),
+                )),
             }
         }
         _ => Ok(true), // For now, accept other expressions as true
@@ -2236,9 +2428,9 @@ fn evaluate_having_expression(expr: &Expr, row: &Value) -> Result<bool> {
                     let column = match &func.args {
                         FunctionArguments::List(list) if list.args.len() == 1 => {
                             match &list.args[0] {
-                                FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Identifier(ident))) => {
-                                    Some(ident.value.clone())
-                            }
+                                FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Identifier(
+                                    ident,
+                                ))) => Some(ident.value.clone()),
                                 _ => None,
                             }
                         }
@@ -2258,7 +2450,7 @@ fn evaluate_having_expression(expr: &Expr, row: &Value) -> Result<bool> {
 
                     row.get(&col_name).cloned().unwrap_or(Value::Null)
                 }
-                _ => evaluate_value_expression(left, row)?
+                _ => evaluate_value_expression(left, row)?,
             };
 
             let right_val = evaluate_value_expression(right, row)?;
@@ -2266,11 +2458,21 @@ fn evaluate_having_expression(expr: &Expr, row: &Value) -> Result<bool> {
             match op {
                 BinaryOperator::Eq => Ok(left_val == right_val),
                 BinaryOperator::NotEq => Ok(left_val != right_val),
-                BinaryOperator::Lt => compare_values(&left_val, &right_val, |cmp| cmp == std::cmp::Ordering::Less),
-                BinaryOperator::LtEq => compare_values(&left_val, &right_val, |cmp| cmp != std::cmp::Ordering::Greater),
-                BinaryOperator::Gt => compare_values(&left_val, &right_val, |cmp| cmp == std::cmp::Ordering::Greater),
-                BinaryOperator::GtEq => compare_values(&left_val, &right_val, |cmp| cmp != std::cmp::Ordering::Less),
-                _ => Err(DriftError::InvalidQuery("Unsupported HAVING operator".to_string())),
+                BinaryOperator::Lt => {
+                    compare_values(&left_val, &right_val, |cmp| cmp == std::cmp::Ordering::Less)
+                }
+                BinaryOperator::LtEq => compare_values(&left_val, &right_val, |cmp| {
+                    cmp != std::cmp::Ordering::Greater
+                }),
+                BinaryOperator::Gt => compare_values(&left_val, &right_val, |cmp| {
+                    cmp == std::cmp::Ordering::Greater
+                }),
+                BinaryOperator::GtEq => {
+                    compare_values(&left_val, &right_val, |cmp| cmp != std::cmp::Ordering::Less)
+                }
+                _ => Err(DriftError::InvalidQuery(
+                    "Unsupported HAVING operator".to_string(),
+                )),
             }
         }
         _ => Ok(true),
@@ -2364,8 +2566,11 @@ fn evaluate_value_expression(expr: &Expr, row: &Value) -> Result<Value> {
                         if in_current && in_outer {
                             let table_alias = &parts[0].value;
                             // Check if this looks like an outer table alias
-                            table_alias == "e1" || table_alias == "outer" || table_alias == "u" ||
-                            table_alias.ends_with("1") || table_alias == "main"
+                            table_alias == "e1"
+                                || table_alias == "outer"
+                                || table_alias == "u"
+                                || table_alias.ends_with("1")
+                                || table_alias == "main"
                         } else {
                             // Fall back to availability heuristic
                             !in_current && in_outer
@@ -2409,7 +2614,10 @@ fn evaluate_value_expression(expr: &Expr, row: &Value) -> Result<Value> {
                 // Try just the last part as column name
                 if let Some(last_part) = parts.last() {
                     if let Some(row_obj) = row.as_object() {
-                        Ok(row_obj.get(&last_part.value).cloned().unwrap_or(Value::Null))
+                        Ok(row_obj
+                            .get(&last_part.value)
+                            .cloned()
+                            .unwrap_or(Value::Null))
                     } else {
                         Ok(Value::Null)
                     }
@@ -2419,9 +2627,18 @@ fn evaluate_value_expression(expr: &Expr, row: &Value) -> Result<Value> {
             }
         }
         Expr::Value(val) => sql_value_to_json(val),
-        Expr::Case { operand, conditions, results, else_result } => {
-            evaluate_case_expression(operand.as_deref(), conditions, results, else_result.as_deref(), row)
-        }
+        Expr::Case {
+            operand,
+            conditions,
+            results,
+            else_result,
+        } => evaluate_case_expression(
+            operand.as_deref(),
+            conditions,
+            results,
+            else_result.as_deref(),
+            row,
+        ),
         Expr::BinaryOp { left, op, right } => {
             let left_val = evaluate_value_expression(left, row)?;
             let right_val = evaluate_value_expression(right, row)?;
@@ -2434,44 +2651,48 @@ fn evaluate_value_expression(expr: &Expr, row: &Value) -> Result<Value> {
         }
         _ => {
             // Log unhandled expression types for debugging
-            eprintln!("Warning: Unhandled expression type in evaluate_value_expression: {:?}", expr);
+            eprintln!(
+                "Warning: Unhandled expression type in evaluate_value_expression: {:?}",
+                expr
+            );
             Ok(Value::Null)
         }
     }
 }
 
 #[allow(dead_code)]
-fn evaluate_expression_with_row(left: &Expr, op: &BinaryOperator, right: &Expr, row: &Value) -> Result<Value> {
+fn evaluate_expression_with_row(
+    left: &Expr,
+    op: &BinaryOperator,
+    right: &Expr,
+    row: &Value,
+) -> Result<Value> {
     let left_val = match left {
-        Expr::Identifier(ident) => {
-            match row {
-                Value::Object(obj) => {
-                    if let Some(val) = obj.get(&ident.value) {
-                        val.clone()
-                    } else {
-                        Value::Null
-                    }
+        Expr::Identifier(ident) => match row {
+            Value::Object(obj) => {
+                if let Some(val) = obj.get(&ident.value) {
+                    val.clone()
+                } else {
+                    Value::Null
                 }
-                _ => Value::Null,
             }
-        }
+            _ => Value::Null,
+        },
         Expr::Value(val) => sql_value_to_json(val)?,
         _ => evaluate_expression_without_row(left)?,
     };
 
     let right_val = match right {
-        Expr::Identifier(ident) => {
-            match row {
-                Value::Object(obj) => {
-                    if let Some(val) = obj.get(&ident.value) {
-                        val.clone()
-                    } else {
-                        Value::Null
-                    }
+        Expr::Identifier(ident) => match row {
+            Value::Object(obj) => {
+                if let Some(val) = obj.get(&ident.value) {
+                    val.clone()
+                } else {
+                    Value::Null
                 }
-                _ => Value::Null,
             }
-        }
+            _ => Value::Null,
+        },
         Expr::Value(val) => sql_value_to_json(val)?,
         _ => evaluate_expression_without_row(right)?,
     };
@@ -2487,13 +2708,15 @@ fn evaluate_expression_without_row(expr: &Expr) -> Result<Value> {
                 if let Ok(i) = n.parse::<i64>() {
                     Ok(Value::Number(i.into()))
                 } else if let Ok(f) = n.parse::<f64>() {
-                    Ok(Value::Number(serde_json::Number::from_f64(f).unwrap_or(0.into())))
+                    Ok(Value::Number(
+                        serde_json::Number::from_f64(f).unwrap_or(0.into()),
+                    ))
                 } else {
                     Ok(Value::Number(0.into()))
                 }
             }
-            sqlparser::ast::Value::SingleQuotedString(s) |
-            sqlparser::ast::Value::DoubleQuotedString(s) => Ok(Value::String(s.clone())),
+            sqlparser::ast::Value::SingleQuotedString(s)
+            | sqlparser::ast::Value::DoubleQuotedString(s) => Ok(Value::String(s.clone())),
             sqlparser::ast::Value::Boolean(b) => Ok(Value::Bool(*b)),
             sqlparser::ast::Value::Null => Ok(Value::Null),
             _ => Ok(Value::Null),
@@ -2502,29 +2725,52 @@ fn evaluate_expression_without_row(expr: &Expr) -> Result<Value> {
             // Handle nested/parenthesized expressions
             evaluate_expression_without_row(inner)
         }
-        Expr::Case { operand, conditions, results, else_result } => {
-            evaluate_case_without_row(operand.as_deref(), conditions, results, else_result.as_deref())
-        }
+        Expr::Case {
+            operand,
+            conditions,
+            results,
+            else_result,
+        } => evaluate_case_without_row(
+            operand.as_deref(),
+            conditions,
+            results,
+            else_result.as_deref(),
+        ),
         Expr::BinaryOp { left, op, right } => {
             let left_val = evaluate_expression_without_row(left)?;
             let right_val = evaluate_expression_without_row(right)?;
             match op {
-                BinaryOperator::Eq => Ok(Value::Bool(compare_json_values(&left_val, &right_val) == std::cmp::Ordering::Equal)),
-                BinaryOperator::NotEq => Ok(Value::Bool(compare_json_values(&left_val, &right_val) != std::cmp::Ordering::Equal)),
-                BinaryOperator::Lt => Ok(Value::Bool(compare_json_values(&left_val, &right_val) == std::cmp::Ordering::Less)),
-                BinaryOperator::LtEq => Ok(Value::Bool(matches!(compare_json_values(&left_val, &right_val), std::cmp::Ordering::Less | std::cmp::Ordering::Equal))),
-                BinaryOperator::Gt => Ok(Value::Bool(compare_json_values(&left_val, &right_val) == std::cmp::Ordering::Greater)),
-                BinaryOperator::GtEq => Ok(Value::Bool(matches!(compare_json_values(&left_val, &right_val), std::cmp::Ordering::Greater | std::cmp::Ordering::Equal))),
-                BinaryOperator::And => {
-                    Ok(Value::Bool(left_val.as_bool().unwrap_or(false) && right_val.as_bool().unwrap_or(false)))
-                }
-                BinaryOperator::Or => {
-                    Ok(Value::Bool(left_val.as_bool().unwrap_or(false) || right_val.as_bool().unwrap_or(false)))
-                }
+                BinaryOperator::Eq => Ok(Value::Bool(
+                    compare_json_values(&left_val, &right_val) == std::cmp::Ordering::Equal,
+                )),
+                BinaryOperator::NotEq => Ok(Value::Bool(
+                    compare_json_values(&left_val, &right_val) != std::cmp::Ordering::Equal,
+                )),
+                BinaryOperator::Lt => Ok(Value::Bool(
+                    compare_json_values(&left_val, &right_val) == std::cmp::Ordering::Less,
+                )),
+                BinaryOperator::LtEq => Ok(Value::Bool(matches!(
+                    compare_json_values(&left_val, &right_val),
+                    std::cmp::Ordering::Less | std::cmp::Ordering::Equal
+                ))),
+                BinaryOperator::Gt => Ok(Value::Bool(
+                    compare_json_values(&left_val, &right_val) == std::cmp::Ordering::Greater,
+                )),
+                BinaryOperator::GtEq => Ok(Value::Bool(matches!(
+                    compare_json_values(&left_val, &right_val),
+                    std::cmp::Ordering::Greater | std::cmp::Ordering::Equal
+                ))),
+                BinaryOperator::And => Ok(Value::Bool(
+                    left_val.as_bool().unwrap_or(false) && right_val.as_bool().unwrap_or(false),
+                )),
+                BinaryOperator::Or => Ok(Value::Bool(
+                    left_val.as_bool().unwrap_or(false) || right_val.as_bool().unwrap_or(false),
+                )),
                 // Use the centralized binary operation evaluator for arithmetic
-                BinaryOperator::Plus | BinaryOperator::Minus | BinaryOperator::Multiply | BinaryOperator::Divide => {
-                    evaluate_binary_op(&left_val, op, &right_val)
-                }
+                BinaryOperator::Plus
+                | BinaryOperator::Minus
+                | BinaryOperator::Multiply
+                | BinaryOperator::Divide => evaluate_binary_op(&left_val, op, &right_val),
                 BinaryOperator::Modulo => {
                     if let (Some(l), Some(r)) = (left_val.as_i64(), right_val.as_i64()) {
                         if r != 0 {
@@ -2669,7 +2915,7 @@ fn project_columns(rows: Vec<Value>, select: &Select) -> Result<Vec<Value>> {
                     let binary_expr = Expr::BinaryOp {
                         left: left.clone(),
                         op: op.clone(),
-                        right: right.clone()
+                        right: right.clone(),
                     };
                     if let Ok(value) = evaluate_value_expression(&binary_expr, &row) {
                         // Use a simple name for the column (e.g., n + 1 -> "n")
@@ -2680,19 +2926,25 @@ fn project_columns(rows: Vec<Value>, select: &Select) -> Result<Vec<Value>> {
                         projected_row.insert(col_name, value);
                     }
                 }
-                SelectItem::ExprWithAlias { expr: Expr::Identifier(ident), alias } => {
+                SelectItem::ExprWithAlias {
+                    expr: Expr::Identifier(ident),
+                    alias,
+                } => {
                     if let Some(val) = row.get(&ident.value) {
                         projected_row.insert(alias.value.clone(), val.clone());
                     } else if let Some(val) = row.get(&format!("right_{}", ident.value)) {
                         projected_row.insert(alias.value.clone(), val.clone());
                     }
                 }
-                SelectItem::ExprWithAlias { expr: Expr::BinaryOp { left, op, right }, alias } => {
+                SelectItem::ExprWithAlias {
+                    expr: Expr::BinaryOp { left, op, right },
+                    alias,
+                } => {
                     // Handle arithmetic expressions with alias like "n + 1 as next_n"
                     let binary_expr = Expr::BinaryOp {
                         left: left.clone(),
                         op: op.clone(),
-                        right: right.clone()
+                        right: right.clone(),
                     };
                     if let Ok(value) = evaluate_value_expression(&binary_expr, &row) {
                         projected_row.insert(alias.value.clone(), value);
@@ -2708,7 +2960,10 @@ fn project_columns(rows: Vec<Value>, select: &Select) -> Result<Vec<Value>> {
                         }
                     }
                 }
-                SelectItem::ExprWithAlias { expr: Expr::CompoundIdentifier(idents), alias } => {
+                SelectItem::ExprWithAlias {
+                    expr: Expr::CompoundIdentifier(idents),
+                    alias,
+                } => {
                     // For multiple tables with same column names, we need to find the right one
                     // The pattern is: first table's columns are unprefixed,
                     // second table's conflicting columns get t1_ prefix,
@@ -2799,7 +3054,7 @@ where
         _ => match (left.as_str(), right.as_str()) {
             (Some(l), Some(r)) => Ok(op(l.cmp(r))),
             _ => Ok(false),
-        }
+        },
     }
 }
 
@@ -2814,9 +3069,10 @@ fn process_scalar_subqueries(
         if let Value::Object(row_map) = row {
             for item in projection {
                 let (subquery, col_name) = match item {
-                    SelectItem::ExprWithAlias { expr: Expr::Subquery(subquery), alias } => {
-                        (Some(subquery), alias.value.clone())
-                    }
+                    SelectItem::ExprWithAlias {
+                        expr: Expr::Subquery(subquery),
+                        alias,
+                    } => (Some(subquery), alias.value.clone()),
                     SelectItem::UnnamedExpr(Expr::Subquery(subquery)) => {
                         // Generate a column name for unnamed subquery
                         (Some(subquery), format!("(subquery)"))
@@ -2851,7 +3107,7 @@ fn process_scalar_subqueries(
                                 Value::Null
                             }
                         }
-                        _ => Value::Null
+                        _ => Value::Null,
                     };
 
                     row_map.insert(col_name, value);
@@ -2865,7 +3121,9 @@ fn process_scalar_subqueries(
 
 fn apply_projection(data: Vec<Value>, projection: &[SelectItem]) -> Result<Vec<Value>> {
     // Handle SELECT * case
-    let select_all = projection.iter().any(|item| matches!(item, SelectItem::Wildcard(_)));
+    let select_all = projection
+        .iter()
+        .any(|item| matches!(item, SelectItem::Wildcard(_)));
     if select_all {
         return Ok(data);
     }
@@ -2887,9 +3145,8 @@ fn apply_projection(data: Vec<Value>, projection: &[SelectItem]) -> Result<Vec<V
                             }
                             Expr::CompoundIdentifier(parts) => {
                                 // Handle table.column notation
-                                let col_name = parts.last()
-                                    .map(|i| i.value.clone())
-                                    .unwrap_or_default();
+                                let col_name =
+                                    parts.last().map(|i| i.value.clone()).unwrap_or_default();
                                 if let Some(value) = row_map.get(&col_name) {
                                     projected_row.insert(col_name, value.clone());
                                 }
@@ -2897,7 +3154,8 @@ fn apply_projection(data: Vec<Value>, projection: &[SelectItem]) -> Result<Vec<V
                             Expr::Value(val) => {
                                 // Handle literal values like SELECT 1
                                 let json_val = sql_value_to_json(val)?;
-                                let col_name = format!("{:?}", val).chars().take(20).collect::<String>();
+                                let col_name =
+                                    format!("{:?}", val).chars().take(20).collect::<String>();
                                 projected_row.insert(col_name, json_val);
                             }
                             Expr::Case { .. } => {
@@ -2914,7 +3172,8 @@ fn apply_projection(data: Vec<Value>, projection: &[SelectItem]) -> Result<Vec<V
                                     projected_row.insert(subquery_col.to_string(), value.clone());
                                 } else {
                                     // Fallback if not found
-                                    let col_name = format!("{:?}", expr).chars().take(50).collect::<String>();
+                                    let col_name =
+                                        format!("{:?}", expr).chars().take(50).collect::<String>();
                                     projected_row.insert(col_name, Value::Null);
                                 }
                             }
@@ -2922,7 +3181,8 @@ fn apply_projection(data: Vec<Value>, projection: &[SelectItem]) -> Result<Vec<V
                                 // Handle any other expression (e.g., function calls, etc.)
                                 if let Ok(value) = evaluate_value_expression(expr, &row) {
                                     // Use a simplified version of the expression as column name
-                                    let col_name = format!("{:?}", expr).chars().take(50).collect::<String>();
+                                    let col_name =
+                                        format!("{:?}", expr).chars().take(50).collect::<String>();
                                     projected_row.insert(col_name, value);
                                 }
                             }
@@ -2999,7 +3259,11 @@ fn apply_order_by(mut rows: Vec<Value>, order_by: &[OrderByExpr]) -> Result<Vec<
     Ok(rows)
 }
 
-fn compare_rows_by_expr(a: &Value, b: &Value, order_expr: &OrderByExpr) -> Option<std::cmp::Ordering> {
+fn compare_rows_by_expr(
+    a: &Value,
+    b: &Value,
+    order_expr: &OrderByExpr,
+) -> Option<std::cmp::Ordering> {
     // Extract the column name from the expression
     let column = match &order_expr.expr {
         Expr::Identifier(ident) => ident.value.clone(),
@@ -3011,11 +3275,13 @@ fn compare_rows_by_expr(a: &Value, b: &Value, order_expr: &OrderByExpr) -> Optio
     };
 
     // Get values from both rows - check for prefixed columns too
-    let a_val = a.get(&column)
+    let a_val = a
+        .get(&column)
         .or_else(|| a.get(&format!("right_{}", column)))
         .or_else(|| a.get(&format!("left_{}", column)));
 
-    let b_val = b.get(&column)
+    let b_val = b
+        .get(&column)
         .or_else(|| b.get(&format!("right_{}", column)))
         .or_else(|| b.get(&format!("left_{}", column)));
 
@@ -3055,21 +3321,23 @@ fn compare_json_values(a: &Value, b: &Value) -> std::cmp::Ordering {
 
 fn parse_limit(expr: &Expr) -> Result<usize> {
     match expr {
-        Expr::Value(sqlparser::ast::Value::Number(n, _)) => {
-            n.parse::<usize>()
-                .map_err(|_| DriftError::InvalidQuery(format!("Invalid LIMIT value: {}", n)))
-        }
-        _ => Err(DriftError::InvalidQuery("LIMIT must be a number".to_string())),
+        Expr::Value(sqlparser::ast::Value::Number(n, _)) => n
+            .parse::<usize>()
+            .map_err(|_| DriftError::InvalidQuery(format!("Invalid LIMIT value: {}", n))),
+        _ => Err(DriftError::InvalidQuery(
+            "LIMIT must be a number".to_string(),
+        )),
     }
 }
 
 fn parse_offset(offset: &Offset) -> Result<usize> {
     match &offset.value {
-        Expr::Value(sqlparser::ast::Value::Number(n, _)) => {
-            n.parse::<usize>()
-                .map_err(|_| DriftError::InvalidQuery(format!("Invalid OFFSET value: {}", n)))
-        }
-        _ => Err(DriftError::InvalidQuery("OFFSET must be a number".to_string())),
+        Expr::Value(sqlparser::ast::Value::Number(n, _)) => n
+            .parse::<usize>()
+            .map_err(|_| DriftError::InvalidQuery(format!("Invalid OFFSET value: {}", n))),
+        _ => Err(DriftError::InvalidQuery(
+            "OFFSET must be a number".to_string(),
+        )),
     }
 }
 
@@ -3100,7 +3368,11 @@ fn execute_sql_update(
 
     let rows_to_update = match result {
         QueryResult::Rows { data } => data,
-        _ => return Ok(QueryResult::Success { message: "No rows to update".to_string() }),
+        _ => {
+            return Ok(QueryResult::Success {
+                message: "No rows to update".to_string(),
+            })
+        }
     };
 
     // Update each matching row
@@ -3114,12 +3386,19 @@ fn execute_sql_update(
             for assignment in assignments {
                 // In sqlparser 0.51, Assignment has target and value fields
                 let column = match &assignment.target {
-                    sqlparser::ast::AssignmentTarget::ColumnName(name) => {
-                        name.0.last()
-                            .ok_or_else(|| DriftError::InvalidQuery("Invalid column in UPDATE".to_string()))?
-                            .value.clone()
+                    sqlparser::ast::AssignmentTarget::ColumnName(name) => name
+                        .0
+                        .last()
+                        .ok_or_else(|| {
+                            DriftError::InvalidQuery("Invalid column in UPDATE".to_string())
+                        })?
+                        .value
+                        .clone(),
+                    _ => {
+                        return Err(DriftError::InvalidQuery(
+                            "Complex assignment targets not supported".to_string(),
+                        ))
                     }
-                    _ => return Err(DriftError::InvalidQuery("Complex assignment targets not supported".to_string())),
                 };
 
                 let new_value = evaluate_update_expression(&assignment.value, &row)?;
@@ -3141,7 +3420,10 @@ fn execute_sql_update(
             crate::triggers::TriggerResult::ModifyRow(modified) => modified,
             crate::triggers::TriggerResult::Skip => continue,
             crate::triggers::TriggerResult::Abort(msg) => {
-                return Err(DriftError::InvalidQuery(format!("Trigger aborted: {}", msg)));
+                return Err(DriftError::InvalidQuery(format!(
+                    "Trigger aborted: {}",
+                    msg
+                )));
             }
             crate::triggers::TriggerResult::Continue => updated_row.clone(),
         };
@@ -3217,6 +3499,19 @@ fn execute_drop_view(
     })
 }
 
+fn execute_drop_table(
+    engine: &mut Engine,
+    name: &sqlparser::ast::ObjectName,
+) -> Result<QueryResult> {
+    let table_name = name.to_string();
+
+    engine.drop_table(&table_name)?;
+
+    Ok(QueryResult::Success {
+        message: format!("Table '{}' dropped", table_name),
+    })
+}
+
 fn execute_create_table(
     engine: &mut Engine,
     name: &sqlparser::ast::ObjectName,
@@ -3258,7 +3553,7 @@ fn execute_create_table(
     let mut foreign_keys = Vec::new();
     for constraint in constraints {
         match constraint {
-            sqlparser::ast::TableConstraint::Unique {  .. } => {
+            sqlparser::ast::TableConstraint::Unique { .. } => {
                 // Unique constraint - could track these for future use
             }
             sqlparser::ast::TableConstraint::PrimaryKey { columns, .. } => {
@@ -3276,28 +3571,42 @@ fn execute_create_table(
             } => {
                 // Store foreign key information
                 let fk_columns: Vec<String> = columns.iter().map(|c| c.value.clone()).collect();
-                let ref_columns: Vec<String> = referred_columns.iter()
-                    .map(|c| c.value.clone())
-                    .collect();
+                let ref_columns: Vec<String> =
+                    referred_columns.iter().map(|c| c.value.clone()).collect();
 
                 let on_delete_action = match on_delete {
-                    Some(sqlparser::ast::ReferentialAction::Cascade) => crate::constraints::ForeignKeyAction::Cascade,
-                    Some(sqlparser::ast::ReferentialAction::SetNull) => crate::constraints::ForeignKeyAction::SetNull,
-                    Some(sqlparser::ast::ReferentialAction::SetDefault) => crate::constraints::ForeignKeyAction::SetDefault,
+                    Some(sqlparser::ast::ReferentialAction::Cascade) => {
+                        crate::constraints::ForeignKeyAction::Cascade
+                    }
+                    Some(sqlparser::ast::ReferentialAction::SetNull) => {
+                        crate::constraints::ForeignKeyAction::SetNull
+                    }
+                    Some(sqlparser::ast::ReferentialAction::SetDefault) => {
+                        crate::constraints::ForeignKeyAction::SetDefault
+                    }
                     _ => crate::constraints::ForeignKeyAction::Restrict,
                 };
 
                 let on_update_action = match on_update {
-                    Some(sqlparser::ast::ReferentialAction::Cascade) => crate::constraints::ForeignKeyAction::Cascade,
-                    Some(sqlparser::ast::ReferentialAction::SetNull) => crate::constraints::ForeignKeyAction::SetNull,
-                    Some(sqlparser::ast::ReferentialAction::SetDefault) => crate::constraints::ForeignKeyAction::SetDefault,
+                    Some(sqlparser::ast::ReferentialAction::Cascade) => {
+                        crate::constraints::ForeignKeyAction::Cascade
+                    }
+                    Some(sqlparser::ast::ReferentialAction::SetNull) => {
+                        crate::constraints::ForeignKeyAction::SetNull
+                    }
+                    Some(sqlparser::ast::ReferentialAction::SetDefault) => {
+                        crate::constraints::ForeignKeyAction::SetDefault
+                    }
                     _ => crate::constraints::ForeignKeyAction::Restrict,
                 };
 
                 let fk_constraint = crate::constraints::Constraint {
-                    name: format!("fk_{}_{}_{}", table_name,
-                                  fk_columns.first().unwrap_or(&"unknown".to_string()),
-                                  foreign_table.to_string()),
+                    name: format!(
+                        "fk_{}_{}_{}",
+                        table_name,
+                        fk_columns.first().unwrap_or(&"unknown".to_string()),
+                        foreign_table.to_string()
+                    ),
                     constraint_type: crate::constraints::ConstraintType::ForeignKey {
                         columns: fk_columns,
                         reference_table: foreign_table.to_string(),
@@ -3331,11 +3640,14 @@ fn execute_create_table(
     } else if primary_key.is_empty() {
         // Create default id column if needed
         primary_key = "id".to_string();
-        drift_columns.insert(0, DriftColumnDef {
-            name: "id".to_string(),
-            col_type: "INT".to_string(),
-            index: false,
-        });
+        drift_columns.insert(
+            0,
+            DriftColumnDef {
+                name: "id".to_string(),
+                col_type: "INT".to_string(),
+                index: false,
+            },
+        );
     }
 
     // Create the table with full column definitions
@@ -3353,7 +3665,9 @@ fn execute_create_table(
     })
 }
 
-fn extract_indexes_from_constraints(constraints: &Vec<sqlparser::ast::TableConstraint>) -> Vec<String> {
+fn extract_indexes_from_constraints(
+    constraints: &Vec<sqlparser::ast::TableConstraint>,
+) -> Vec<String> {
     let mut indexes = Vec::new();
     for constraint in constraints {
         if let sqlparser::ast::TableConstraint::Index { columns, .. } = constraint {
@@ -3374,29 +3688,33 @@ fn extract_indexes_from_constraints(constraints: &Vec<sqlparser::ast::TableConst
 //     ...
 // }
 
-#[allow(dead_code)]
 fn execute_create_index(
-    _engine: &mut Engine,
+    engine: &mut Engine,
     name: &Option<sqlparser::ast::ObjectName>,
     table_name: &sqlparser::ast::ObjectName,
     columns: &[sqlparser::ast::OrderByExpr],
     _unique: bool,
 ) -> Result<QueryResult> {
     let table = table_name.to_string();
-    let index_name = name.as_ref().map(|n| n.to_string())
-        .unwrap_or_else(|| format!("idx_{}_{}", table, columns[0].expr.to_string()));
+    let index_name = name.as_ref().map(|n| n.to_string());
 
-    // For now, just report success
-    // TODO: Implement dynamic index creation after table exists
-    // This would require adding an add_index method to Engine
     if let Some(col_expr) = columns.first() {
         let column_name = col_expr.expr.to_string();
 
+        // Create the actual index
+        engine.create_index(&table, &column_name, index_name.as_deref())?;
+
+        let display_name = index_name.unwrap_or_else(|| format!("idx_{}_{}", table, column_name));
         Ok(QueryResult::Success {
-            message: format!("Index '{}' created on {}.{}", index_name, table, column_name),
+            message: format!(
+                "Index '{}' created on {}.{}",
+                display_name, table, column_name
+            ),
         })
     } else {
-        Err(DriftError::InvalidQuery("CREATE INDEX requires at least one column".to_string()))
+        Err(DriftError::InvalidQuery(
+            "CREATE INDEX requires at least one column".to_string(),
+        ))
     }
 }
 
@@ -3406,7 +3724,9 @@ fn execute_sql_delete(
     selection: &Option<Expr>,
 ) -> Result<QueryResult> {
     if tables.is_empty() {
-        return Err(DriftError::InvalidQuery("DELETE requires FROM clause".to_string()));
+        return Err(DriftError::InvalidQuery(
+            "DELETE requires FROM clause".to_string(),
+        ));
     }
 
     // Extract table name
@@ -3431,7 +3751,11 @@ fn execute_sql_delete(
 
     let rows_to_delete = match result {
         QueryResult::Rows { data } => data,
-        _ => return Ok(QueryResult::Success { message: "No rows to delete".to_string() }),
+        _ => {
+            return Ok(QueryResult::Success {
+                message: "No rows to delete".to_string(),
+            })
+        }
     };
 
     // Delete each matching row
@@ -3451,15 +3775,16 @@ fn execute_sql_delete(
             match trigger_result {
                 crate::triggers::TriggerResult::Skip => continue,
                 crate::triggers::TriggerResult::Abort(msg) => {
-                    return Err(DriftError::InvalidQuery(format!("Trigger aborted: {}", msg)));
+                    return Err(DriftError::InvalidQuery(format!(
+                        "Trigger aborted: {}",
+                        msg
+                    )));
                 }
                 _ => {} // Continue or ModifyRow (not applicable for DELETE)
             }
 
             // Get the primary key value (assuming "id" for now)
-            let primary_key = row_obj.get("id")
-                .cloned()
-                .unwrap_or(Value::Null);
+            let primary_key = row_obj.get("id").cloned().unwrap_or(Value::Null);
 
             // Use SOFT_DELETE to delete the row
             let delete_query = Query::SoftDelete {
@@ -3521,39 +3846,37 @@ fn execute_alter_table(
             // For now, just return success as the column is conceptually added
             // The storage layer doesn't enforce schema strictly
             Ok(QueryResult::Success {
-                message: format!("Column '{}' added to table '{}'",
-                                column_def.name.value, table)
+                message: format!(
+                    "Column '{}' added to table '{}'",
+                    column_def.name.value, table
+                ),
             })
         }
-        sqlparser::ast::AlterTableOperation::DropColumn {
-            column_name,
-            ..
-        } => {
+        sqlparser::ast::AlterTableOperation::DropColumn { column_name, .. } => {
             // Drop column functionality would go here
             // For now, return an error as we need to implement this
-            Err(DriftError::InvalidQuery(
-                format!("DROP COLUMN {} not yet implemented", column_name)
-            ))
+            Err(DriftError::InvalidQuery(format!(
+                "DROP COLUMN {} not yet implemented",
+                column_name
+            )))
         }
         sqlparser::ast::AlterTableOperation::RenameColumn {
             old_column_name,
-            new_column_name
+            new_column_name,
         } => {
             // Rename column functionality would go here
-            Err(DriftError::InvalidQuery(
-                format!("RENAME COLUMN {} TO {} not yet implemented",
-                        old_column_name, new_column_name)
-            ))
+            Err(DriftError::InvalidQuery(format!(
+                "RENAME COLUMN {} TO {} not yet implemented",
+                old_column_name, new_column_name
+            )))
         }
         sqlparser::ast::AlterTableOperation::AddConstraint(constraint) => {
             // Parse and add constraint
             match constraint {
-                sqlparser::ast::TableConstraint::Unique {
-                    columns,
-                    ..
-                } => {
+                sqlparser::ast::TableConstraint::Unique { columns, .. } => {
                     // Create unique indexes for the constraint
-                    let column_list = columns.iter()
+                    let column_list = columns
+                        .iter()
                         .map(|c| c.value.clone())
                         .collect::<Vec<_>>()
                         .join(", ");
@@ -3563,18 +3886,14 @@ fn execute_alter_table(
                                         column_list, table)
                     })
                 }
-                _ => {
-                    Err(DriftError::InvalidQuery(
-                        "Constraint type not yet fully supported".to_string()
-                    ))
-                }
+                _ => Err(DriftError::InvalidQuery(
+                    "Constraint type not yet fully supported".to_string(),
+                )),
             }
         }
-        _ => {
-            Err(DriftError::InvalidQuery(
-                "ALTER TABLE operation not yet supported".to_string()
-            ))
-        }
+        _ => Err(DriftError::InvalidQuery(
+            "ALTER TABLE operation not yet supported".to_string(),
+        )),
     }
 }
 fn execute_window_functions(data: Vec<Value>, projection: &[SelectItem]) -> Result<Vec<Value>> {
@@ -3588,7 +3907,10 @@ fn execute_window_functions(data: Vec<Value>, projection: &[SelectItem]) -> Resu
                 let window_fn = parse_window_function(func)?;
                 window_calls.push(window_fn);
             }
-            SelectItem::ExprWithAlias { expr: Expr::Function(func), alias } if func.over.is_some() => {
+            SelectItem::ExprWithAlias {
+                expr: Expr::Function(func),
+                alias,
+            } if func.over.is_some() => {
                 let mut window_fn = parse_window_function(func)?;
                 window_fn.alias = alias.value.clone();
                 window_calls.push(window_fn);
@@ -3629,13 +3951,19 @@ fn execute_window_functions(data: Vec<Value>, projection: &[SelectItem]) -> Resu
                             projected_row.insert(ident.value.clone(), val.clone());
                         }
                     }
-                    SelectItem::ExprWithAlias { expr: Expr::Function(func), alias } if func.over.is_some() => {
+                    SelectItem::ExprWithAlias {
+                        expr: Expr::Function(func),
+                        alias,
+                    } if func.over.is_some() => {
                         // Window function with alias - get from computed results
                         if let Some(val) = row_map.get(&alias.value) {
                             projected_row.insert(alias.value.clone(), val.clone());
                         }
                     }
-                    SelectItem::ExprWithAlias { expr: Expr::Identifier(ident), alias } => {
+                    SelectItem::ExprWithAlias {
+                        expr: Expr::Identifier(ident),
+                        alias,
+                    } => {
                         // Regular column with alias
                         if let Some(val) = row_map.get(&ident.value) {
                             projected_row.insert(alias.value.clone(), val.clone());
@@ -3645,7 +3973,8 @@ fn execute_window_functions(data: Vec<Value>, projection: &[SelectItem]) -> Resu
                         // Other expressions - try to evaluate
                         if let SelectItem::UnnamedExpr(expr) = item {
                             if let Ok(val) = evaluate_value_expression(expr, &row) {
-                                let col_name = format!("{:?}", expr).chars().take(50).collect::<String>();
+                                let col_name =
+                                    format!("{:?}", expr).chars().take(50).collect::<String>();
                                 projected_row.insert(col_name, val);
                             }
                         }
@@ -3679,12 +4008,18 @@ fn parse_window_function(func: &Function) -> Result<WindowFunctionCall> {
                 sqlparser::ast::FunctionArguments::List(list) => list.args.clone(),
             };
 
-            if let Some(FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Value(sqlparser::ast::Value::Number(n, _))))) = args_list.first() {
-                let tiles = n.parse::<u32>()
-                    .map_err(|_| DriftError::InvalidQuery("NTILE requires positive integer".to_string()))?;
+            if let Some(FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Value(
+                sqlparser::ast::Value::Number(n, _),
+            )))) = args_list.first()
+            {
+                let tiles = n.parse::<u32>().map_err(|_| {
+                    DriftError::InvalidQuery("NTILE requires positive integer".to_string())
+                })?;
                 WindowFunction::Ntile(tiles)
             } else {
-                return Err(DriftError::InvalidQuery("NTILE requires numeric parameter".to_string()));
+                return Err(DriftError::InvalidQuery(
+                    "NTILE requires numeric parameter".to_string(),
+                ));
             }
         }
         "LAG" | "LEAD" => {
@@ -3694,7 +4029,10 @@ fn parse_window_function(func: &Function) -> Result<WindowFunctionCall> {
                     let column = extract_column_from_function_args(&func.args)?;
                     let offset = if list.args.len() > 1 {
                         // Parse offset
-                        if let FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Value(sqlparser::ast::Value::Number(n, _)))) = &list.args[1] {
+                        if let FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Value(
+                            sqlparser::ast::Value::Number(n, _),
+                        ))) = &list.args[1]
+                        {
                             Some(n.parse::<u32>().unwrap_or(1))
                         } else {
                             Some(1)
@@ -3706,7 +4044,11 @@ fn parse_window_function(func: &Function) -> Result<WindowFunctionCall> {
                         // Parse default value
                         Some(expr_to_json_value(match &list.args[2] {
                             FunctionArg::Unnamed(FunctionArgExpr::Expr(expr)) => expr,
-                            _ => return Err(DriftError::InvalidQuery("Invalid default value".to_string())),
+                            _ => {
+                                return Err(DriftError::InvalidQuery(
+                                    "Invalid default value".to_string(),
+                                ))
+                            }
                         })?)
                     } else {
                         None
@@ -3714,7 +4056,9 @@ fn parse_window_function(func: &Function) -> Result<WindowFunctionCall> {
                     (column, offset, default)
                 }
                 _ => {
-                    return Err(DriftError::InvalidQuery("LAG/LEAD requires arguments".to_string()));
+                    return Err(DriftError::InvalidQuery(
+                        "LAG/LEAD requires arguments".to_string(),
+                    ));
                 }
             };
 
@@ -3747,7 +4091,10 @@ fn parse_window_function(func: &Function) -> Result<WindowFunctionCall> {
                 FunctionArguments::None => None,
                 FunctionArguments::List(list) if list.args.is_empty() => None,
                 FunctionArguments::List(list) => {
-                    if matches!(&list.args[0], FunctionArg::Unnamed(FunctionArgExpr::Wildcard)) {
+                    if matches!(
+                        &list.args[0],
+                        FunctionArg::Unnamed(FunctionArgExpr::Wildcard)
+                    ) {
                         None
                     } else {
                         Some(extract_column_from_function_args(&func.args)?)
@@ -3758,7 +4105,10 @@ fn parse_window_function(func: &Function) -> Result<WindowFunctionCall> {
             WindowFunction::Count(column)
         }
         _ => {
-            return Err(DriftError::InvalidQuery(format!("Unsupported window function: {}", func_name)));
+            return Err(DriftError::InvalidQuery(format!(
+                "Unsupported window function: {}",
+                func_name
+            )));
         }
     };
 
@@ -3767,7 +4117,9 @@ fn parse_window_function(func: &Function) -> Result<WindowFunctionCall> {
         parse_window_spec(window_type)?
     } else {
         // Should not happen as we check for over.is_some()
-        return Err(DriftError::InvalidQuery("Window function missing OVER clause".to_string()));
+        return Err(DriftError::InvalidQuery(
+            "Window function missing OVER clause".to_string(),
+        ));
     };
 
     Ok(WindowFunctionCall {
@@ -3783,21 +4135,29 @@ fn parse_window_spec(window_type: &sqlparser::ast::WindowType) -> Result<WindowS
     match window_type {
         WindowType::WindowSpec(spec) => {
             // Parse PARTITION BY
-            let partition_by = spec.partition_by.iter()
-                .map(|expr| {
-                    match expr {
-                        Expr::Identifier(ident) => Ok(ident.value.clone()),
-                        _ => Err(DriftError::InvalidQuery("Complex PARTITION BY not yet supported".to_string())),
-                    }
+            let partition_by = spec
+                .partition_by
+                .iter()
+                .map(|expr| match expr {
+                    Expr::Identifier(ident) => Ok(ident.value.clone()),
+                    _ => Err(DriftError::InvalidQuery(
+                        "Complex PARTITION BY not yet supported".to_string(),
+                    )),
                 })
                 .collect::<Result<Vec<_>>>()?;
 
             // Parse ORDER BY
-            let order_by = spec.order_by.iter()
+            let order_by = spec
+                .order_by
+                .iter()
                 .map(|order_expr| {
                     let column = match &order_expr.expr {
                         Expr::Identifier(ident) => ident.value.clone(),
-                        _ => return Err(DriftError::InvalidQuery("Complex ORDER BY not yet supported".to_string())),
+                        _ => {
+                            return Err(DriftError::InvalidQuery(
+                                "Complex ORDER BY not yet supported".to_string(),
+                            ))
+                        }
                     };
 
                     let ascending = order_expr.asc.unwrap_or(true);
@@ -3824,9 +4184,10 @@ fn parse_window_spec(window_type: &sqlparser::ast::WindowType) -> Result<WindowS
                 frame,
             })
         }
-        WindowType::NamedWindow(name) => {
-            Err(DriftError::InvalidQuery(format!("Named windows not yet supported: {}", name)))
-        }
+        WindowType::NamedWindow(name) => Err(DriftError::InvalidQuery(format!(
+            "Named windows not yet supported: {}",
+            name
+        ))),
     }
 }
 
@@ -3834,16 +4195,22 @@ fn extract_column_from_function_args(args: &FunctionArguments) -> Result<String>
     match args {
         FunctionArguments::List(list) => {
             if list.args.is_empty() {
-                return Err(DriftError::InvalidQuery("Function requires at least one argument".to_string()));
+                return Err(DriftError::InvalidQuery(
+                    "Function requires at least one argument".to_string(),
+                ));
             }
 
             match &list.args[0] {
                 FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Identifier(ident))) => {
                     Ok(ident.value.clone())
                 }
-                _ => Err(DriftError::InvalidQuery("Complex function arguments not yet supported".to_string())),
+                _ => Err(DriftError::InvalidQuery(
+                    "Complex function arguments not yet supported".to_string(),
+                )),
             }
         }
-        _ => Err(DriftError::InvalidQuery("Function arguments required".to_string())),
+        _ => Err(DriftError::InvalidQuery(
+            "Function arguments required".to_string(),
+        )),
     }
 }

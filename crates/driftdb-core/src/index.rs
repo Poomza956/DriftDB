@@ -4,7 +4,7 @@ use std::fs::{self, File};
 use std::io::{BufReader, BufWriter};
 use std::path::{Path, PathBuf};
 
-use crate::errors::Result;
+use crate::errors::{DriftError, Result};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Index {
@@ -98,7 +98,8 @@ impl IndexManager {
                 let index = Index::load_from_file(&index_path)?;
                 self.indexes.insert(column.clone(), index);
             } else {
-                self.indexes.insert(column.clone(), Index::new(column.clone()));
+                self.indexes
+                    .insert(column.clone(), Index::new(column.clone()));
             }
         }
         Ok(())
@@ -173,6 +174,48 @@ impl IndexManager {
         self.indexes.get(column)
     }
 
+    /// Add a new index for a column
+    pub fn add_index(&mut self, column: &str) -> Result<()> {
+        if self.indexes.contains_key(column) {
+            return Err(DriftError::Other(format!(
+                "Index already exists for column '{}'",
+                column
+            )));
+        }
+
+        let index = Index::new(column.to_string());
+        self.indexes.insert(column.to_string(), index);
+        Ok(())
+    }
+
+    /// Build index from existing data
+    pub fn build_index_from_data(
+        &mut self,
+        column: &str,
+        data: &HashMap<String, serde_json::Value>,
+    ) -> Result<()> {
+        // First add the index if it doesn't exist
+        if !self.indexes.contains_key(column) {
+            self.add_index(column)?;
+        }
+
+        // Populate the index with existing data
+        if let Some(index) = self.indexes.get_mut(column) {
+            for (pk, row) in data {
+                if let serde_json::Value::Object(map) = row {
+                    if let Some(value) = map.get(column) {
+                        index.insert(value, pk);
+                    }
+                }
+            }
+            // Save the index to disk
+            let index_path = self.indexes_dir.join(format!("{}.idx", column));
+            index.save_to_file(&index_path)?;
+        }
+
+        Ok(())
+    }
+
     pub fn rebuild_from_state(
         &mut self,
         state: &HashMap<String, serde_json::Value>,
@@ -181,7 +224,8 @@ impl IndexManager {
         self.indexes.clear();
 
         for column in indexed_columns {
-            self.indexes.insert(column.clone(), Index::new(column.clone()));
+            self.indexes
+                .insert(column.clone(), Index::new(column.clone()));
         }
 
         for (pk, row) in state {

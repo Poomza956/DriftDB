@@ -49,10 +49,7 @@ impl Default for RateLimitConfig {
             queries_per_second: Some(100),
             burst_size: 1000,
             global_queries_per_second: Some(10000),
-            exempt_ips: vec![
-                "127.0.0.1".parse().unwrap(),
-                "::1".parse().unwrap(),
-            ],
+            exempt_ips: vec!["127.0.0.1".parse().unwrap(), "::1".parse().unwrap()],
             adaptive_limiting: true,
             cost_multiplier: 1.0,
             auth_multiplier: 2.0,
@@ -82,9 +79,12 @@ impl QueryCost {
         // Very expensive operations
         if sql_upper.contains("FULL OUTER JOIN")
             || sql_upper.contains("CROSS JOIN")
-            || (sql_upper.contains("SELECT") && sql_upper.contains("ORDER BY") && !sql_upper.contains("LIMIT"))
+            || (sql_upper.contains("SELECT")
+                && sql_upper.contains("ORDER BY")
+                && !sql_upper.contains("LIMIT"))
             || sql_upper.contains("GROUP BY") && sql_upper.contains("HAVING")
-            || sql_upper.matches("JOIN").count() > 2 {
+            || sql_upper.matches("JOIN").count() > 2
+        {
             return QueryCost::VeryHigh;
         }
 
@@ -100,7 +100,10 @@ impl QueryCost {
             || sql_upper.contains("JOIN")
             || sql_upper.contains("UNION")
             || sql_upper.contains("LIKE '%")
-            || (sql_upper.contains("SELECT") && !sql_upper.contains("WHERE") && !sql_upper.contains("LIMIT")) {
+            || (sql_upper.contains("SELECT")
+                && !sql_upper.contains("WHERE")
+                && !sql_upper.contains("LIMIT"))
+        {
             return QueryCost::High;
         }
 
@@ -110,7 +113,8 @@ impl QueryCost {
             || sql_upper.starts_with("UPDATE")
             || sql_upper.starts_with("DELETE")
             || sql_upper.starts_with("PATCH")
-            || sql_upper.starts_with("SOFT DELETE") {
+            || sql_upper.starts_with("SOFT DELETE")
+        {
             return QueryCost::Medium;
         }
 
@@ -175,7 +179,8 @@ impl TokenBucket {
         let now = Instant::now();
         let elapsed = now.duration_since(*last_refill);
 
-        if elapsed >= Duration::from_millis(100) { // Refill every 100ms for smoothness
+        if elapsed >= Duration::from_millis(100) {
+            // Refill every 100ms for smoothness
             let tokens_to_add = (elapsed.as_secs_f64() * self.refill_rate as f64) as u64;
             if tokens_to_add > 0 {
                 let current = self.tokens.load(Ordering::Acquire);
@@ -202,14 +207,16 @@ pub struct ClientRateLimit {
 
 impl ClientRateLimit {
     pub fn new(addr: SocketAddr, config: &RateLimitConfig) -> Self {
-        let connection_limiter = config.connections_per_minute
+        let connection_limiter = config
+            .connections_per_minute
             .map(|rate| TokenBucket::new(rate as u64, rate as u64 / 60));
 
-        let query_limiter = config.queries_per_second
-            .map(|rate| TokenBucket::new(
+        let query_limiter = config.queries_per_second.map(|rate| {
+            TokenBucket::new(
                 (rate as f64 * config.burst_size as f64 / 100.0) as u64,
-                rate as u64
-            ));
+                rate as u64,
+            )
+        });
 
         Self {
             addr,
@@ -268,20 +275,21 @@ impl ClientRateLimit {
 
     /// Update authentication status
     pub fn set_authenticated(&self, authenticated: bool, is_superuser: bool) {
-        self.is_authenticated.store(authenticated, Ordering::Relaxed);
+        self.is_authenticated
+            .store(authenticated, Ordering::Relaxed);
         self.is_superuser.store(is_superuser, Ordering::Relaxed);
     }
 
     /// Check if client has been inactive for too long
     pub fn is_expired(&self, timeout: Duration) -> bool {
-        self.last_activity.lock().elapsed() > timeout &&
-        self.connection_count.load(Ordering::Relaxed) == 0
+        self.last_activity.lock().elapsed() > timeout
+            && self.connection_count.load(Ordering::Relaxed) == 0
     }
 }
 
 /// Server load monitoring for adaptive rate limiting
 pub struct LoadMonitor {
-    cpu_usage: AtomicU64, // Percentage * 100
+    cpu_usage: AtomicU64,    // Percentage * 100
     memory_usage: AtomicU64, // Percentage * 100
     active_connections: AtomicUsize,
     query_rate: AtomicU64, // Queries per second
@@ -301,9 +309,12 @@ impl LoadMonitor {
 
     /// Update load metrics
     pub fn update_load(&self, cpu: f64, memory: f64, connections: usize, query_rate: u64) {
-        self.cpu_usage.store((cpu * 100.0) as u64, Ordering::Relaxed);
-        self.memory_usage.store((memory * 100.0) as u64, Ordering::Relaxed);
-        self.active_connections.store(connections, Ordering::Relaxed);
+        self.cpu_usage
+            .store((cpu * 100.0) as u64, Ordering::Relaxed);
+        self.memory_usage
+            .store((memory * 100.0) as u64, Ordering::Relaxed);
+        self.active_connections
+            .store(connections, Ordering::Relaxed);
         self.query_rate.store(query_rate, Ordering::Relaxed);
         *self.last_update.lock() = Instant::now();
     }
@@ -314,8 +325,9 @@ impl LoadMonitor {
         let memory = self.memory_usage.load(Ordering::Relaxed) as f64 / 100.0;
 
         // Combine metrics with weights
-        let load = (cpu * 0.4) + (memory * 0.3) +
-                  (self.active_connections.load(Ordering::Relaxed) as f64 / 1000.0 * 0.3);
+        let load = (cpu * 0.4)
+            + (memory * 0.3)
+            + (self.active_connections.load(Ordering::Relaxed) as f64 / 1000.0 * 0.3);
 
         load.min(1.0)
     }
@@ -345,7 +357,8 @@ pub struct RateLimitManager {
 
 impl RateLimitManager {
     pub fn new(config: RateLimitConfig, metrics: Arc<Metrics>) -> Self {
-        let global_limiter = config.global_queries_per_second
+        let global_limiter = config
+            .global_queries_per_second
             .map(|rate| TokenBucket::new(rate as u64 * 10, rate as u64));
 
         Self {
@@ -410,8 +423,12 @@ impl RateLimitManager {
         if !allowed {
             self.violation_count.fetch_add(1, Ordering::Relaxed);
             warn!("Connection rate limit exceeded for {}", addr);
-            self.metrics.rate_limit_violations.fetch_add(1, Ordering::Relaxed);
-            self.metrics.connection_rate_limit_hits.fetch_add(1, Ordering::Relaxed);
+            self.metrics
+                .rate_limit_violations
+                .fetch_add(1, Ordering::Relaxed);
+            self.metrics
+                .connection_rate_limit_hits
+                .fetch_add(1, Ordering::Relaxed);
         }
 
         allowed
@@ -437,8 +454,12 @@ impl RateLimitManager {
             if !global_limiter.try_acquire(tokens_needed) {
                 self.violation_count.fetch_add(1, Ordering::Relaxed);
                 warn!("Global rate limit exceeded for query from {}", addr);
-                self.metrics.rate_limit_violations.fetch_add(1, Ordering::Relaxed);
-                self.metrics.global_rate_limit_hits.fetch_add(1, Ordering::Relaxed);
+                self.metrics
+                    .rate_limit_violations
+                    .fetch_add(1, Ordering::Relaxed);
+                self.metrics
+                    .global_rate_limit_hits
+                    .fetch_add(1, Ordering::Relaxed);
                 return false;
             }
         }
@@ -450,10 +471,17 @@ impl RateLimitManager {
         if !allowed {
             self.violation_count.fetch_add(1, Ordering::Relaxed);
             warn!("Query rate limit exceeded for {} (cost: {:?})", addr, cost);
-            self.metrics.rate_limit_violations.fetch_add(1, Ordering::Relaxed);
-            self.metrics.query_rate_limit_hits.fetch_add(1, Ordering::Relaxed);
+            self.metrics
+                .rate_limit_violations
+                .fetch_add(1, Ordering::Relaxed);
+            self.metrics
+                .query_rate_limit_hits
+                .fetch_add(1, Ordering::Relaxed);
         } else {
-            debug!("Query allowed for {} (cost: {:?}, tokens: {})", addr, cost, tokens_needed);
+            debug!(
+                "Query allowed for {} (cost: {:?}, tokens: {})",
+                addr, cost, tokens_needed
+            );
         }
 
         allowed
@@ -485,7 +513,8 @@ impl RateLimitManager {
         let active_clients = clients.len();
         let total_violations = self.violation_count.load(Ordering::Relaxed);
 
-        let global_tokens = self.global_limiter
+        let global_tokens = self
+            .global_limiter
             .as_ref()
             .map(|limiter| limiter.available_tokens())
             .unwrap_or(0);
@@ -500,7 +529,8 @@ impl RateLimitManager {
 
     /// Update server load for adaptive rate limiting
     pub fn update_load(&self, cpu: f64, memory: f64, connections: usize, query_rate: u64) {
-        self.load_monitor.update_load(cpu, memory, connections, query_rate);
+        self.load_monitor
+            .update_load(cpu, memory, connections, query_rate);
     }
 
     /// Get load monitor for metrics
@@ -545,11 +575,25 @@ mod tests {
 
     #[test]
     fn test_query_cost_estimation() {
-        assert_eq!(QueryCost::estimate("SELECT * FROM users WHERE id = 1"), QueryCost::Medium);
-        assert_eq!(QueryCost::estimate("SELECT COUNT(*) FROM users"), QueryCost::High);
+        assert_eq!(
+            QueryCost::estimate("SELECT * FROM users WHERE id = 1"),
+            QueryCost::Medium
+        );
+        assert_eq!(
+            QueryCost::estimate("SELECT COUNT(*) FROM users"),
+            QueryCost::High
+        );
         assert_eq!(QueryCost::estimate("SELECT * FROM users"), QueryCost::High);
-        assert_eq!(QueryCost::estimate("CREATE TABLE test (id INTEGER)"), QueryCost::Low);
-        assert_eq!(QueryCost::estimate("SELECT u.*, p.* FROM users u FULL OUTER JOIN posts p ON u.id = p.user_id"), QueryCost::VeryHigh);
+        assert_eq!(
+            QueryCost::estimate("CREATE TABLE test (id INTEGER)"),
+            QueryCost::Low
+        );
+        assert_eq!(
+            QueryCost::estimate(
+                "SELECT u.*, p.* FROM users u FULL OUTER JOIN posts p ON u.id = p.user_id"
+            ),
+            QueryCost::VeryHigh
+        );
     }
 
     #[test]

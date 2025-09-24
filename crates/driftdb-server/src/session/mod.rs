@@ -1,19 +1,23 @@
 //! PostgreSQL Session Management
 
+mod prepared;
+
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use bytes::BytesMut;
-use tokio::net::TcpStream;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tracing::{debug, error, info, warn};
 use serde_json::Value;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
+use tracing::{debug, error, info, warn};
 
-use driftdb_core::{EnginePool, EngineGuard, RateLimitManager};
-use crate::protocol::{self, Message, TransactionStatus};
+use self::prepared::PreparedStatementManager;
 use crate::executor::QueryExecutor;
+use crate::protocol::{self, Message, TransactionStatus};
+use crate::security::SqlValidator;
+use driftdb_core::{EngineGuard, EnginePool, RateLimitManager};
 
 pub struct SessionManager {
     engine_pool: EnginePool,
@@ -23,7 +27,11 @@ pub struct SessionManager {
 }
 
 impl SessionManager {
-    pub fn new(engine_pool: EnginePool, auth_config: protocol::auth::AuthConfig, rate_limit_manager: Arc<RateLimitManager>) -> Self {
+    pub fn new(
+        engine_pool: EnginePool,
+        auth_config: protocol::auth::AuthConfig,
+        rate_limit_manager: Arc<RateLimitManager>,
+    ) -> Self {
         Self {
             engine_pool,
             next_process_id: AtomicU32::new(1000),
@@ -48,7 +56,10 @@ impl SessionManager {
     ) -> Result<()> {
         // Check rate limiting first
         if !self.rate_limit_manager.allow_connection(addr) {
-            warn!("Connection rate limit exceeded for {}, dropping connection", addr);
+            warn!(
+                "Connection rate limit exceeded for {}, dropping connection",
+                addr
+            );
             // Don't send any response - just drop the connection
             return Ok(());
         }
@@ -57,7 +68,10 @@ impl SessionManager {
         let engine_guard = match self.engine_pool.acquire(addr).await {
             Ok(guard) => guard,
             Err(e) => {
-                warn!("Connection limit reached or pool error, rejecting {}: {}", addr, e);
+                warn!(
+                    "Connection limit reached or pool error, rejecting {}: {}",
+                    addr, e
+                );
                 // Release the rate limit connection since we're not using it
                 self.rate_limit_manager.release_connection(addr);
                 // Send an error response to the client before closing
@@ -82,6 +96,8 @@ impl SessionManager {
             rate_limit_manager: self.rate_limit_manager.clone(),
             authenticated: false,
             auth_challenge: None,
+            prepared_statements: PreparedStatementManager::new(),
+            sql_validator: SqlValidator::new(),
         };
 
         // Handle session
@@ -112,6 +128,8 @@ struct Session {
     rate_limit_manager: Arc<RateLimitManager>,
     authenticated: bool,
     auth_challenge: Option<Vec<u8>>,
+    prepared_statements: PreparedStatementManager,
+    sql_validator: SqlValidator,
 }
 
 impl Session {
@@ -121,15 +139,20 @@ impl Session {
 
         loop {
             // Read from stream
+            info!(
+                "Waiting for data from {}, startup_done={}",
+                self.addr, startup_done
+            );
             let n = stream.read_buf(&mut buffer).await?;
             if n == 0 {
                 debug!("Connection closed by client {}", self.addr);
                 break;
             }
+            info!("Read {} bytes from {}", n, self.addr);
 
             // Decode messages
             while let Some(msg) = protocol::codec::decode_message(&mut buffer, startup_done)? {
-                debug!("Received message: {:?}", msg);
+                info!("Received message from {}: {:?}", self.addr, msg);
 
                 match msg {
                     Message::SSLRequest => {
@@ -147,8 +170,8 @@ impl Session {
 
                     Message::PasswordMessage { password } => {
                         if self.handle_password(stream, password).await? {
-                            startup_done = true;  // Authentication complete
-                            self.send_ready_for_query(stream).await?;
+                            startup_done = true; // Authentication complete
+                                                 // ReadyForQuery already sent by send_startup_complete
                         } else {
                             break;
                         }
@@ -165,6 +188,93 @@ impl Session {
                             self.handle_query(stream, &sql).await?;
                             self.send_ready_for_query(stream).await?;
                         }
+                    }
+
+                    Message::Parse {
+                        statement_name,
+                        query,
+                        parameter_types,
+                    } => {
+                        if !self.authenticated && self.auth_db.config().require_auth {
+                            let error = Message::error(
+                                protocol::error_codes::INVALID_AUTHORIZATION,
+                                "Authentication required",
+                            );
+                            self.send_message(stream, &error).await?;
+                        } else {
+                            self.handle_parse(stream, statement_name, query, parameter_types)
+                                .await?;
+                        }
+                    }
+
+                    Message::Bind {
+                        portal_name,
+                        statement_name,
+                        parameter_formats,
+                        parameters,
+                        result_formats,
+                    } => {
+                        if !self.authenticated && self.auth_db.config().require_auth {
+                            let error = Message::error(
+                                protocol::error_codes::INVALID_AUTHORIZATION,
+                                "Authentication required",
+                            );
+                            self.send_message(stream, &error).await?;
+                        } else {
+                            self.handle_bind(
+                                stream,
+                                portal_name,
+                                statement_name,
+                                parameter_formats,
+                                parameters,
+                                result_formats,
+                            )
+                            .await?;
+                        }
+                    }
+
+                    Message::Execute {
+                        portal_name,
+                        max_rows,
+                    } => {
+                        if !self.authenticated && self.auth_db.config().require_auth {
+                            let error = Message::error(
+                                protocol::error_codes::INVALID_AUTHORIZATION,
+                                "Authentication required",
+                            );
+                            self.send_message(stream, &error).await?;
+                        } else {
+                            self.handle_execute(stream, portal_name, max_rows).await?;
+                        }
+                    }
+
+                    Message::Describe { typ, name } => {
+                        if !self.authenticated && self.auth_db.config().require_auth {
+                            let error = Message::error(
+                                protocol::error_codes::INVALID_AUTHORIZATION,
+                                "Authentication required",
+                            );
+                            self.send_message(stream, &error).await?;
+                        } else {
+                            self.handle_describe(stream, typ, name).await?;
+                        }
+                    }
+
+                    Message::Close { typ, name } => {
+                        if !self.authenticated && self.auth_db.config().require_auth {
+                            let error = Message::error(
+                                protocol::error_codes::INVALID_AUTHORIZATION,
+                                "Authentication required",
+                            );
+                            self.send_message(stream, &error).await?;
+                        } else {
+                            self.handle_close(stream, typ, name).await?;
+                        }
+                    }
+
+                    Message::Sync => {
+                        // Sync message completes the extended query protocol sequence
+                        self.send_ready_for_query(stream).await?;
                     }
 
                     Message::Terminate => {
@@ -207,11 +317,15 @@ impl Session {
         if !auth_config.require_auth || auth_config.method == protocol::auth::AuthMethod::Trust {
             // Trust authentication or auth disabled
             self.authenticated = true;
-            let is_superuser = self.username.as_ref()
+            let is_superuser = self
+                .username
+                .as_ref()
                 .map(|u| self.auth_db.is_superuser(u))
                 .unwrap_or(false);
-            self.rate_limit_manager.set_client_auth(self.addr, true, is_superuser);
-            self.send_message(stream, &Message::AuthenticationOk).await?;
+            self.rate_limit_manager
+                .set_client_auth(self.addr, true, is_superuser);
+            self.send_message(stream, &Message::AuthenticationOk)
+                .await?;
             self.send_startup_complete(stream).await?;
         } else {
             // Require authentication
@@ -222,13 +336,17 @@ impl Session {
                     self.auth_challenge = Some(salt.to_vec());
 
                     let auth_msg = Message::AuthenticationMD5Password { salt };
+                    info!("Sending MD5 auth challenge to {}", username);
                     self.send_message(stream, &auth_msg).await?;
-                    // Return here to wait for password message
-                    return Ok(());
+                    stream.flush().await?; // Ensure the message is sent
+                    info!("MD5 auth challenge sent, waiting for password");
+                    // Don't return here - let the main loop continue
                 }
                 protocol::auth::AuthMethod::ScramSha256 => {
                     // Generate SCRAM-SHA-256 challenge
-                    if let Some(challenge) = protocol::auth::generate_auth_challenge(&auth_config.method) {
+                    if let Some(challenge) =
+                        protocol::auth::generate_auth_challenge(&auth_config.method)
+                    {
                         self.auth_challenge = Some(challenge.clone());
 
                         let auth_msg = Message::AuthenticationSASL {
@@ -258,11 +376,16 @@ impl Session {
         self.send_message(stream, &key_data).await?;
 
         // Send parameter status messages
-        self.send_parameter_status(stream, "server_version", "14.0 (DriftDB 0.2.0)").await?;
-        self.send_parameter_status(stream, "server_encoding", "UTF8").await?;
-        self.send_parameter_status(stream, "client_encoding", "UTF8").await?;
-        self.send_parameter_status(stream, "DateStyle", "ISO, MDY").await?;
-        self.send_parameter_status(stream, "application_name", "").await?;
+        self.send_parameter_status(stream, "server_version", "14.0 (DriftDB 0.2.0)")
+            .await?;
+        self.send_parameter_status(stream, "server_encoding", "UTF8")
+            .await?;
+        self.send_parameter_status(stream, "client_encoding", "UTF8")
+            .await?;
+        self.send_parameter_status(stream, "DateStyle", "ISO, MDY")
+            .await?;
+        self.send_parameter_status(stream, "application_name", "")
+            .await?;
 
         // Send ready for query
         self.send_ready_for_query(stream).await?;
@@ -270,12 +393,10 @@ impl Session {
         Ok(())
     }
 
-    async fn handle_password(
-        &mut self,
-        stream: &mut TcpStream,
-        password: String,
-    ) -> Result<bool> {
-        let username = self.username.as_ref()
+    async fn handle_password(&mut self, stream: &mut TcpStream, password: String) -> Result<bool> {
+        let username = self
+            .username
+            .as_ref()
             .ok_or_else(|| anyhow::anyhow!("No username provided"))?;
 
         let client_addr = self.addr.to_string();
@@ -295,15 +416,23 @@ impl Session {
             None
         };
 
-        match self.auth_db.authenticate(username, &password, &client_addr, challenge_salt.as_ref()) {
+        match self
+            .auth_db
+            .authenticate(username, &password, &client_addr, challenge_salt.as_ref())
+        {
             Ok(true) => {
                 self.authenticated = true;
                 let is_superuser = self.auth_db.is_superuser(username);
-                self.rate_limit_manager.set_client_auth(self.addr, true, is_superuser);
-                info!("Authentication successful for {} from {}", username, client_addr);
+                self.rate_limit_manager
+                    .set_client_auth(self.addr, true, is_superuser);
+                info!(
+                    "Authentication successful for {} from {}",
+                    username, client_addr
+                );
 
                 // Send authentication OK
-                self.send_message(stream, &Message::AuthenticationOk).await?;
+                self.send_message(stream, &Message::AuthenticationOk)
+                    .await?;
 
                 // Send startup completion
                 self.send_startup_complete(stream).await?;
@@ -311,18 +440,22 @@ impl Session {
                 Ok(true)
             }
             Ok(false) | Err(_) => {
-                warn!("Authentication failed for {} from {}", username, client_addr);
+                warn!(
+                    "Authentication failed for {} from {}",
+                    username, client_addr
+                );
 
-                let error_msg = if self.auth_db.get_user_info(username).map_or(false, |user| user.is_locked()) {
+                let error_msg = if self
+                    .auth_db
+                    .get_user_info(username)
+                    .map_or(false, |user| user.is_locked())
+                {
                     "User account is temporarily locked due to failed login attempts"
                 } else {
                     "Authentication failed"
                 };
 
-                let error = Message::error(
-                    protocol::error_codes::INVALID_AUTHORIZATION,
-                    error_msg,
-                );
+                let error = Message::error(protocol::error_codes::INVALID_AUTHORIZATION, error_msg);
                 self.send_message(stream, &error).await?;
                 Ok(false)
             }
@@ -351,6 +484,20 @@ impl Session {
         // Check for user management commands first
         if let Some(result) = self.handle_user_management_query(sql).await? {
             self.send_query_result(stream, result).await?;
+            return Ok(());
+        }
+
+        // Validate SQL before execution
+        if let Err(validation_error) = self.sql_validator.validate_query(sql) {
+            warn!(
+                "SQL validation failed for query from {}: {}",
+                self.addr, validation_error
+            );
+            let error = Message::error(
+                protocol::error_codes::SYNTAX_ERROR,
+                &format!("SQL validation failed: {}", validation_error),
+            );
+            self.send_message(stream, &error).await?;
             return Ok(());
         }
 
@@ -397,7 +544,10 @@ impl Session {
         Ok(())
     }
 
-    async fn handle_user_management_query(&self, sql: &str) -> Result<Option<crate::executor::QueryResult>> {
+    async fn handle_user_management_query(
+        &self,
+        sql: &str,
+    ) -> Result<Option<crate::executor::QueryResult>> {
         let sql_upper = sql.trim().to_uppercase();
 
         // CREATE USER command
@@ -432,7 +582,9 @@ impl Session {
         // Check if current user is superuser
         if let Some(username) = &self.username {
             if !self.auth_db.is_superuser(username) {
-                return Err(anyhow!("Permission denied: only superusers can create users"));
+                return Err(anyhow!(
+                    "Permission denied: only superusers can create users"
+                ));
             }
         } else {
             return Err(anyhow!("Permission denied: authentication required"));
@@ -464,7 +616,8 @@ impl Session {
         protocol::auth::validate_password(password)?;
 
         // Create user
-        self.auth_db.create_user(new_username.to_string(), password, is_superuser)?;
+        self.auth_db
+            .create_user(new_username.to_string(), password, is_superuser)?;
 
         Ok(Some(crate::executor::QueryResult::CreateTable))
     }
@@ -491,9 +644,14 @@ impl Session {
         Ok(Some(crate::executor::QueryResult::Delete { count: 1 }))
     }
 
-    async fn handle_alter_user_password(&self, sql: &str) -> Result<Option<crate::executor::QueryResult>> {
+    async fn handle_alter_user_password(
+        &self,
+        sql: &str,
+    ) -> Result<Option<crate::executor::QueryResult>> {
         // Users can change their own password, or superusers can change any password
-        let current_user = self.username.as_ref()
+        let current_user = self
+            .username
+            .as_ref()
             .ok_or_else(|| anyhow!("Authentication required"))?;
 
         // Parse ALTER USER statement
@@ -519,7 +677,8 @@ impl Session {
         let new_password = parts[password_idx].trim_matches('\'').trim_matches('"');
         protocol::auth::validate_password(new_password)?;
 
-        self.auth_db.change_password(target_username, new_password)?;
+        self.auth_db
+            .change_password(target_username, new_password)?;
 
         Ok(Some(crate::executor::QueryResult::Update { count: 1 }))
     }
@@ -528,7 +687,9 @@ impl Session {
         // Check if current user is superuser or authenticated
         if let Some(username) = &self.username {
             if !self.auth_db.is_superuser(username) {
-                return Err(anyhow!("Permission denied: only superusers can view user list"));
+                return Err(anyhow!(
+                    "Permission denied: only superusers can view user list"
+                ));
             }
         } else {
             return Err(anyhow!("Permission denied: authentication required"));
@@ -576,7 +737,9 @@ impl Session {
         // Check if current user is superuser
         if let Some(username) = &self.username {
             if !self.auth_db.is_superuser(username) {
-                return Err(anyhow!("Permission denied: only superusers can view auth attempts"));
+                return Err(anyhow!(
+                    "Permission denied: only superusers can view auth attempts"
+                ));
             }
         } else {
             return Err(anyhow!("Permission denied: authentication required"));
@@ -616,11 +779,11 @@ impl Session {
         match result {
             QueryResult::Select { columns, rows } => {
                 // Send row description
-                let fields = columns.iter()
-                    .map(|col| protocol::FieldDescription::new(
-                        col.clone(),
-                        protocol::DataType::Text,
-                    ))
+                let fields = columns
+                    .iter()
+                    .map(|col| {
+                        protocol::FieldDescription::new(col.clone(), protocol::DataType::Text)
+                    })
                     .collect();
 
                 let row_desc = Message::RowDescription { fields };
@@ -631,11 +794,9 @@ impl Session {
 
                 // Send data rows
                 for row in rows {
-                    let values = row.iter()
-                        .map(|val| {
-                            protocol::value_to_postgres_text(val)
-                                .map(|s| s.into_bytes())
-                        })
+                    let values = row
+                        .iter()
+                        .map(|val| protocol::value_to_postgres_text(val).map(|s| s.into_bytes()))
                         .collect();
 
                     let data_row = Message::DataRow { values };
@@ -677,6 +838,20 @@ impl Session {
                 self.send_message(stream, &complete).await?;
             }
 
+            QueryResult::DropTable => {
+                let complete = Message::CommandComplete {
+                    tag: "DROP TABLE".to_string(),
+                };
+                self.send_message(stream, &complete).await?;
+            }
+
+            QueryResult::CreateIndex => {
+                let complete = Message::CommandComplete {
+                    tag: "CREATE INDEX".to_string(),
+                };
+                self.send_message(stream, &complete).await?;
+            }
+
             QueryResult::Begin => {
                 let complete = Message::CommandComplete {
                     tag: "BEGIN".to_string(),
@@ -699,7 +874,8 @@ impl Session {
             }
 
             QueryResult::Empty => {
-                self.send_message(stream, &Message::EmptyQueryResponse).await?;
+                self.send_message(stream, &Message::EmptyQueryResponse)
+                    .await?;
             }
         }
 
@@ -758,5 +934,280 @@ fn determine_query_type(sql: &str) -> String {
         "SOFT_DELETE"
     } else {
         "OTHER"
-    }.to_string()
+    }
+    .to_string()
+}
+
+impl Session {
+    async fn handle_parse(
+        &mut self,
+        stream: &mut TcpStream,
+        name: String,
+        sql: String,
+        param_types: Vec<i32>,
+    ) -> Result<()> {
+        info!(
+            "Parse: name='{}', sql='{}', param_types={:?}",
+            name, sql, param_types
+        );
+
+        match self
+            .prepared_statements
+            .parse_statement(name, sql, param_types)
+        {
+            Ok(_) => {
+                // Send ParseComplete message
+                self.send_message(stream, &Message::ParseComplete).await?;
+            }
+            Err(e) => {
+                error!("Parse error: {}", e);
+                let error = Message::error(
+                    protocol::error_codes::SYNTAX_ERROR,
+                    &format!("Parse error: {}", e),
+                );
+                self.send_message(stream, &error).await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn handle_bind(
+        &mut self,
+        stream: &mut TcpStream,
+        portal_name: String,
+        statement_name: String,
+        param_formats: Vec<i16>,
+        params: Vec<Option<Vec<u8>>>,
+        result_formats: Vec<i16>,
+    ) -> Result<()> {
+        info!(
+            "Bind: portal='{}', statement='{}', params={}",
+            portal_name,
+            statement_name,
+            params.len()
+        );
+
+        match self.prepared_statements.bind_portal(
+            portal_name,
+            statement_name,
+            params,
+            param_formats,
+            result_formats,
+        ) {
+            Ok(_) => {
+                // Send BindComplete message
+                self.send_message(stream, &Message::BindComplete).await?;
+            }
+            Err(e) => {
+                error!("Bind error: {}", e);
+                let error = Message::error(
+                    protocol::error_codes::INVALID_SQL_STATEMENT_NAME,
+                    &format!("Bind error: {}", e),
+                );
+                self.send_message(stream, &error).await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn handle_execute(
+        &mut self,
+        stream: &mut TcpStream,
+        portal_name: String,
+        max_rows: i32,
+    ) -> Result<()> {
+        info!("Execute: portal='{}', max_rows={}", portal_name, max_rows);
+
+        // Check rate limiting
+        if !self.rate_limit_manager.allow_query(self.addr, "EXECUTE") {
+            warn!("Query rate limit exceeded for {}: EXECUTE", self.addr);
+            let error = Message::error(
+                protocol::error_codes::TOO_MANY_CONNECTIONS,
+                "Rate limit exceeded. Please slow down your requests.",
+            );
+            self.send_message(stream, &error).await?;
+            return Ok(());
+        }
+
+        let start_time = std::time::Instant::now();
+
+        // Get the SQL with parameters substituted
+        match self
+            .prepared_statements
+            .execute_portal(&portal_name, max_rows)
+        {
+            Ok(sql) => {
+                info!("Executing prepared statement: {}", sql);
+
+                // Validate SQL before execution
+                if let Err(validation_error) = self.sql_validator.validate_query(&sql) {
+                    warn!(
+                        "SQL validation failed for prepared statement from {}: {}",
+                        self.addr, validation_error
+                    );
+                    let error = Message::error(
+                        protocol::error_codes::SYNTAX_ERROR,
+                        &format!("SQL validation failed: {}", validation_error),
+                    );
+                    self.send_message(stream, &error).await?;
+                    return Ok(());
+                }
+
+                // Execute the query using our SQL executor
+                let executor = QueryExecutor::new_with_guard(&self.engine_guard);
+                match executor.execute(&sql).await {
+                    Ok(result) => {
+                        let duration = start_time.elapsed().as_secs_f64();
+
+                        // Update transaction status based on the command
+                        let sql_upper = sql.trim().to_uppercase();
+                        if sql_upper.starts_with("BEGIN") {
+                            self.transaction_status = TransactionStatus::InTransaction;
+                        } else if sql_upper.starts_with("COMMIT")
+                            || sql_upper.starts_with("ROLLBACK")
+                        {
+                            self.transaction_status = TransactionStatus::Idle;
+                        }
+
+                        // Record successful query metrics if registry is available
+                        if crate::metrics::REGISTRY.gather().len() > 0 {
+                            let query_type = determine_query_type(&sql);
+                            crate::metrics::record_query(&query_type, "success", duration);
+                        }
+
+                        self.send_query_result(stream, result).await?;
+                    }
+                    Err(e) => {
+                        let duration = start_time.elapsed().as_secs_f64();
+                        error!("Execute error: {}", e);
+
+                        // Record failed query metrics if registry is available
+                        if crate::metrics::REGISTRY.gather().len() > 0 {
+                            let query_type = determine_query_type(&sql);
+                            crate::metrics::record_query(&query_type, "error", duration);
+                            crate::metrics::record_error("query", &query_type);
+                        }
+
+                        let error = Message::error(
+                            protocol::error_codes::SYNTAX_ERROR,
+                            &format!("Execute error: {}", e),
+                        );
+                        self.send_message(stream, &error).await?;
+                    }
+                }
+            }
+            Err(e) => {
+                error!("Portal execution error: {}", e);
+                let error = Message::error(
+                    protocol::error_codes::INVALID_CURSOR_NAME,
+                    &format!("Portal not found: {}", e),
+                );
+                self.send_message(stream, &error).await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn handle_describe(
+        &mut self,
+        stream: &mut TcpStream,
+        object_type: u8,
+        name: String,
+    ) -> Result<()> {
+        info!(
+            "Describe: type={}, name='{}'",
+            if object_type == b'S' {
+                "Statement"
+            } else {
+                "Portal"
+            },
+            name
+        );
+
+        // For now, send a simple response indicating no parameters and text results
+        // A full implementation would analyze the query and return proper column info
+        if object_type == b'S' {
+            // Describe statement
+            match self.prepared_statements.describe_statement(&name) {
+                Ok(stmt) => {
+                    // Send ParameterDescription
+                    let param_desc = Message::ParameterDescription {
+                        types: stmt.param_types.iter().map(|t| t.unwrap_or(0)).collect(),
+                    };
+                    self.send_message(stream, &param_desc).await?;
+
+                    // For now, send NoData as we can't determine result columns without execution
+                    self.send_message(stream, &Message::NoData).await?;
+                }
+                Err(e) => {
+                    error!("Describe statement error: {}", e);
+                    let error = Message::error(
+                        protocol::error_codes::INVALID_SQL_STATEMENT_NAME,
+                        &format!("Statement not found: {}", e),
+                    );
+                    self.send_message(stream, &error).await?;
+                }
+            }
+        } else {
+            // Describe portal
+            match self.prepared_statements.describe_portal(&name) {
+                Ok(_portal) => {
+                    // For now, send NoData as we can't determine result columns without execution
+                    self.send_message(stream, &Message::NoData).await?;
+                }
+                Err(e) => {
+                    error!("Describe portal error: {}", e);
+                    let error = Message::error(
+                        protocol::error_codes::INVALID_CURSOR_NAME,
+                        &format!("Portal not found: {}", e),
+                    );
+                    self.send_message(stream, &error).await?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn handle_close(
+        &mut self,
+        stream: &mut TcpStream,
+        object_type: u8,
+        name: String,
+    ) -> Result<()> {
+        info!(
+            "Close: type={}, name='{}'",
+            if object_type == b'S' {
+                "Statement"
+            } else {
+                "Portal"
+            },
+            name
+        );
+
+        let result = if object_type == b'S' {
+            // Close statement
+            self.prepared_statements.close_statement(&name)
+        } else {
+            // Close portal
+            self.prepared_statements.close_portal(&name)
+        };
+
+        match result {
+            Ok(_) => {
+                // Send CloseComplete message
+                self.send_message(stream, &Message::CloseComplete).await?;
+            }
+            Err(e) => {
+                // Log but still send CloseComplete (PostgreSQL behavior)
+                debug!("Close error (ignored): {}", e);
+                self.send_message(stream, &Message::CloseComplete).await?;
+            }
+        }
+
+        Ok(())
+    }
 }

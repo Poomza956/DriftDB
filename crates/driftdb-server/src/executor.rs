@@ -2,17 +2,17 @@
 //!
 //! Executes SQL queries directly against the DriftDB engine
 
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use driftdb_core::{Engine, EngineGuard};
-use serde_json::Value;
-use std::sync::Arc;
-use std::collections::HashMap;
-use tokio::sync::Mutex;
 use parking_lot::{Mutex as ParkingMutex, RwLock as SyncRwLock};
-use tracing::{debug, info, warn};
+use serde_json::Value;
+use std::collections::HashMap;
+use std::sync::Arc;
 use time;
+use tokio::sync::Mutex;
+use tracing::{debug, info, warn};
 
-use crate::transaction::{TransactionManager, IsolationLevel};
+use crate::transaction::{IsolationLevel, TransactionManager};
 
 #[cfg(test)]
 #[path = "executor_subquery_tests.rs"]
@@ -35,6 +35,8 @@ pub enum QueryResult {
         count: usize,
     },
     CreateTable,
+    DropTable,
+    CreateIndex,
     #[allow(dead_code)]
     Begin,
     Commit,
@@ -88,11 +90,11 @@ struct Having {
 /// Select clause specification
 #[derive(Debug, Clone)]
 enum SelectClause {
-    All, // SELECT *
-    AllDistinct, // SELECT DISTINCT *
-    Columns(Vec<String>), // SELECT column1, column2, etc.
-    ColumnsDistinct(Vec<String>), // SELECT DISTINCT column1, column2, etc.
-    Aggregations(Vec<Aggregation>), // SELECT COUNT(*), SUM(column), etc.
+    All,                                  // SELECT *
+    AllDistinct,                          // SELECT DISTINCT *
+    Columns(Vec<String>),                 // SELECT column1, column2, etc.
+    ColumnsDistinct(Vec<String>),         // SELECT DISTINCT column1, column2, etc.
+    Aggregations(Vec<Aggregation>),       // SELECT COUNT(*), SUM(column), etc.
     Mixed(Vec<String>, Vec<Aggregation>), // SELECT column1, column2, COUNT(*), SUM(column3)
 }
 
@@ -186,7 +188,7 @@ pub enum SubqueryExpression {
     },
     Comparison {
         column: String,
-        operator: String, // "=", ">", "<", etc.
+        operator: String,                       // "=", ">", "<", etc.
         quantifier: Option<SubqueryQuantifier>, // ANY, ALL, or None for scalar
         subquery: Subquery,
     },
@@ -330,16 +332,16 @@ impl PlanNode {
     /// Get the estimated number of rows for this node
     fn get_estimated_rows(&self) -> usize {
         match self {
-            PlanNode::SeqScan { estimated_rows, .. } |
-            PlanNode::IndexScan { estimated_rows, .. } |
-            PlanNode::NestedLoop { estimated_rows, .. } |
-            PlanNode::HashJoin { estimated_rows, .. } |
-            PlanNode::Sort { estimated_rows, .. } |
-            PlanNode::Limit { estimated_rows, .. } |
-            PlanNode::Aggregate { estimated_rows, .. } |
-            PlanNode::SetOperation { estimated_rows, .. } |
-            PlanNode::Distinct { estimated_rows, .. } |
-            PlanNode::Subquery { estimated_rows, .. } => *estimated_rows,
+            PlanNode::SeqScan { estimated_rows, .. }
+            | PlanNode::IndexScan { estimated_rows, .. }
+            | PlanNode::NestedLoop { estimated_rows, .. }
+            | PlanNode::HashJoin { estimated_rows, .. }
+            | PlanNode::Sort { estimated_rows, .. }
+            | PlanNode::Limit { estimated_rows, .. }
+            | PlanNode::Aggregate { estimated_rows, .. }
+            | PlanNode::SetOperation { estimated_rows, .. }
+            | PlanNode::Distinct { estimated_rows, .. }
+            | PlanNode::Subquery { estimated_rows, .. } => *estimated_rows,
         }
     }
 }
@@ -389,29 +391,101 @@ pub struct QueryExecutor<'a> {
     engine_guard: Option<&'a EngineGuard>,
     engine: Option<Arc<SyncRwLock<Engine>>>,
     subquery_cache: Arc<Mutex<HashMap<String, QueryResult>>>, // Cache for non-correlated subqueries
-    use_indexes: bool, // Enable/disable index optimization
+    use_indexes: bool,                                        // Enable/disable index optimization
     prepared_statements: Arc<ParkingMutex<HashMap<String, PreparedStatement>>>, // Prepared statements cache
     transaction_manager: Arc<TransactionManager>, // Transaction management
-    session_id: String, // Session identifier for transaction tracking
+    session_id: String,                           // Session identifier for transaction tracking
 }
 
 #[allow(dead_code)]
 impl<'a> QueryExecutor<'a> {
     /// Convert core sql::QueryResult to server QueryResult
-    async fn convert_sql_result(&self, core_result: driftdb_core::sql::QueryResult) -> Result<QueryResult> {
-        use driftdb_core::sql::QueryResult as CoreResult;
+    fn convert_sql_result(
+        &self,
+        core_result: driftdb_core::query::QueryResult,
+    ) -> Result<QueryResult> {
+        use driftdb_core::query::QueryResult as CoreResult;
+        use serde_json::Value;
 
         match core_result {
             CoreResult::Success { message } => {
                 debug!("SQL execution success: {}", message);
-                Ok(QueryResult::Empty)
+                // Parse the message to determine the proper response type
+                if message.contains("Index") && message.contains("created") {
+                    Ok(QueryResult::CreateIndex)
+                } else if message.starts_with("Table") && message.contains("created") {
+                    Ok(QueryResult::CreateTable)
+                } else if message.starts_with("Table") && message.contains("dropped") {
+                    Ok(QueryResult::DropTable)
+                } else if message.starts_with("Inserted") {
+                    let count = message
+                        .split_whitespace()
+                        .nth(1)
+                        .and_then(|s| s.parse::<usize>().ok())
+                        .unwrap_or(0);
+                    Ok(QueryResult::Insert { count })
+                } else if message.starts_with("Updated") {
+                    let count = message
+                        .split_whitespace()
+                        .nth(1)
+                        .and_then(|s| s.parse::<usize>().ok())
+                        .unwrap_or(0);
+                    Ok(QueryResult::Update { count })
+                } else if message.starts_with("Deleted") {
+                    let count = message
+                        .split_whitespace()
+                        .nth(1)
+                        .and_then(|s| s.parse::<usize>().ok())
+                        .unwrap_or(0);
+                    Ok(QueryResult::Delete { count })
+                } else {
+                    Ok(QueryResult::Empty)
+                }
             }
-            CoreResult::Records { columns, rows } => {
-                Ok(QueryResult::Select { columns, rows })
+            CoreResult::Rows { data } => {
+                // Convert data: Vec<Value> to columnar format
+                if data.is_empty() {
+                    Ok(QueryResult::Select {
+                        columns: vec![],
+                        rows: vec![],
+                    })
+                } else {
+                    // Extract columns from first row
+                    let columns: Vec<String> = if let Some(Value::Object(first_row)) = data.first()
+                    {
+                        first_row.keys().cloned().collect()
+                    } else {
+                        vec![]
+                    };
+
+                    // Convert rows
+                    let rows: Vec<Vec<Value>> = data
+                        .iter()
+                        .filter_map(|row| {
+                            if let Value::Object(obj) = row {
+                                Some(
+                                    columns
+                                        .iter()
+                                        .map(|col| obj.get(col).cloned().unwrap_or(Value::Null))
+                                        .collect(),
+                                )
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+
+                    Ok(QueryResult::Select { columns, rows })
+                }
             }
-            CoreResult::Error { message } => {
-                Err(anyhow!("SQL execution error: {}", message))
+            CoreResult::DriftHistory { events } => {
+                // Convert history events to rows
+                Ok(QueryResult::Select {
+                    columns: vec!["event".to_string()],
+                    rows: events.into_iter().map(|e| vec![e]).collect(),
+                })
             }
+            CoreResult::Error { message } => Err(anyhow!("SQL execution error: {}", message)),
         }
     }
 
@@ -451,10 +525,9 @@ impl<'a> QueryExecutor<'a> {
 
     /// Get read access to the engine
     fn engine_read(&self) -> Result<parking_lot::RwLockReadGuard<Engine>> {
-        if let Some(_guard) = &self.engine_guard {
-            // For EngineGuard, we need to get the engine differently
-            // For now, return error as EngineGuard needs refactoring
-            Err(anyhow!("EngineGuard not yet supported with parking_lot"))
+        if let Some(guard) = &self.engine_guard {
+            // EngineGuard provides a read() method that returns RwLockReadGuard
+            Ok(guard.read())
         } else if let Some(engine) = &self.engine {
             Ok(engine.read())
         } else {
@@ -464,10 +537,9 @@ impl<'a> QueryExecutor<'a> {
 
     /// Get write access to the engine
     fn engine_write(&self) -> Result<parking_lot::RwLockWriteGuard<Engine>> {
-        if let Some(_guard) = &self.engine_guard {
-            // For EngineGuard, we need to get the engine differently
-            // For now, return error as EngineGuard needs refactoring
-            Err(anyhow!("EngineGuard not yet supported with parking_lot"))
+        if let Some(guard) = &self.engine_guard {
+            // EngineGuard provides a write() method that returns RwLockWriteGuard
+            Ok(guard.write())
         } else if let Some(engine) = &self.engine {
             Ok(engine.write())
         } else {
@@ -530,7 +602,7 @@ impl<'a> QueryExecutor<'a> {
 
         // String (single quotes)
         if trimmed.starts_with('\'') && trimmed.ends_with('\'') {
-            let content = &trimmed[1..trimmed.len()-1];
+            let content = &trimmed[1..trimmed.len() - 1];
             return Ok(Value::String(content.to_string()));
         }
 
@@ -581,7 +653,10 @@ impl<'a> QueryExecutor<'a> {
 
                     // Validate that left side is an aggregation function
                     if !self.is_aggregation_function(function_expr) {
-                        return Err(anyhow!("HAVING clause must use aggregation functions: {}", function_expr));
+                        return Err(anyhow!(
+                            "HAVING clause must use aggregation functions: {}",
+                            function_expr
+                        ));
                     }
 
                     // Parse value
@@ -604,8 +679,11 @@ impl<'a> QueryExecutor<'a> {
     /// Check if an expression is an aggregation function
     fn is_aggregation_function(&self, expr: &str) -> bool {
         let expr = expr.trim().to_uppercase();
-        expr.starts_with("COUNT(") || expr.starts_with("SUM(") ||
-        expr.starts_with("AVG(") || expr.starts_with("MIN(") || expr.starts_with("MAX(")
+        expr.starts_with("COUNT(")
+            || expr.starts_with("SUM(")
+            || expr.starts_with("AVG(")
+            || expr.starts_with("MIN(")
+            || expr.starts_with("MAX(")
     }
 
     /// Parse ORDER BY clause
@@ -621,7 +699,12 @@ impl<'a> QueryExecutor<'a> {
             match parts[1].to_uppercase().as_str() {
                 "ASC" => OrderDirection::Asc,
                 "DESC" => OrderDirection::Desc,
-                _ => return Err(anyhow!("Invalid ORDER BY direction: {}. Use ASC or DESC", parts[1])),
+                _ => {
+                    return Err(anyhow!(
+                        "Invalid ORDER BY direction: {}. Use ASC or DESC",
+                        parts[1]
+                    ))
+                }
             }
         } else {
             OrderDirection::Asc // Default to ascending
@@ -633,7 +716,8 @@ impl<'a> QueryExecutor<'a> {
     /// Parse LIMIT clause
     fn parse_limit_clause(&self, limit_clause: &str) -> Result<usize> {
         let trimmed = limit_clause.trim();
-        trimmed.parse::<usize>()
+        trimmed
+            .parse::<usize>()
             .map_err(|_| anyhow!("Invalid LIMIT value: {}", trimmed))
     }
 
@@ -678,7 +762,9 @@ impl<'a> QueryExecutor<'a> {
 
         // DISTINCT cannot be used with aggregations
         if is_distinct && !aggregations.is_empty() {
-            return Err(anyhow!("DISTINCT cannot be used with aggregation functions"));
+            return Err(anyhow!(
+                "DISTINCT cannot be used with aggregation functions"
+            ));
         }
 
         // Determine the type of SELECT clause
@@ -688,11 +774,11 @@ impl<'a> QueryExecutor<'a> {
             (false, true, false) => {
                 // Just regular columns - return Columns variant for column selection
                 Ok(SelectClause::Columns(columns))
-            },
+            }
             (false, true, true) => {
                 // DISTINCT columns
                 Ok(SelectClause::ColumnsDistinct(columns))
-            },
+            }
             (false, false, _) => Ok(SelectClause::Mixed(columns, aggregations)),
         }
     }
@@ -722,7 +808,10 @@ impl<'a> QueryExecutor<'a> {
         let column = if argument == "*" {
             // Only COUNT supports *
             if function != AggregationFunction::Count {
-                return Err(anyhow!("{} function does not support * argument", function_name));
+                return Err(anyhow!(
+                    "{} function does not support * argument",
+                    function_name
+                ));
             }
             None
         } else {
@@ -733,7 +822,11 @@ impl<'a> QueryExecutor<'a> {
     }
 
     /// Compute aggregation results from filtered data
-    fn compute_aggregations(&self, data: &[Value], aggregations: &[Aggregation]) -> Result<(Vec<String>, Vec<Value>)> {
+    fn compute_aggregations(
+        &self,
+        data: &[Value],
+        aggregations: &[Aggregation],
+    ) -> Result<(Vec<String>, Vec<Value>)> {
         let mut columns = Vec::new();
         let mut values = Vec::new();
 
@@ -747,7 +840,11 @@ impl<'a> QueryExecutor<'a> {
     }
 
     /// Group data by specified columns
-    fn group_data(&self, data: Vec<Value>, group_by: &GroupBy) -> Result<HashMap<Vec<Value>, Vec<Value>>> {
+    fn group_data(
+        &self,
+        data: Vec<Value>,
+        group_by: &GroupBy,
+    ) -> Result<HashMap<Vec<Value>, Vec<Value>>> {
         let mut groups: HashMap<Vec<Value>, Vec<Value>> = HashMap::new();
 
         for row in data {
@@ -774,7 +871,7 @@ impl<'a> QueryExecutor<'a> {
         &self,
         groups: &HashMap<Vec<Value>, Vec<Value>>,
         group_by: &GroupBy,
-        aggregations: &[Aggregation]
+        aggregations: &[Aggregation],
     ) -> Result<(Vec<String>, Vec<Vec<Value>>)> {
         let mut all_columns = group_by.columns.clone();
         let mut agg_columns = Vec::new();
@@ -818,7 +915,7 @@ impl<'a> QueryExecutor<'a> {
         &self,
         groups: HashMap<Vec<Value>, Vec<Value>>,
         having: &Having,
-        _aggregations: &[Aggregation]
+        _aggregations: &[Aggregation],
     ) -> Result<HashMap<Vec<Value>, Vec<Value>>> {
         let mut filtered_groups = HashMap::new();
 
@@ -829,14 +926,18 @@ impl<'a> QueryExecutor<'a> {
             for (function_expr, operator, expected_value) in &having.conditions {
                 // Parse the aggregation function from the expression
                 if let Some(aggregation) = self.parse_aggregation_function(function_expr)? {
-                    let (_, actual_value) = self.compute_single_aggregation(&group_data, &aggregation)?;
+                    let (_, actual_value) =
+                        self.compute_single_aggregation(&group_data, &aggregation)?;
 
                     if !self.matches_condition(&actual_value, operator, expected_value) {
                         matches_having = false;
                         break;
                     }
                 } else {
-                    return Err(anyhow!("Invalid aggregation function in HAVING: {}", function_expr));
+                    return Err(anyhow!(
+                        "Invalid aggregation function in HAVING: {}",
+                        function_expr
+                    ));
                 }
             }
 
@@ -849,7 +950,11 @@ impl<'a> QueryExecutor<'a> {
     }
 
     /// Compute a single aggregation function
-    fn compute_single_aggregation(&self, data: &[Value], aggregation: &Aggregation) -> Result<(String, Value)> {
+    fn compute_single_aggregation(
+        &self,
+        data: &[Value],
+        aggregation: &Aggregation,
+    ) -> Result<(String, Value)> {
         let column_name = match (&aggregation.function, &aggregation.column) {
             (AggregationFunction::Count, None) => "count(*)".to_string(),
             (AggregationFunction::Count, Some(col)) => format!("count({})", col),
@@ -862,10 +967,18 @@ impl<'a> QueryExecutor<'a> {
 
         let result = match aggregation.function {
             AggregationFunction::Count => self.compute_count(data, &aggregation.column)?,
-            AggregationFunction::Sum => self.compute_sum(data, aggregation.column.as_ref().unwrap())?,
-            AggregationFunction::Avg => self.compute_avg(data, aggregation.column.as_ref().unwrap())?,
-            AggregationFunction::Min => self.compute_min(data, aggregation.column.as_ref().unwrap())?,
-            AggregationFunction::Max => self.compute_max(data, aggregation.column.as_ref().unwrap())?,
+            AggregationFunction::Sum => {
+                self.compute_sum(data, aggregation.column.as_ref().unwrap())?
+            }
+            AggregationFunction::Avg => {
+                self.compute_avg(data, aggregation.column.as_ref().unwrap())?
+            }
+            AggregationFunction::Min => {
+                self.compute_min(data, aggregation.column.as_ref().unwrap())?
+            }
+            AggregationFunction::Max => {
+                self.compute_max(data, aggregation.column.as_ref().unwrap())?
+            }
         };
 
         Ok((column_name, result))
@@ -880,7 +993,8 @@ impl<'a> QueryExecutor<'a> {
             }
             Some(col) => {
                 // COUNT(column) - count non-null values
-                let count = data.iter()
+                let count = data
+                    .iter()
                     .filter_map(|row| {
                         if let Value::Object(map) = row {
                             map.get(col)
@@ -915,7 +1029,10 @@ impl<'a> QueryExecutor<'a> {
                             continue;
                         }
                         _ => {
-                            return Err(anyhow!("Cannot compute SUM on non-numeric column: {}", column));
+                            return Err(anyhow!(
+                                "Cannot compute SUM on non-numeric column: {}",
+                                column
+                            ));
                         }
                     }
                 }
@@ -929,7 +1046,9 @@ impl<'a> QueryExecutor<'a> {
             Ok(Value::Number((sum as i64).into()))
         } else {
             // Return as float
-            Ok(Value::Number(serde_json::Number::from_f64(sum).unwrap_or_else(|| 0.into())))
+            Ok(Value::Number(
+                serde_json::Number::from_f64(sum).unwrap_or_else(|| 0.into()),
+            ))
         }
     }
 
@@ -953,7 +1072,10 @@ impl<'a> QueryExecutor<'a> {
                             continue;
                         }
                         _ => {
-                            return Err(anyhow!("Cannot compute AVG on non-numeric column: {}", column));
+                            return Err(anyhow!(
+                                "Cannot compute AVG on non-numeric column: {}",
+                                column
+                            ));
                         }
                     }
                 }
@@ -964,7 +1086,9 @@ impl<'a> QueryExecutor<'a> {
             Ok(Value::Null)
         } else {
             let avg = sum / count as f64;
-            Ok(Value::Number(serde_json::Number::from_f64(avg).unwrap_or_else(|| 0.into())))
+            Ok(Value::Number(
+                serde_json::Number::from_f64(avg).unwrap_or_else(|| 0.into()),
+            ))
         }
     }
 
@@ -1008,7 +1132,9 @@ impl<'a> QueryExecutor<'a> {
                     match &max_value {
                         None => max_value = Some(value.clone()),
                         Some(current_max) => {
-                            if self.compare_values(value, current_max) == std::cmp::Ordering::Greater {
+                            if self.compare_values(value, current_max)
+                                == std::cmp::Ordering::Greater
+                            {
                                 max_value = Some(value.clone());
                             }
                         }
@@ -1021,17 +1147,30 @@ impl<'a> QueryExecutor<'a> {
     }
 
     /// Sort rows based on ORDER BY specification
-    fn sort_rows(&self, rows: &mut Vec<Vec<Value>>, columns: &[String], order_by: &OrderBy) -> Result<()> {
+    fn sort_rows(
+        &self,
+        rows: &mut Vec<Vec<Value>>,
+        columns: &[String],
+        order_by: &OrderBy,
+    ) -> Result<()> {
         // Find the column index (case-insensitive for aggregation functions)
         // Also check for table-prefixed columns
-        let column_index = columns.iter().position(|col| {
-            // Direct match
-            col == &order_by.column || col.to_lowercase() == order_by.column.to_lowercase() ||
+        let column_index = columns
+            .iter()
+            .position(|col| {
+                // Direct match
+                col == &order_by.column || col.to_lowercase() == order_by.column.to_lowercase() ||
             // Check if column matches the suffix after the table prefix (e.g., "table.column" matches "column")
             col.split('.').last().map_or(false, |suffix| {
                 suffix == order_by.column || suffix.to_lowercase() == order_by.column.to_lowercase()
             })
-        }).ok_or_else(|| anyhow!("ORDER BY column '{}' not found in result set", order_by.column))?;
+            })
+            .ok_or_else(|| {
+                anyhow!(
+                    "ORDER BY column '{}' not found in result set",
+                    order_by.column
+                )
+            })?;
 
         rows.sort_by(|a, b| {
             let val_a = a.get(column_index).unwrap_or(&Value::Null);
@@ -1063,7 +1202,7 @@ impl<'a> QueryExecutor<'a> {
                 let fa = na.as_f64().unwrap_or(0.0);
                 let fb = nb.as_f64().unwrap_or(0.0);
                 fa.partial_cmp(&fb).unwrap_or(Ordering::Equal)
-            },
+            }
 
             // Strings
             (Value::String(sa), Value::String(sb)) => sa.cmp(sb),
@@ -1086,12 +1225,17 @@ impl<'a> QueryExecutor<'a> {
                     _ => serde_json::to_string(b).unwrap_or_default(),
                 };
                 sa.cmp(&sb)
-            },
+            }
         }
     }
 
     /// Check if a value matches a condition
-    fn matches_condition(&self, field_value: &Value, operator: &str, condition_value: &Value) -> bool {
+    fn matches_condition(
+        &self,
+        field_value: &Value,
+        operator: &str,
+        condition_value: &Value,
+    ) -> bool {
         match operator {
             "=" => field_value == condition_value,
             "!=" => field_value != condition_value,
@@ -1101,28 +1245,28 @@ impl<'a> QueryExecutor<'a> {
                 } else {
                     false
                 }
-            },
+            }
             "<" => {
                 if let (Value::Number(a), Value::Number(b)) = (field_value, condition_value) {
                     a.as_f64().unwrap_or(0.0) < b.as_f64().unwrap_or(0.0)
                 } else {
                     false
                 }
-            },
+            }
             ">=" => {
                 if let (Value::Number(a), Value::Number(b)) = (field_value, condition_value) {
                     a.as_f64().unwrap_or(0.0) >= b.as_f64().unwrap_or(0.0)
                 } else {
                     false
                 }
-            },
+            }
             "<=" => {
                 if let (Value::Number(a), Value::Number(b)) = (field_value, condition_value) {
                     a.as_f64().unwrap_or(0.0) <= b.as_f64().unwrap_or(0.0)
                 } else {
                     false
                 }
-            },
+            }
             _ => false,
         }
     }
@@ -1140,7 +1284,7 @@ impl<'a> QueryExecutor<'a> {
             return Ok(QueryResult::Select {
                 columns: vec!["version".to_string()],
                 rows: vec![vec![Value::String(
-                    "PostgreSQL 14.0 (DriftDB 0.7.3-alpha)".to_string()
+                    "PostgreSQL 14.0 (DriftDB 0.7.3-alpha)".to_string(),
                 )]],
             });
         }
@@ -1154,9 +1298,25 @@ impl<'a> QueryExecutor<'a> {
 
         // Use SQL bridge for real SQL execution
 
-        // First check if this is a legacy command
-        let lower = sql.to_lowercase();
-        if lower.starts_with("show ") || lower.starts_with("explain ") || lower.starts_with("set ") {
+        // First check if this is a transaction command or legacy command
+        let lower = sql.to_lowercase().trim().to_string();
+
+        // Handle transaction commands first (before SQL bridge)
+        if lower.starts_with("begin") || lower == "begin" {
+            return self.execute_begin(sql).await;
+        }
+        if lower.starts_with("commit") || lower == "commit" {
+            return self.execute_commit().await;
+        }
+        if lower.starts_with("rollback") || lower == "rollback" {
+            return self.execute_rollback(sql).await;
+        }
+        if lower.starts_with("savepoint ") {
+            return self.execute_savepoint(sql).await;
+        }
+
+        if lower.starts_with("show ") || lower.starts_with("explain ") || lower.starts_with("set ")
+        {
             return self.execute_legacy(sql).await;
         }
 
@@ -1167,54 +1327,8 @@ impl<'a> QueryExecutor<'a> {
 
         match result {
             Ok(core_result) => {
-                // Convert core QueryResult to server QueryResult
-                match core_result {
-                    driftdb_core::query::QueryResult::Success { message } => {
-                        debug!("SQL execution success: {}", message);
-                        Ok(QueryResult::Empty)
-                    }
-                    driftdb_core::query::QueryResult::Rows { data } => {
-                        // Convert data: Vec<Value> to columnar format
-                        if data.is_empty() {
-                            Ok(QueryResult::Select {
-                                columns: vec![],
-                                rows: vec![],
-                            })
-                        } else {
-                            // Extract columns from first row
-                            let columns: Vec<String> = if let Some(Value::Object(first_row)) = data.first() {
-                                first_row.keys().cloned().collect()
-                            } else {
-                                vec![]
-                            };
-
-                            // Convert rows
-                            let rows: Vec<Vec<Value>> = data.iter()
-                                .filter_map(|row| {
-                                    if let Value::Object(obj) = row {
-                                        Some(columns.iter()
-                                            .map(|col| obj.get(col).cloned().unwrap_or(Value::Null))
-                                            .collect())
-                                    } else {
-                                        None
-                                    }
-                                })
-                                .collect();
-
-                            Ok(QueryResult::Select { columns, rows })
-                        }
-                    }
-                    driftdb_core::query::QueryResult::DriftHistory { events } => {
-                        // Convert history events to rows
-                        Ok(QueryResult::Select {
-                            columns: vec!["event".to_string()],
-                            rows: events.into_iter().map(|e| vec![e]).collect(),
-                        })
-                    }
-                    driftdb_core::query::QueryResult::Error { message } => {
-                        Err(anyhow!("SQL error: {}", message))
-                    }
-                }
+                // Use the existing convert_sql_result function
+                self.convert_sql_result(core_result)
             }
             Err(e) => {
                 debug!("SQL execution failed: {}", e);
@@ -1260,7 +1374,9 @@ impl<'a> QueryExecutor<'a> {
 
         // Parse SELECT clause to determine what kind of query this is
         let select_start = if lower.starts_with("select ") { 7 } else { 0 };
-        let from_pos = lower.find(" from ").ok_or_else(|| anyhow!("Missing FROM clause"))?;
+        let from_pos = lower
+            .find(" from ")
+            .ok_or_else(|| anyhow!("Missing FROM clause"))?;
         let select_part = &sql[select_start..from_pos];
 
         let select_clause = self.parse_select_clause(select_part)?;
@@ -1270,7 +1386,8 @@ impl<'a> QueryExecutor<'a> {
         let remaining = &sql[from_pos..];
 
         // Find the end of the FROM clause
-        let from_end = remaining.find(" WHERE ")
+        let from_end = remaining
+            .find(" WHERE ")
             .or_else(|| remaining.find(" where "))
             .or_else(|| remaining.find(" GROUP BY "))
             .or_else(|| remaining.find(" group by "))
@@ -1293,14 +1410,20 @@ impl<'a> QueryExecutor<'a> {
 
         // Execute JOIN operations to get initial dataset
         let (mut joined_data, mut all_columns) = self.execute_join(&from_clause).await?;
-        debug!("JOIN execution produced {} rows with {} columns", joined_data.len(), all_columns.len());
+        debug!(
+            "JOIN execution produced {} rows with {} columns",
+            joined_data.len(),
+            all_columns.len()
+        );
 
         // Parse WHERE conditions if present (with subquery support)
         let _where_conditions = if let Some(where_pos) = after_from.to_lowercase().find(" where ") {
             let where_start = where_pos + 7;
             let where_clause = &after_from[where_start..];
 
-            let where_end = where_clause.to_lowercase().find(" group by ")
+            let where_end = where_clause
+                .to_lowercase()
+                .find(" group by ")
                 .or_else(|| where_clause.to_lowercase().find(" order by "))
                 .or_else(|| where_clause.to_lowercase().find(" limit "))
                 .or_else(|| where_clause.to_lowercase().find(" for system_time "))
@@ -1310,20 +1433,30 @@ impl<'a> QueryExecutor<'a> {
             let conditions_str = where_clause[..where_end].trim();
             debug!("Parsing WHERE clause: {}", conditions_str);
             let enhanced_conditions = self.parse_enhanced_where_clause(conditions_str)?;
-            debug!("Parsed enhanced WHERE conditions: {:?}", enhanced_conditions);
+            debug!(
+                "Parsed enhanced WHERE conditions: {:?}",
+                enhanced_conditions
+            );
 
             // Filter joined data based on enhanced WHERE conditions
             let initial_count = joined_data.len();
             let mut filtered_data = Vec::new();
 
             for row in joined_data {
-                if self.evaluate_where_conditions(&enhanced_conditions, &row).await? {
+                if self
+                    .evaluate_where_conditions(&enhanced_conditions, &row)
+                    .await?
+                {
                     filtered_data.push(row);
                 }
             }
 
             joined_data = filtered_data;
-            debug!("WHERE clause filtered from {} to {} rows", initial_count, joined_data.len());
+            debug!(
+                "WHERE clause filtered from {} to {} rows",
+                initial_count,
+                joined_data.len()
+            );
 
             enhanced_conditions
         } else {
@@ -1335,7 +1468,9 @@ impl<'a> QueryExecutor<'a> {
             let group_start = group_pos + 10; // " group by " is 10 characters
             let group_clause = &after_from[group_start..];
 
-            let group_end = group_clause.to_lowercase().find(" having ")
+            let group_end = group_clause
+                .to_lowercase()
+                .find(" having ")
                 .or_else(|| group_clause.to_lowercase().find(" order by "))
                 .or_else(|| group_clause.to_lowercase().find(" limit "))
                 .or_else(|| group_clause.to_lowercase().find(" for system_time "))
@@ -1354,7 +1489,9 @@ impl<'a> QueryExecutor<'a> {
             let having_start = having_pos + 8; // " having " is 8 characters
             let having_clause = &after_from[having_start..];
 
-            let having_end = having_clause.to_lowercase().find(" order by ")
+            let having_end = having_clause
+                .to_lowercase()
+                .find(" order by ")
                 .or_else(|| having_clause.to_lowercase().find(" limit "))
                 .or_else(|| having_clause.to_lowercase().find(" for system_time "))
                 .or_else(|| having_clause.to_lowercase().find(" as of "))
@@ -1372,7 +1509,9 @@ impl<'a> QueryExecutor<'a> {
             let order_start = order_pos + 10; // " order by " is 10 characters
             let order_clause = &after_from[order_start..];
 
-            let order_end = order_clause.to_lowercase().find(" limit ")
+            let order_end = order_clause
+                .to_lowercase()
+                .find(" limit ")
                 .or_else(|| order_clause.to_lowercase().find(" for system_time "))
                 .or_else(|| order_clause.to_lowercase().find(" as of "))
                 .unwrap_or(order_clause.len());
@@ -1389,7 +1528,9 @@ impl<'a> QueryExecutor<'a> {
             let limit_start = limit_pos + 7; // " limit " is 7 characters
             let limit_clause = &after_from[limit_start..];
 
-            let limit_end = limit_clause.to_lowercase().find(" for system_time ")
+            let limit_end = limit_clause
+                .to_lowercase()
+                .find(" for system_time ")
                 .or_else(|| limit_clause.to_lowercase().find(" as of "))
                 .unwrap_or(limit_clause.len());
 
@@ -1408,11 +1549,15 @@ impl<'a> QueryExecutor<'a> {
             // For now, temporal queries only work with single tables
             if !matches!(from_clause, FromClause::Single(_)) {
                 warn!("Temporal queries (FOR SYSTEM_TIME) are only supported for single table queries");
-                return Err(anyhow!("Temporal queries are not supported with JOINs or multiple tables"));
+                return Err(anyhow!(
+                    "Temporal queries are not supported with JOINs or multiple tables"
+                ));
             }
 
             // Re-execute the query with temporal support
-            let (temporal_data, temporal_columns) = self.execute_temporal_join(&from_clause, &temporal_clause).await?;
+            let (temporal_data, temporal_columns) = self
+                .execute_temporal_join(&from_clause, &temporal_clause)
+                .await?;
             joined_data = temporal_data;
             all_columns = temporal_columns;
             debug!("Temporal query produced {} rows", joined_data.len());
@@ -1423,20 +1568,27 @@ impl<'a> QueryExecutor<'a> {
             // Pure aggregation without GROUP BY
             (SelectClause::Aggregations(aggregations), None) => {
                 // Compute aggregation results on joined data
-                let (agg_columns, agg_values) = self.compute_aggregations(&joined_data, &aggregations)?;
+                let (agg_columns, agg_values) =
+                    self.compute_aggregations(&joined_data, &aggregations)?;
 
-                debug!("Returning aggregation result with columns: {:?}", agg_columns);
+                debug!(
+                    "Returning aggregation result with columns: {:?}",
+                    agg_columns
+                );
                 Ok(QueryResult::Select {
                     columns: agg_columns,
                     rows: vec![agg_values],
                 })
-            },
+            }
             // Mixed columns and aggregations with GROUP BY
             (SelectClause::Mixed(columns, aggregations), Some(group_by_clause)) => {
                 // Validate that all non-aggregation columns are in GROUP BY
                 for col in &columns {
                     if !group_by_clause.columns.contains(col) {
-                        return Err(anyhow!("Column '{}' must be in GROUP BY clause or be an aggregate function", col));
+                        return Err(anyhow!(
+                            "Column '{}' must be in GROUP BY clause or be an aggregate function",
+                            col
+                        ));
                     }
                 }
 
@@ -1451,11 +1603,15 @@ impl<'a> QueryExecutor<'a> {
                 }
 
                 // Compute aggregations for each group
-                let (group_columns, mut group_rows) = self.compute_grouped_aggregations(&groups, &group_by_clause, &aggregations)?;
+                let (group_columns, mut group_rows) =
+                    self.compute_grouped_aggregations(&groups, &group_by_clause, &aggregations)?;
 
                 // Apply ORDER BY if specified
                 if let Some(ref order_by) = order_by {
-                    debug!("Applying ORDER BY: {} {:?}", order_by.column, order_by.direction);
+                    debug!(
+                        "Applying ORDER BY: {} {:?}",
+                        order_by.column, order_by.direction
+                    );
                     self.sort_rows(&mut group_rows, &group_columns, order_by)?;
                 }
 
@@ -1465,12 +1621,16 @@ impl<'a> QueryExecutor<'a> {
                     group_rows.truncate(limit_count);
                 }
 
-                debug!("Returning {} grouped rows with columns: {:?}", group_rows.len(), group_columns);
+                debug!(
+                    "Returning {} grouped rows with columns: {:?}",
+                    group_rows.len(),
+                    group_columns
+                );
                 Ok(QueryResult::Select {
                     columns: group_columns,
                     rows: group_rows,
                 })
-            },
+            }
             // Aggregations with GROUP BY
             (SelectClause::Aggregations(aggregations), Some(group_by_clause)) => {
                 // Group the joined data
@@ -1484,11 +1644,15 @@ impl<'a> QueryExecutor<'a> {
                 }
 
                 // Compute aggregations for each group
-                let (group_columns, mut group_rows) = self.compute_grouped_aggregations(&groups, &group_by_clause, &aggregations)?;
+                let (group_columns, mut group_rows) =
+                    self.compute_grouped_aggregations(&groups, &group_by_clause, &aggregations)?;
 
                 // Apply ORDER BY if specified
                 if let Some(ref order_by) = order_by {
-                    debug!("Applying ORDER BY: {} {:?}", order_by.column, order_by.direction);
+                    debug!(
+                        "Applying ORDER BY: {} {:?}",
+                        order_by.column, order_by.direction
+                    );
                     self.sort_rows(&mut group_rows, &group_columns, order_by)?;
                 }
 
@@ -1498,49 +1662,71 @@ impl<'a> QueryExecutor<'a> {
                     group_rows.truncate(limit_count);
                 }
 
-                debug!("Returning {} grouped rows with columns: {:?}", group_rows.len(), group_columns);
+                debug!(
+                    "Returning {} grouped rows with columns: {:?}",
+                    group_rows.len(),
+                    group_columns
+                );
                 Ok(QueryResult::Select {
                     columns: group_columns,
                     rows: group_rows,
                 })
-            },
+            }
             // Column selection without GROUP BY
             (SelectClause::Columns(columns), None) => {
                 // Filter and format results for specific column selection from joined data
-                self.format_join_column_selection_results(joined_data, &all_columns, &columns, order_by, limit)
-            },
+                self.format_join_column_selection_results(
+                    joined_data,
+                    &all_columns,
+                    &columns,
+                    order_by,
+                    limit,
+                )
+            }
             // DISTINCT column selection without GROUP BY
             (SelectClause::ColumnsDistinct(columns), None) => {
                 // Apply DISTINCT to column selection from joined data
                 let distinct_data = self.apply_distinct(&joined_data, Some(&columns))?;
-                self.format_join_column_selection_results(distinct_data, &all_columns, &columns, order_by, limit)
-            },
+                self.format_join_column_selection_results(
+                    distinct_data,
+                    &all_columns,
+                    &columns,
+                    order_by,
+                    limit,
+                )
+            }
             // Regular SELECT *
             (SelectClause::All, None) => {
                 // Format results for SELECT * from joined data
                 self.format_join_select_all_results(joined_data, all_columns, order_by, limit)
-            },
+            }
             // SELECT DISTINCT *
             (SelectClause::AllDistinct, None) => {
                 // Apply DISTINCT to all columns from joined data
                 let distinct_data = self.apply_distinct(&joined_data, None)?;
                 self.format_join_select_all_results(distinct_data, all_columns, order_by, limit)
-            },
+            }
             // Error cases
             (SelectClause::All | SelectClause::AllDistinct, Some(_)) => {
                 Err(anyhow!("SELECT * with GROUP BY is not supported"))
-            },
-            (SelectClause::Columns(_) | SelectClause::ColumnsDistinct(_), Some(_)) => {
-                Err(anyhow!("Column selection with GROUP BY is not yet supported - use Mixed clause instead"))
-            },
-            (SelectClause::Mixed(_, _), None) => {
-                Err(anyhow!("Column selection without aggregations requires GROUP BY clause"))
-            },
+            }
+            (SelectClause::Columns(_) | SelectClause::ColumnsDistinct(_), Some(_)) => Err(anyhow!(
+                "Column selection with GROUP BY is not yet supported - use Mixed clause instead"
+            )),
+            (SelectClause::Mixed(_, _), None) => Err(anyhow!(
+                "Column selection without aggregations requires GROUP BY clause"
+            )),
         }
     }
 
     /// Filter columns from the result set and format for specific column selection
-    fn format_column_selection_results(&self, filtered_data: Vec<Value>, selected_columns: &[String], order_by: Option<OrderBy>, limit: Option<usize>) -> Result<QueryResult> {
+    fn format_column_selection_results(
+        &self,
+        filtered_data: Vec<Value>,
+        selected_columns: &[String],
+        order_by: Option<OrderBy>,
+        limit: Option<usize>,
+    ) -> Result<QueryResult> {
         if filtered_data.is_empty() {
             return Ok(QueryResult::Select {
                 columns: selected_columns.to_vec(),
@@ -1550,7 +1736,10 @@ impl<'a> QueryExecutor<'a> {
 
         // Validate that all requested columns exist in at least one record
         if filtered_data.is_empty() {
-            return Ok(QueryResult::Select { columns: Vec::new(), rows: Vec::new() });
+            return Ok(QueryResult::Select {
+                columns: Vec::new(),
+                rows: Vec::new(),
+            });
         }
         let first = &filtered_data[0];
         if let Value::Object(map) = first {
@@ -1572,20 +1761,27 @@ impl<'a> QueryExecutor<'a> {
         }
 
         // Extract only the requested columns from each row
-        let mut rows: Vec<Vec<Value>> = filtered_data.into_iter().map(|record| {
-            if let Value::Object(map) = record {
-                selected_columns.iter().map(|col| {
-                    map.get(col).cloned().unwrap_or(Value::Null)
-                }).collect()
-            } else {
-                // For non-object records, return null for all columns
-                vec![Value::Null; selected_columns.len()]
-            }
-        }).collect();
+        let mut rows: Vec<Vec<Value>> = filtered_data
+            .into_iter()
+            .map(|record| {
+                if let Value::Object(map) = record {
+                    selected_columns
+                        .iter()
+                        .map(|col| map.get(col).cloned().unwrap_or(Value::Null))
+                        .collect()
+                } else {
+                    // For non-object records, return null for all columns
+                    vec![Value::Null; selected_columns.len()]
+                }
+            })
+            .collect();
 
         // Apply ORDER BY if specified
         if let Some(ref order_by) = order_by {
-            debug!("Applying ORDER BY: {} {:?}", order_by.column, order_by.direction);
+            debug!(
+                "Applying ORDER BY: {} {:?}",
+                order_by.column, order_by.direction
+            );
             self.sort_rows(&mut rows, selected_columns, order_by)?;
         }
 
@@ -1595,7 +1791,12 @@ impl<'a> QueryExecutor<'a> {
             rows.truncate(limit_count);
         }
 
-        debug!("Returning {} rows with {} selected columns: {:?}", rows.len(), selected_columns.len(), selected_columns);
+        debug!(
+            "Returning {} rows with {} selected columns: {:?}",
+            rows.len(),
+            selected_columns.len(),
+            selected_columns
+        );
         Ok(QueryResult::Select {
             columns: selected_columns.to_vec(),
             rows,
@@ -1603,8 +1804,12 @@ impl<'a> QueryExecutor<'a> {
     }
 
     /// Format results for SELECT * queries
-    fn format_select_all_results(&self, filtered_data: Vec<Value>, order_by: Option<OrderBy>, limit: Option<usize>) -> Result<QueryResult> {
-
+    fn format_select_all_results(
+        &self,
+        filtered_data: Vec<Value>,
+        order_by: Option<OrderBy>,
+        limit: Option<usize>,
+    ) -> Result<QueryResult> {
         // Format results - ensure consistent column ordering
         if !filtered_data.is_empty() {
             let first = &filtered_data[0];
@@ -1616,19 +1821,26 @@ impl<'a> QueryExecutor<'a> {
             };
             columns.sort(); // Ensure consistent ordering
 
-            let mut rows: Vec<Vec<Value>> = filtered_data.into_iter().map(|record| {
-                if let Value::Object(map) = record {
-                    columns.iter().map(|col| {
-                        map.get(col).cloned().unwrap_or(Value::Null)
-                    }).collect()
-                } else {
-                    vec![record]
-                }
-            }).collect();
+            let mut rows: Vec<Vec<Value>> = filtered_data
+                .into_iter()
+                .map(|record| {
+                    if let Value::Object(map) = record {
+                        columns
+                            .iter()
+                            .map(|col| map.get(col).cloned().unwrap_or(Value::Null))
+                            .collect()
+                    } else {
+                        vec![record]
+                    }
+                })
+                .collect();
 
             // Apply ORDER BY if specified
             if let Some(ref order_by) = order_by {
-                debug!("Applying ORDER BY: {} {:?}", order_by.column, order_by.direction);
+                debug!(
+                    "Applying ORDER BY: {} {:?}",
+                    order_by.column, order_by.direction
+                );
                 self.sort_rows(&mut rows, &columns, order_by)?;
             }
 
@@ -1664,19 +1876,21 @@ impl<'a> QueryExecutor<'a> {
 
         // Extract table name
         let after_into = &sql_clean[12..]; // Skip "INSERT INTO "
-        let table_end = after_into.find(' ')
+        let table_end = after_into
+            .find(' ')
             .or_else(|| after_into.find('('))
             .ok_or_else(|| anyhow!("Cannot find table name"))?;
         let table_name = after_into[..table_end].trim();
 
         // Find VALUES clause
-        let values_pos = lower.find(" values")
+        let values_pos = lower
+            .find(" values")
             .ok_or_else(|| anyhow!("Missing VALUES clause"))?;
 
         // Extract column names if present
         let columns_str = sql_clean[12 + table_end..values_pos].trim();
         let columns = if columns_str.starts_with('(') && columns_str.ends_with(')') {
-            columns_str[1..columns_str.len()-1]
+            columns_str[1..columns_str.len() - 1]
                 .split(',')
                 .map(|c| c.trim())
                 .collect::<Vec<_>>()
@@ -1690,7 +1904,7 @@ impl<'a> QueryExecutor<'a> {
             return Err(anyhow!("Invalid VALUES syntax"));
         }
 
-        let values = values_str[1..values_str.len()-1].trim();
+        let values = values_str[1..values_str.len() - 1].trim();
 
         // Create JSON document
         let mut json_obj = serde_json::Map::new();
@@ -1710,7 +1924,8 @@ impl<'a> QueryExecutor<'a> {
 
         // Insert the document
         let doc = Value::Object(json_obj);
-        engine.insert_record(table_name, doc)
+        engine
+            .insert_record(table_name, doc)
             .map_err(|e| anyhow!("Insert failed: {}", e))?;
 
         Ok(QueryResult::Insert { count: 1 })
@@ -1738,14 +1953,14 @@ impl<'a> QueryExecutor<'a> {
                             current.clear();
                         }
                     }
-                },
+                }
                 ',' if !in_quotes => {
                     // End of value
                     if !current.is_empty() {
                         result.push(self.parse_sql_value(&current)?);
                         current.clear();
                     }
-                },
+                }
                 _ => {
                     if in_quotes || ch != ' ' {
                         current.push(ch);
@@ -1777,7 +1992,8 @@ impl<'a> QueryExecutor<'a> {
 
         // Extract table name
         let after_update = &sql_clean[7..].trim(); // Skip "UPDATE "
-        let set_pos = lower[7..].find(" set ")
+        let set_pos = lower[7..]
+            .find(" set ")
             .ok_or_else(|| anyhow!("Missing SET clause"))?;
         let table_name = after_update[..set_pos].trim();
 
@@ -1804,7 +2020,8 @@ impl<'a> QueryExecutor<'a> {
         }
 
         // Get all data from table
-        let all_data = engine.get_table_data(table_name)
+        let all_data = engine
+            .get_table_data(table_name)
             .map_err(|e| anyhow!("Failed to get table data: {}", e))?;
 
         // Parse WHERE conditions if present
@@ -1836,7 +2053,9 @@ impl<'a> QueryExecutor<'a> {
 
                 if matches {
                     // Get primary key for this row
-                    let primary_key = map.get("id").cloned()
+                    let primary_key = map
+                        .get("id")
+                        .cloned()
                         .ok_or_else(|| anyhow!("Row missing primary key"))?;
 
                     // Apply updates to the row
@@ -1851,7 +2070,9 @@ impl<'a> QueryExecutor<'a> {
             }
         }
 
-        Ok(QueryResult::Update { count: updated_count })
+        Ok(QueryResult::Update {
+            count: updated_count,
+        })
     }
 
     async fn execute_delete(&self, sql: &str) -> Result<QueryResult> {
@@ -1876,7 +2097,8 @@ impl<'a> QueryExecutor<'a> {
         };
 
         // Get all data from table
-        let all_data = engine.get_table_data(table_name)
+        let all_data = engine
+            .get_table_data(table_name)
             .map_err(|e| anyhow!("Failed to get table data: {}", e))?;
 
         // Parse WHERE conditions if present
@@ -1908,7 +2130,9 @@ impl<'a> QueryExecutor<'a> {
 
                 if matches {
                     // Get primary key for this row
-                    let primary_key = map.get("id").cloned()
+                    let primary_key = map
+                        .get("id")
+                        .cloned()
                         .ok_or_else(|| anyhow!("Row missing primary key"))?;
 
                     // Delete the row (soft delete for audit trail)
@@ -1918,7 +2142,9 @@ impl<'a> QueryExecutor<'a> {
             }
         }
 
-        Ok(QueryResult::Delete { count: deleted_count })
+        Ok(QueryResult::Delete {
+            count: deleted_count,
+        })
     }
 
     async fn execute_create_table(&self, sql: &str) -> Result<QueryResult> {
@@ -1933,13 +2159,15 @@ impl<'a> QueryExecutor<'a> {
 
         // Find table name
         let after_create = sql[12..].trim(); // Skip "CREATE TABLE"
-        let table_end = after_create.find('(')
+        let table_end = after_create
+            .find('(')
             .ok_or_else(|| anyhow!("Invalid CREATE TABLE syntax"))?;
         let table_name = after_create[..table_end].trim();
 
         // Parse column definitions (simplified for now)
         // Default to 'id' as primary key
-        engine.create_table(table_name, "id", vec![])
+        engine
+            .create_table(table_name, "id", vec![])
             .map_err(|e| anyhow!("Create table failed: {}", e))?;
 
         info!("Table {} created successfully", table_name);
@@ -1952,9 +2180,8 @@ impl<'a> QueryExecutor<'a> {
 
         if lower.starts_with("show tables") {
             let tables = engine.list_tables();
-            let rows: Vec<Vec<Value>> = tables.into_iter()
-                .map(|t| vec![Value::String(t)])
-                .collect();
+            let rows: Vec<Vec<Value>> =
+                tables.into_iter().map(|t| vec![Value::String(t)]).collect();
 
             Ok(QueryResult::Select {
                 columns: vec!["Tables_in_driftdb".to_string()],
@@ -1995,7 +2222,11 @@ impl<'a> QueryExecutor<'a> {
             let _result = Box::pin(self.execute(actual_query)).await?;
             let elapsed = start.elapsed();
 
-            format!("{}\n\nExecution Time: {:.3} ms", plan_text, elapsed.as_secs_f64() * 1000.0)
+            format!(
+                "{}\n\nExecution Time: {:.3} ms",
+                plan_text,
+                elapsed.as_secs_f64() * 1000.0
+            )
         } else {
             plan_text
         };
@@ -2003,7 +2234,10 @@ impl<'a> QueryExecutor<'a> {
         // Return as a single-column result
         Ok(QueryResult::Select {
             columns: vec!["QUERY PLAN".to_string()],
-            rows: output.lines().map(|line| vec![Value::String(line.to_string())]).collect(),
+            rows: output
+                .lines()
+                .map(|line| vec![Value::String(line.to_string())])
+                .collect(),
         })
     }
 
@@ -2012,7 +2246,9 @@ impl<'a> QueryExecutor<'a> {
         // Parse: PREPARE stmt_name AS SELECT ...
         let parts: Vec<&str> = sql.split_whitespace().collect();
         if parts.len() < 4 || parts[2].to_uppercase() != "AS" {
-            return Err(anyhow!("Invalid PREPARE syntax. Use: PREPARE stmt_name AS SELECT ..."));
+            return Err(anyhow!(
+                "Invalid PREPARE syntax. Use: PREPARE stmt_name AS SELECT ..."
+            ));
         }
 
         let stmt_name = parts[1];
@@ -2045,7 +2281,9 @@ impl<'a> QueryExecutor<'a> {
         let parts: Vec<&str> = sql.split_whitespace().collect();
 
         if parts.len() < 2 {
-            return Err(anyhow!("Invalid EXECUTE syntax. Use: EXECUTE stmt_name (params...)"));
+            return Err(anyhow!(
+                "Invalid EXECUTE syntax. Use: EXECUTE stmt_name (params...)"
+            ));
         }
 
         let stmt_name = parts[1].trim_end_matches('(');
@@ -2053,7 +2291,9 @@ impl<'a> QueryExecutor<'a> {
         // Extract parameters if present
         let params = if sql.contains('(') {
             let param_start = sql.find('(').unwrap() + 1;
-            let param_end = sql.rfind(')').ok_or_else(|| anyhow!("Missing closing parenthesis"))?;
+            let param_end = sql
+                .rfind(')')
+                .ok_or_else(|| anyhow!("Missing closing parenthesis"))?;
             let param_str = &sql[param_start..param_end];
             self.parse_execute_params(param_str)?
         } else {
@@ -2063,7 +2303,8 @@ impl<'a> QueryExecutor<'a> {
         // Get the prepared statement
         let prepared = {
             let statements = self.prepared_statements.lock();
-            statements.get(stmt_name)
+            statements
+                .get(stmt_name)
                 .ok_or_else(|| anyhow!("Prepared statement '{}' not found", stmt_name))?
                 .clone()
         }; // Lock is dropped here
@@ -2071,7 +2312,11 @@ impl<'a> QueryExecutor<'a> {
         // Substitute parameters into the query
         let final_sql = self.substitute_params(&prepared.sql, &params)?;
 
-        debug!("Executing prepared statement '{}' with {} parameters", stmt_name, params.len());
+        debug!(
+            "Executing prepared statement '{}' with {} parameters",
+            stmt_name,
+            params.len()
+        );
 
         // Execute the final query
         Box::pin(self.execute(&final_sql)).await
@@ -2083,7 +2328,9 @@ impl<'a> QueryExecutor<'a> {
         let parts: Vec<&str> = sql.split_whitespace().collect();
 
         if parts.len() < 2 {
-            return Err(anyhow!("Invalid DEALLOCATE syntax. Use: DEALLOCATE stmt_name"));
+            return Err(anyhow!(
+                "Invalid DEALLOCATE syntax. Use: DEALLOCATE stmt_name"
+            ));
         }
 
         let stmt_name = parts[1];
@@ -2224,14 +2471,17 @@ impl<'a> QueryExecutor<'a> {
 
         // Parse the query components
         let select_start = if lower.starts_with("select ") { 7 } else { 0 };
-        let from_pos = lower.find(" from ").ok_or_else(|| anyhow!("Missing FROM clause"))?;
+        let from_pos = lower
+            .find(" from ")
+            .ok_or_else(|| anyhow!("Missing FROM clause"))?;
         let select_part = &sql[select_start..from_pos];
         let select_clause = self.parse_select_clause(select_part)?;
 
         // Parse FROM clause
         let from_pos = lower.find(" from ").unwrap() + 6;
         let remaining = &sql[from_pos..];
-        let from_end = remaining.find(" WHERE ")
+        let from_end = remaining
+            .find(" WHERE ")
             .or_else(|| remaining.find(" where "))
             .or_else(|| remaining.find(" GROUP BY "))
             .or_else(|| remaining.find(" group by "))
@@ -2252,7 +2502,9 @@ impl<'a> QueryExecutor<'a> {
         if let Some(where_pos) = after_from.to_lowercase().find(" where ") {
             let where_start = where_pos + 7;
             let where_clause = &after_from[where_start..];
-            let where_end = where_clause.to_lowercase().find(" group by ")
+            let where_end = where_clause
+                .to_lowercase()
+                .find(" group by ")
                 .or_else(|| where_clause.to_lowercase().find(" order by "))
                 .or_else(|| where_clause.to_lowercase().find(" limit "))
                 .unwrap_or(where_clause.len());
@@ -2285,7 +2537,9 @@ impl<'a> QueryExecutor<'a> {
         if let Some(group_pos) = after_from.to_lowercase().find(" group by ") {
             let group_start = group_pos + 10;
             let group_clause = &after_from[group_start..];
-            let group_end = group_clause.to_lowercase().find(" having ")
+            let group_end = group_clause
+                .to_lowercase()
+                .find(" having ")
                 .or_else(|| group_clause.to_lowercase().find(" order by "))
                 .or_else(|| group_clause.to_lowercase().find(" limit "))
                 .unwrap_or(group_clause.len());
@@ -2313,7 +2567,9 @@ impl<'a> QueryExecutor<'a> {
         if let Some(order_pos) = after_from.to_lowercase().find(" order by ") {
             let order_start = order_pos + 10;
             let order_clause = &after_from[order_start..];
-            let order_end = order_clause.to_lowercase().find(" limit ")
+            let order_end = order_clause
+                .to_lowercase()
+                .find(" limit ")
                 .unwrap_or(order_clause.len());
             let order_str = order_clause[..order_end].trim();
 
@@ -2359,7 +2615,10 @@ impl<'a> QueryExecutor<'a> {
                         // For now, just note if indexes exist
                         // In a real optimizer, we'd check if WHERE conditions use these columns
                         if !indexed_columns.is_empty() {
-                            debug!("Table {} has indexes on: {:?}", table_ref.name, indexed_columns);
+                            debug!(
+                                "Table {} has indexes on: {:?}",
+                                table_ref.name, indexed_columns
+                            );
                         }
                     }
                 }
@@ -2385,7 +2644,10 @@ impl<'a> QueryExecutor<'a> {
                     };
 
                     let condition = join.condition.as_ref().map(|c| {
-                        format!("{}.{} {} {}.{}", c.left_table, c.left_column, c.operator, c.right_table, c.right_column)
+                        format!(
+                            "{}.{} {} {}.{}",
+                            c.left_table, c.left_column, c.operator, c.right_table, c.right_column
+                        )
                     });
 
                     left = PlanNode::NestedLoop {
@@ -2399,18 +2661,16 @@ impl<'a> QueryExecutor<'a> {
 
                 Ok(left)
             }
-            FromClause::DerivedTable(dt) => {
-                Ok(PlanNode::Subquery {
-                    query: dt.subquery.sql.clone(),
-                    correlated: dt.subquery.is_correlated,
-                    estimated_rows: 100,
-                })
-            }
+            FromClause::DerivedTable(dt) => Ok(PlanNode::Subquery {
+                query: dt.subquery.sql.clone(),
+                correlated: dt.subquery.is_correlated,
+                estimated_rows: 100,
+            }),
             _ => Ok(PlanNode::SeqScan {
                 table: "complex_from".to_string(),
                 filter: None,
                 estimated_rows: 1000,
-            })
+            }),
         }
     }
 
@@ -2426,9 +2686,7 @@ impl<'a> QueryExecutor<'a> {
             SetOperation::Intersect | SetOperation::IntersectAll => {
                 left_plan.estimated_rows.min(right_plan.estimated_rows)
             }
-            SetOperation::Except | SetOperation::ExceptAll => {
-                left_plan.estimated_rows
-            }
+            SetOperation::Except | SetOperation::ExceptAll => left_plan.estimated_rows,
         };
 
         Ok(QueryPlan {
@@ -2472,50 +2730,128 @@ impl<'a> QueryExecutor<'a> {
     /// Format query plan as text
     fn format_query_plan(&self, plan: &QueryPlan, _indent: usize) -> String {
         let mut output = Vec::new();
-        output.push(format!("Query Plan (estimated cost: {:.2}, rows: {})", plan.estimated_cost, plan.estimated_rows));
+        output.push(format!(
+            "Query Plan (estimated cost: {:.2}, rows: {})",
+            plan.estimated_cost, plan.estimated_rows
+        ));
         output.push("-".repeat(60));
         self.format_plan_node(&plan.root, &mut output, "", true);
         output.join("\n")
     }
 
     /// Format a plan node recursively
-    fn format_plan_node(&self, node: &PlanNode, output: &mut Vec<String>, prefix: &str, is_last: bool) {
+    fn format_plan_node(
+        &self,
+        node: &PlanNode,
+        output: &mut Vec<String>,
+        prefix: &str,
+        is_last: bool,
+    ) {
         let connector = if is_last { "└── " } else { "├── " };
         let node_desc = match node {
-            PlanNode::SeqScan { table, filter, estimated_rows } => {
+            PlanNode::SeqScan {
+                table,
+                filter,
+                estimated_rows,
+            } => {
                 if let Some(f) = filter {
-                    format!("Seq Scan on {} (filter: {}) [rows: {}]", table, f, estimated_rows)
+                    format!(
+                        "Seq Scan on {} (filter: {}) [rows: {}]",
+                        table, f, estimated_rows
+                    )
                 } else {
                     format!("Seq Scan on {} [rows: {}]", table, estimated_rows)
                 }
             }
-            PlanNode::IndexScan { table, index, condition, estimated_rows } => {
-                format!("Index Scan on {} using {} ({}), [rows: {}]", table, index, condition, estimated_rows)
+            PlanNode::IndexScan {
+                table,
+                index,
+                condition,
+                estimated_rows,
+            } => {
+                format!(
+                    "Index Scan on {} using {} ({}), [rows: {}]",
+                    table, index, condition, estimated_rows
+                )
             }
-            PlanNode::NestedLoop { join_type, condition, estimated_rows, .. } => {
-                let cond_str = condition.as_ref().map(|c| format!(" on {}", c)).unwrap_or_default();
-                format!("Nested Loop {:?} Join{} [rows: {}]", join_type, cond_str, estimated_rows)
+            PlanNode::NestedLoop {
+                join_type,
+                condition,
+                estimated_rows,
+                ..
+            } => {
+                let cond_str = condition
+                    .as_ref()
+                    .map(|c| format!(" on {}", c))
+                    .unwrap_or_default();
+                format!(
+                    "Nested Loop {:?} Join{} [rows: {}]",
+                    join_type, cond_str, estimated_rows
+                )
             }
-            PlanNode::HashJoin { join_type, hash_keys, estimated_rows, .. } => {
-                format!("Hash {:?} Join on ({}) [rows: {}]", join_type, hash_keys.join(", "), estimated_rows)
+            PlanNode::HashJoin {
+                join_type,
+                hash_keys,
+                estimated_rows,
+                ..
+            } => {
+                format!(
+                    "Hash {:?} Join on ({}) [rows: {}]",
+                    join_type,
+                    hash_keys.join(", "),
+                    estimated_rows
+                )
             }
-            PlanNode::Sort { keys, estimated_rows, .. } => {
+            PlanNode::Sort {
+                keys,
+                estimated_rows,
+                ..
+            } => {
                 format!("Sort by {} [rows: {}]", keys.join(", "), estimated_rows)
             }
-            PlanNode::Limit { count, estimated_rows, .. } => {
+            PlanNode::Limit {
+                count,
+                estimated_rows,
+                ..
+            } => {
                 format!("Limit {} [rows: {}]", count, estimated_rows)
             }
-            PlanNode::Aggregate { group_by, aggregates, estimated_rows, .. } => {
-                format!("Aggregate ({}) group by {} [rows: {}]",
-                    aggregates.join(", "), group_by.join(", "), estimated_rows)
+            PlanNode::Aggregate {
+                group_by,
+                aggregates,
+                estimated_rows,
+                ..
+            } => {
+                format!(
+                    "Aggregate ({}) group by {} [rows: {}]",
+                    aggregates.join(", "),
+                    group_by.join(", "),
+                    estimated_rows
+                )
             }
-            PlanNode::SetOperation { operation, estimated_rows, .. } => {
+            PlanNode::SetOperation {
+                operation,
+                estimated_rows,
+                ..
+            } => {
                 format!("{:?} [rows: {}]", operation, estimated_rows)
             }
-            PlanNode::Distinct { columns, estimated_rows, .. } => {
-                format!("Distinct on {} [rows: {}]", columns.join(", "), estimated_rows)
+            PlanNode::Distinct {
+                columns,
+                estimated_rows,
+                ..
+            } => {
+                format!(
+                    "Distinct on {} [rows: {}]",
+                    columns.join(", "),
+                    estimated_rows
+                )
             }
-            PlanNode::Subquery { correlated, estimated_rows, .. } => {
+            PlanNode::Subquery {
+                correlated,
+                estimated_rows,
+                ..
+            } => {
                 let corr_str = if *correlated { "Correlated " } else { "" };
                 format!("{}Subquery [rows: {}]", corr_str, estimated_rows)
             }
@@ -2531,13 +2867,13 @@ impl<'a> QueryExecutor<'a> {
 
         // Recursively format children
         let children: Vec<&PlanNode> = match node {
-            PlanNode::NestedLoop { left, right, .. } |
-            PlanNode::HashJoin { left, right, .. } |
-            PlanNode::SetOperation { left, right, .. } => vec![left, right],
-            PlanNode::Sort { input, .. } |
-            PlanNode::Limit { input, .. } |
-            PlanNode::Aggregate { input, .. } |
-            PlanNode::Distinct { input, .. } => vec![input],
+            PlanNode::NestedLoop { left, right, .. }
+            | PlanNode::HashJoin { left, right, .. }
+            | PlanNode::SetOperation { left, right, .. } => vec![left, right],
+            PlanNode::Sort { input, .. }
+            | PlanNode::Limit { input, .. }
+            | PlanNode::Aggregate { input, .. }
+            | PlanNode::Distinct { input, .. } => vec![input],
             _ => vec![],
         };
 
@@ -2555,22 +2891,32 @@ impl<'a> QueryExecutor<'a> {
         // Check for derived table (starts with parenthesized SELECT)
         if let Some(derived_table) = self.parse_derived_table(from_trimmed)? {
             // Check if derived table has JOINs
-            if lower.contains(" join ") || lower.contains(" inner join ") ||
-               lower.contains(" left join ") || lower.contains(" left outer join ") ||
-               lower.contains(" right join ") || lower.contains(" right outer join ") ||
-               lower.contains(" full join ") || lower.contains(" full outer join ") ||
-               lower.contains(" cross join ") {
+            if lower.contains(" join ")
+                || lower.contains(" inner join ")
+                || lower.contains(" left join ")
+                || lower.contains(" left outer join ")
+                || lower.contains(" right join ")
+                || lower.contains(" right outer join ")
+                || lower.contains(" full join ")
+                || lower.contains(" full outer join ")
+                || lower.contains(" cross join ")
+            {
                 self.parse_derived_table_with_joins(from_trimmed)
             } else {
                 Ok(FromClause::DerivedTable(derived_table))
             }
         }
         // Check for JOIN keywords
-        else if lower.contains(" join ") || lower.contains(" inner join ") ||
-           lower.contains(" left join ") || lower.contains(" left outer join ") ||
-           lower.contains(" right join ") || lower.contains(" right outer join ") ||
-           lower.contains(" full join ") || lower.contains(" full outer join ") ||
-           lower.contains(" cross join ") {
+        else if lower.contains(" join ")
+            || lower.contains(" inner join ")
+            || lower.contains(" left join ")
+            || lower.contains(" left outer join ")
+            || lower.contains(" right join ")
+            || lower.contains(" right outer join ")
+            || lower.contains(" full join ")
+            || lower.contains(" full outer join ")
+            || lower.contains(" cross join ")
+        {
             self.parse_explicit_joins(from_trimmed)
         } else if from_trimmed.contains(',') {
             // Comma-separated tables (implicit JOIN)
@@ -2651,7 +2997,8 @@ impl<'a> QueryExecutor<'a> {
         let lower = from_part.to_lowercase();
 
         // Find the base table (before first JOIN)
-        let first_join_pos = lower.find(" join ")
+        let first_join_pos = lower
+            .find(" join ")
             .or_else(|| lower.find(" inner join "))
             .or_else(|| lower.find(" left join "))
             .or_else(|| lower.find(" left outer join "))
@@ -2682,10 +3029,7 @@ impl<'a> QueryExecutor<'a> {
             self.parse_joins(joins_part)?
         };
 
-        Ok(FromClause::WithJoins {
-            base_table,
-            joins,
-        })
+        Ok(FromClause::WithJoins { base_table, joins })
     }
 
     /// Parse individual JOIN clauses
@@ -2697,30 +3041,33 @@ impl<'a> QueryExecutor<'a> {
             remaining = remaining.trim();
 
             // Determine JOIN type
-            let (join_type, after_join_type) = if remaining.to_lowercase().starts_with("inner join ") {
-                (JoinType::Inner, &remaining[11..])
-            } else if remaining.to_lowercase().starts_with("left outer join ") {
-                (JoinType::LeftOuter, &remaining[16..])
-            } else if remaining.to_lowercase().starts_with("left join ") {
-                (JoinType::LeftOuter, &remaining[10..])
-            } else if remaining.to_lowercase().starts_with("right outer join ") {
-                (JoinType::RightOuter, &remaining[17..])
-            } else if remaining.to_lowercase().starts_with("right join ") {
-                (JoinType::RightOuter, &remaining[11..])
-            } else if remaining.to_lowercase().starts_with("full outer join ") {
-                (JoinType::FullOuter, &remaining[16..])
-            } else if remaining.to_lowercase().starts_with("full join ") {
-                (JoinType::FullOuter, &remaining[10..])
-            } else if remaining.to_lowercase().starts_with("cross join ") {
-                (JoinType::Cross, &remaining[11..])
-            } else if remaining.to_lowercase().starts_with("join ") {
-                (JoinType::Inner, &remaining[5..])
-            } else {
-                break; // No more JOINs
-            };
+            let (join_type, after_join_type) =
+                if remaining.to_lowercase().starts_with("inner join ") {
+                    (JoinType::Inner, &remaining[11..])
+                } else if remaining.to_lowercase().starts_with("left outer join ") {
+                    (JoinType::LeftOuter, &remaining[16..])
+                } else if remaining.to_lowercase().starts_with("left join ") {
+                    (JoinType::LeftOuter, &remaining[10..])
+                } else if remaining.to_lowercase().starts_with("right outer join ") {
+                    (JoinType::RightOuter, &remaining[17..])
+                } else if remaining.to_lowercase().starts_with("right join ") {
+                    (JoinType::RightOuter, &remaining[11..])
+                } else if remaining.to_lowercase().starts_with("full outer join ") {
+                    (JoinType::FullOuter, &remaining[16..])
+                } else if remaining.to_lowercase().starts_with("full join ") {
+                    (JoinType::FullOuter, &remaining[10..])
+                } else if remaining.to_lowercase().starts_with("cross join ") {
+                    (JoinType::Cross, &remaining[11..])
+                } else if remaining.to_lowercase().starts_with("join ") {
+                    (JoinType::Inner, &remaining[5..])
+                } else {
+                    break; // No more JOINs
+                };
 
             // Find the end of this JOIN clause (next JOIN or end of string)
-            let next_join_pos = after_join_type.to_lowercase().find(" join ")
+            let next_join_pos = after_join_type
+                .to_lowercase()
+                .find(" join ")
                 .or_else(|| after_join_type.to_lowercase().find(" inner join "))
                 .or_else(|| after_join_type.to_lowercase().find(" left join "))
                 .or_else(|| after_join_type.to_lowercase().find(" left outer join "))
@@ -2945,7 +3292,8 @@ impl<'a> QueryExecutor<'a> {
         let negated = condition_lower.starts_with("not exists");
 
         let start_pattern = if negated { "not exists (" } else { "exists (" };
-        let start_pos = condition_lower.find(start_pattern)
+        let start_pos = condition_lower
+            .find(start_pattern)
             .ok_or_else(|| anyhow!("Invalid EXISTS condition"))?;
 
         // Extract subquery from parentheses
@@ -2963,7 +3311,8 @@ impl<'a> QueryExecutor<'a> {
         let negated = condition_lower.contains(" not in (");
 
         let in_pattern = if negated { " not in (" } else { " in (" };
-        let in_pos = condition_lower.find(in_pattern)
+        let in_pos = condition_lower
+            .find(in_pattern)
             .ok_or_else(|| anyhow!("Invalid IN condition"))?;
 
         let column = condition[..in_pos].trim().to_string();
@@ -2972,7 +3321,11 @@ impl<'a> QueryExecutor<'a> {
 
         let subquery = self.parse_subquery(&subquery_sql)?;
 
-        Ok(Some(SubqueryExpression::In { column, subquery, negated }))
+        Ok(Some(SubqueryExpression::In {
+            column,
+            subquery,
+            negated,
+        }))
     }
 
     /// Parse ANY/ALL comparison condition
@@ -2987,7 +3340,8 @@ impl<'a> QueryExecutor<'a> {
             return Ok(None);
         };
 
-        let quantifier_pos = condition_lower.find(pattern)
+        let quantifier_pos = condition_lower
+            .find(pattern)
             .ok_or_else(|| anyhow!("Invalid ANY/ALL condition"))?;
 
         // Parse the left side: column operator
@@ -3023,7 +3377,10 @@ impl<'a> QueryExecutor<'a> {
     }
 
     /// Parse scalar subquery comparison condition
-    fn parse_scalar_subquery_condition(&self, condition: &str) -> Result<Option<SubqueryExpression>> {
+    fn parse_scalar_subquery_condition(
+        &self,
+        condition: &str,
+    ) -> Result<Option<SubqueryExpression>> {
         let operators = ["!=", ">=", "<=", "=", ">", "<"];
 
         for op in &operators {
@@ -3105,7 +3462,10 @@ impl<'a> QueryExecutor<'a> {
     }
 
     /// Parse scalar subqueries in SELECT clause
-    fn parse_select_clause_with_subqueries(&self, select_part: &str) -> Result<Vec<ExtendedSelectItem>> {
+    fn parse_select_clause_with_subqueries(
+        &self,
+        select_part: &str,
+    ) -> Result<Vec<ExtendedSelectItem>> {
         let mut items = Vec::new();
 
         // Split by commas, but be careful of commas inside subqueries
@@ -3189,11 +3549,16 @@ impl<'a> QueryExecutor<'a> {
             // Look for alias after the closing parenthesis
             let remaining = &from_part[subquery_sql.len() + 2..].trim(); // +2 for parentheses
             let alias = if remaining.to_lowercase().starts_with("as ") {
-                remaining[3..].trim().split_whitespace().next()
+                remaining[3..]
+                    .trim()
+                    .split_whitespace()
+                    .next()
                     .ok_or_else(|| anyhow!("Missing alias for derived table"))?
                     .to_string()
             } else {
-                remaining.split_whitespace().next()
+                remaining
+                    .split_whitespace()
+                    .next()
                     .ok_or_else(|| anyhow!("Missing alias for derived table"))?
                     .to_string()
             };
@@ -3207,10 +3572,15 @@ impl<'a> QueryExecutor<'a> {
     }
 
     /// Execute a subquery and return its results (with caching for non-correlated subqueries)
-    async fn execute_subquery(&self, subquery: &Subquery, outer_row: Option<&Value>) -> Result<QueryResult> {
+    async fn execute_subquery(
+        &self,
+        subquery: &Subquery,
+        outer_row: Option<&Value>,
+    ) -> Result<QueryResult> {
         // If this is a correlated subquery, we need to pass the outer row context
         if subquery.is_correlated && outer_row.is_some() {
-            self.execute_correlated_subquery(subquery, outer_row.unwrap()).await
+            self.execute_correlated_subquery(subquery, outer_row.unwrap())
+                .await
         } else {
             // Non-correlated subquery - check cache first
             let cache_key = subquery.sql.clone();
@@ -3239,7 +3609,11 @@ impl<'a> QueryExecutor<'a> {
     }
 
     /// Execute a correlated subquery with outer row context
-    async fn execute_correlated_subquery(&self, subquery: &Subquery, _outer_row: &Value) -> Result<QueryResult> {
+    async fn execute_correlated_subquery(
+        &self,
+        subquery: &Subquery,
+        _outer_row: &Value,
+    ) -> Result<QueryResult> {
         // For now, treat as regular subquery
         // In a full implementation, you'd substitute correlation variables
         // with values from the outer row before execution
@@ -3247,17 +3621,28 @@ impl<'a> QueryExecutor<'a> {
     }
 
     /// Evaluate WHERE conditions with subquery support
-    async fn evaluate_where_conditions(&self, conditions: &[WhereCondition], row: &Value) -> Result<bool> {
+    async fn evaluate_where_conditions(
+        &self,
+        conditions: &[WhereCondition],
+        row: &Value,
+    ) -> Result<bool> {
         for condition in conditions {
             match condition {
-                WhereCondition::Simple { column, operator, value } => {
+                WhereCondition::Simple {
+                    column,
+                    operator,
+                    value,
+                } => {
                     if let Value::Object(map) = row {
-                        let field_value = map.get(column)
+                        let field_value = map
+                            .get(column)
                             .or_else(|| {
                                 // Try to find column with any table prefix
-                                map.iter().find(|(key, _)| {
-                                    key.ends_with(&format!(".{}", column)) || key == &column
-                                }).map(|(_, v)| v)
+                                map.iter()
+                                    .find(|(key, _)| {
+                                        key.ends_with(&format!(".{}", column)) || key == &column
+                                    })
+                                    .map(|(_, v)| v)
                             })
                             .cloned()
                             .unwrap_or(Value::Null);
@@ -3284,9 +3669,17 @@ impl<'a> QueryExecutor<'a> {
     }
 
     /// Evaluate a subquery condition
-    async fn evaluate_subquery_condition(&self, expr: &SubqueryExpression, row: &Value) -> Result<bool> {
+    async fn evaluate_subquery_condition(
+        &self,
+        expr: &SubqueryExpression,
+        row: &Value,
+    ) -> Result<bool> {
         match expr {
-            SubqueryExpression::In { column, subquery, negated } => {
+            SubqueryExpression::In {
+                column,
+                subquery,
+                negated,
+            } => {
                 let result = self.evaluate_in_subquery(column, subquery, row).await?;
                 Ok(if *negated { !result } else { result })
             }
@@ -3294,21 +3687,38 @@ impl<'a> QueryExecutor<'a> {
                 let result = self.evaluate_exists_subquery(subquery, row).await?;
                 Ok(if *negated { !result } else { result })
             }
-            SubqueryExpression::Comparison { column, operator, quantifier, subquery } => {
-                self.evaluate_comparison_subquery(column, operator, quantifier.as_ref(), subquery, row).await
+            SubqueryExpression::Comparison {
+                column,
+                operator,
+                quantifier,
+                subquery,
+            } => {
+                self.evaluate_comparison_subquery(
+                    column,
+                    operator,
+                    quantifier.as_ref(),
+                    subquery,
+                    row,
+                )
+                .await
             }
         }
     }
 
     /// Evaluate IN subquery condition
-    async fn evaluate_in_subquery(&self, column: &str, subquery: &Subquery, row: &Value) -> Result<bool> {
+    async fn evaluate_in_subquery(
+        &self,
+        column: &str,
+        subquery: &Subquery,
+        row: &Value,
+    ) -> Result<bool> {
         // Get the column value from the row
         let column_value = if let Value::Object(map) = row {
             map.get(column)
                 .or_else(|| {
-                    map.iter().find(|(key, _)| {
-                        key.ends_with(&format!(".{}", column)) || key == &column
-                    }).map(|(_, v)| v)
+                    map.iter()
+                        .find(|(key, _)| key.ends_with(&format!(".{}", column)) || key == &column)
+                        .map(|(_, v)| v)
                 })
                 .cloned()
                 .unwrap_or(Value::Null)
@@ -3333,7 +3743,7 @@ impl<'a> QueryExecutor<'a> {
                 }
                 Ok(false)
             }
-            _ => Err(anyhow!("Subquery in IN clause must return a result set"))
+            _ => Err(anyhow!("Subquery in IN clause must return a result set")),
         }
     }
 
@@ -3343,7 +3753,9 @@ impl<'a> QueryExecutor<'a> {
 
         match subquery_result {
             QueryResult::Select { rows, .. } => Ok(!rows.is_empty()),
-            _ => Err(anyhow!("Subquery in EXISTS clause must return a result set"))
+            _ => Err(anyhow!(
+                "Subquery in EXISTS clause must return a result set"
+            )),
         }
     }
 
@@ -3360,9 +3772,9 @@ impl<'a> QueryExecutor<'a> {
         let column_value = if let Value::Object(map) = row {
             map.get(column)
                 .or_else(|| {
-                    map.iter().find(|(key, _)| {
-                        key.ends_with(&format!(".{}", column)) || key == &column
-                    }).map(|(_, v)| v)
+                    map.iter()
+                        .find(|(key, _)| key.ends_with(&format!(".{}", column)) || key == &column)
+                        .map(|(_, v)| v)
                 })
                 .cloned()
                 .unwrap_or(Value::Null)
@@ -3383,7 +3795,9 @@ impl<'a> QueryExecutor<'a> {
                     Some(SubqueryQuantifier::Any) => {
                         // ANY: true if comparison is true for at least one value
                         for result_row in rows {
-                            if !result_row.is_empty() && self.matches_condition(&column_value, operator, &result_row[0]) {
+                            if !result_row.is_empty()
+                                && self.matches_condition(&column_value, operator, &result_row[0])
+                            {
                                 return Ok(true);
                             }
                         }
@@ -3392,7 +3806,9 @@ impl<'a> QueryExecutor<'a> {
                     Some(SubqueryQuantifier::All) => {
                         // ALL: true if comparison is true for all values
                         for result_row in rows {
-                            if !result_row.is_empty() && !self.matches_condition(&column_value, operator, &result_row[0]) {
+                            if !result_row.is_empty()
+                                && !self.matches_condition(&column_value, operator, &result_row[0])
+                            {
                                 return Ok(false);
                             }
                         }
@@ -3407,13 +3823,19 @@ impl<'a> QueryExecutor<'a> {
                     }
                 }
             }
-            _ => Err(anyhow!("Subquery in comparison must return a result set"))
+            _ => Err(anyhow!("Subquery in comparison must return a result set")),
         }
     }
 
     /// Execute scalar subquery in SELECT clause
-    async fn execute_scalar_subquery(&self, scalar_subquery: &ScalarSubquery, outer_row: Option<&Value>) -> Result<Value> {
-        let subquery_result = self.execute_subquery(&scalar_subquery.subquery, outer_row).await?;
+    async fn execute_scalar_subquery(
+        &self,
+        scalar_subquery: &ScalarSubquery,
+        outer_row: Option<&Value>,
+    ) -> Result<Value> {
+        let subquery_result = self
+            .execute_subquery(&scalar_subquery.subquery, outer_row)
+            .await?;
 
         match subquery_result {
             QueryResult::Select { mut rows, .. } => {
@@ -3422,33 +3844,42 @@ impl<'a> QueryExecutor<'a> {
                 }
                 Ok(rows.pop().unwrap().pop().unwrap())
             }
-            _ => Err(anyhow!("Scalar subquery must return a result set"))
+            _ => Err(anyhow!("Scalar subquery must return a result set")),
         }
     }
 
     /// Execute derived table (subquery in FROM clause)
-    async fn execute_derived_table(&self, derived_table: &DerivedTable) -> Result<(Vec<Value>, Vec<String>)> {
+    async fn execute_derived_table(
+        &self,
+        derived_table: &DerivedTable,
+    ) -> Result<(Vec<Value>, Vec<String>)> {
         let subquery_result = self.execute_subquery(&derived_table.subquery, None).await?;
 
         match subquery_result {
             QueryResult::Select { rows, columns } => {
                 // Prefix column names with the alias
-                let prefixed_columns: Vec<String> = columns.iter()
+                let prefixed_columns: Vec<String> = columns
+                    .iter()
                     .map(|col| format!("{}.{}", derived_table.alias, col))
                     .collect();
 
-                Ok((rows.into_iter().map(|row| {
-                    // Convert each row to an object with prefixed column names
-                    let mut map = serde_json::Map::new();
-                    for (i, value) in row.into_iter().enumerate() {
-                        if i < prefixed_columns.len() {
-                            map.insert(prefixed_columns[i].clone(), value);
-                        }
-                    }
-                    Value::Object(map)
-                }).collect(), prefixed_columns))
+                Ok((
+                    rows.into_iter()
+                        .map(|row| {
+                            // Convert each row to an object with prefixed column names
+                            let mut map = serde_json::Map::new();
+                            for (i, value) in row.into_iter().enumerate() {
+                                if i < prefixed_columns.len() {
+                                    map.insert(prefixed_columns[i].clone(), value);
+                                }
+                            }
+                            Value::Object(map)
+                        })
+                        .collect(),
+                    prefixed_columns,
+                ))
             }
-            _ => Err(anyhow!("Derived table subquery must return a result set"))
+            _ => Err(anyhow!("Derived table subquery must return a result set")),
         }
     }
 
@@ -3459,7 +3890,8 @@ impl<'a> QueryExecutor<'a> {
 
         // Find the alias
         let after_subquery = &from_part[subquery_end_pos..].trim();
-        let alias_end = after_subquery.find(" JOIN ")
+        let alias_end = after_subquery
+            .find(" JOIN ")
             .or_else(|| after_subquery.find(" INNER JOIN "))
             .or_else(|| after_subquery.find(" LEFT JOIN "))
             .or_else(|| after_subquery.find(" RIGHT JOIN "))
@@ -3472,7 +3904,8 @@ impl<'a> QueryExecutor<'a> {
 
         // Parse the derived table
         let derived_table_with_alias = format!("{}{}", &from_part[..subquery_end_pos], alias_part);
-        let derived_table = self.parse_derived_table(&derived_table_with_alias)?
+        let derived_table = self
+            .parse_derived_table(&derived_table_with_alias)?
             .ok_or_else(|| anyhow!("Failed to parse derived table"))?;
 
         // Parse the JOINs
@@ -3526,7 +3959,8 @@ impl<'a> QueryExecutor<'a> {
             let remaining = &sql_part[temporal_start..];
 
             // Find the end of the temporal clause
-            let temporal_end = remaining.find(" WHERE ")
+            let temporal_end = remaining
+                .find(" WHERE ")
                 .or_else(|| remaining.find(" where "))
                 .or_else(|| remaining.find(" GROUP BY "))
                 .or_else(|| remaining.find(" group by "))
@@ -3550,7 +3984,8 @@ impl<'a> QueryExecutor<'a> {
             let remaining = &sql_part[temporal_start..];
 
             // Find the end of the temporal clause
-            let temporal_end = remaining.find(" WHERE ")
+            let temporal_end = remaining
+                .find(" WHERE ")
                 .or_else(|| remaining.find(" where "))
                 .or_else(|| remaining.find(" GROUP BY "))
                 .or_else(|| remaining.find(" group by "))
@@ -3583,7 +4018,8 @@ impl<'a> QueryExecutor<'a> {
         // Check for sequence number (e.g., "SEQUENCE 100" or just "100")
         if trimmed.to_uppercase().starts_with("SEQUENCE ") {
             let seq_str = &trimmed[9..]; // Skip "SEQUENCE "
-            let seq = seq_str.parse::<u64>()
+            let seq = seq_str
+                .parse::<u64>()
                 .map_err(|_| anyhow!("Invalid sequence number: {}", seq_str))?;
             return Ok(TemporalPoint::Sequence(seq));
         }
@@ -3596,17 +4032,24 @@ impl<'a> QueryExecutor<'a> {
         // Try to parse as timestamp
         // Support various formats: 'YYYY-MM-DD HH:MM:SS' or ISO8601
         if trimmed.starts_with('\'') && trimmed.ends_with('\'') {
-            let timestamp_str = &trimmed[1..trimmed.len()-1];
+            let timestamp_str = &trimmed[1..trimmed.len() - 1];
             // For now, we'll use a simple approach
             // In a real implementation, we'd parse the timestamp properly
             return Ok(TemporalPoint::Timestamp(timestamp_str.to_string()));
         }
 
-        Err(anyhow!("Invalid temporal point: {}. Expected CURRENT_TIMESTAMP, sequence number, or timestamp", value))
+        Err(anyhow!(
+            "Invalid temporal point: {}. Expected CURRENT_TIMESTAMP, sequence number, or timestamp",
+            value
+        ))
     }
 
     /// Execute JOIN with temporal support
-    async fn execute_temporal_join(&self, from_clause: &FromClause, temporal_clause: &Option<TemporalClause>) -> Result<(Vec<Value>, Vec<String>)> {
+    async fn execute_temporal_join(
+        &self,
+        from_clause: &FromClause,
+        temporal_clause: &Option<TemporalClause>,
+    ) -> Result<(Vec<Value>, Vec<String>)> {
         let engine = self.engine_read()?;
 
         match from_clause {
@@ -3615,50 +4058,66 @@ impl<'a> QueryExecutor<'a> {
                 let table_data = match temporal_clause {
                     Some(TemporalClause::AsOf(point)) => {
                         match point {
-                            TemporalPoint::Sequence(seq) => {
-                                engine.get_table_data_at(&table_ref.name, *seq)
-                                    .map_err(|e| anyhow!("Failed to get temporal table data: {}", e))?
-                            },
+                            TemporalPoint::Sequence(seq) => engine
+                                .get_table_data_at(&table_ref.name, *seq)
+                                .map_err(|e| anyhow!("Failed to get temporal table data: {}", e))?,
                             TemporalPoint::CurrentTimestamp => {
                                 // Current timestamp means latest data
-                                engine.get_table_data(&table_ref.name)
+                                engine
+                                    .get_table_data(&table_ref.name)
                                     .map_err(|e| anyhow!("Failed to get table data: {}", e))?
-                            },
+                            }
                             TemporalPoint::Timestamp(ts) => {
                                 // Parse the timestamp string to OffsetDateTime
-                                let timestamp = time::OffsetDateTime::parse(&ts, &time::format_description::well_known::Rfc3339)
-                                    .or_else(|_| {
-                                        // Try ISO 8601 format
-                                        time::PrimitiveDateTime::parse(&ts, &time::format_description::well_known::Iso8601::DEFAULT)
-                                            .map(|dt| dt.assume_utc())
-                                    })
-                                    .map_err(|e| anyhow!("Invalid timestamp format '{}': {}", ts, e))?;
+                                let timestamp = time::OffsetDateTime::parse(
+                                    &ts,
+                                    &time::format_description::well_known::Rfc3339,
+                                )
+                                .or_else(|_| {
+                                    // Try ISO 8601 format
+                                    time::PrimitiveDateTime::parse(
+                                        &ts,
+                                        &time::format_description::well_known::Iso8601::DEFAULT,
+                                    )
+                                    .map(|dt| dt.assume_utc())
+                                })
+                                .map_err(|e| anyhow!("Invalid timestamp format '{}': {}", ts, e))?;
 
                                 // Get table data at the specific timestamp
-                                engine.get_table_data_at_timestamp(&table_ref.name, timestamp)
-                                    .map_err(|e| anyhow!("Failed to get table data at timestamp {}: {}", ts, e))?
+                                engine
+                                    .get_table_data_at_timestamp(&table_ref.name, timestamp)
+                                    .map_err(|e| {
+                                        anyhow!(
+                                            "Failed to get table data at timestamp {}: {}",
+                                            ts,
+                                            e
+                                        )
+                                    })?
                             }
                         }
-                    },
-                    None => {
-                        engine.get_table_data(&table_ref.name)
-                            .map_err(|e| anyhow!("Failed to get table data: {}", e))?
                     }
+                    None => engine
+                        .get_table_data(&table_ref.name)
+                        .map_err(|e| anyhow!("Failed to get table data: {}", e))?,
                 };
 
                 // Create column names with table prefix if alias exists
                 let columns = self.get_table_columns(&engine, &table_ref.name).await?;
                 let prefixed_columns = if let Some(alias) = &table_ref.alias {
-                    columns.iter().map(|col| format!("{}.{}", alias, col)).collect()
+                    columns
+                        .iter()
+                        .map(|col| format!("{}.{}", alias, col))
+                        .collect()
                 } else {
-                    columns.iter().map(|col| format!("{}.{}", table_ref.name, col)).collect()
+                    columns
+                        .iter()
+                        .map(|col| format!("{}.{}", table_ref.name, col))
+                        .collect()
                 };
 
                 Ok((table_data, prefixed_columns))
-            },
-            _ => {
-                Err(anyhow!("Temporal queries only support single tables"))
             }
+            _ => Err(anyhow!("Temporal queries only support single tables")),
         }
     }
 
@@ -3668,15 +4127,22 @@ impl<'a> QueryExecutor<'a> {
         match from_clause {
             FromClause::Single(table_ref) => {
                 // Single table - no JOIN needed
-                let table_data = engine.get_table_data(&table_ref.name)
+                let table_data = engine
+                    .get_table_data(&table_ref.name)
                     .map_err(|e| anyhow!("Failed to get table data: {}", e))?;
 
                 // Create column names with table prefix if alias exists
                 let columns = self.get_table_columns(&engine, &table_ref.name).await?;
                 let prefixed_columns = if let Some(alias) = &table_ref.alias {
-                    columns.iter().map(|col| format!("{}.{}", alias, col)).collect()
+                    columns
+                        .iter()
+                        .map(|col| format!("{}.{}", alias, col))
+                        .collect()
                 } else {
-                    columns.iter().map(|col| format!("{}.{}", table_ref.name, col)).collect()
+                    columns
+                        .iter()
+                        .map(|col| format!("{}.{}", table_ref.name, col))
+                        .collect()
                 };
 
                 Ok((table_data, prefixed_columns))
@@ -3695,11 +4161,14 @@ impl<'a> QueryExecutor<'a> {
             }
             FromClause::DerivedTableWithJoins { base_table, joins } => {
                 // Derived table with JOINs
-                let (mut base_data, mut all_columns) = self.execute_derived_table(base_table).await?;
+                let (mut base_data, mut all_columns) =
+                    self.execute_derived_table(base_table).await?;
 
                 // Execute each JOIN
                 for join in joins {
-                    let (joined_data, joined_columns) = self.execute_single_join(&base_data, &all_columns, join).await?;
+                    let (joined_data, joined_columns) = self
+                        .execute_single_join(&base_data, &all_columns, join)
+                        .await?;
                     base_data = joined_data;
                     all_columns.extend(joined_columns);
                 }
@@ -3710,7 +4179,10 @@ impl<'a> QueryExecutor<'a> {
     }
 
     /// Execute implicit JOIN (cross product of multiple tables)
-    async fn execute_implicit_join(&self, tables: &[TableRef]) -> Result<(Vec<Value>, Vec<String>)> {
+    async fn execute_implicit_join(
+        &self,
+        tables: &[TableRef],
+    ) -> Result<(Vec<Value>, Vec<String>)> {
         let engine = self.engine_read()?;
 
         if tables.is_empty() {
@@ -3722,12 +4194,14 @@ impl<'a> QueryExecutor<'a> {
         let mut all_columns = Vec::new();
 
         for table_ref in tables {
-            let data = engine.get_table_data(&table_ref.name)
+            let data = engine
+                .get_table_data(&table_ref.name)
                 .map_err(|e| anyhow!("Failed to get table data for {}: {}", table_ref.name, e))?;
 
             let columns = self.get_table_columns(&engine, &table_ref.name).await?;
             let table_prefix = table_ref.alias.as_ref().unwrap_or(&table_ref.name);
-            let prefixed_columns: Vec<String> = columns.iter()
+            let prefixed_columns: Vec<String> = columns
+                .iter()
                 .map(|col| format!("{}.{}", table_prefix, col))
                 .collect();
 
@@ -3745,27 +4219,27 @@ impl<'a> QueryExecutor<'a> {
     async fn execute_explicit_joins(
         &self,
         base_table: &TableRef,
-        joins: &[Join]
+        joins: &[Join],
     ) -> Result<(Vec<Value>, Vec<String>)> {
         let engine = self.engine_read()?;
 
         // Start with base table
-        let mut current_data = engine.get_table_data(&base_table.name)
+        let mut current_data = engine
+            .get_table_data(&base_table.name)
             .map_err(|e| anyhow!("Failed to get base table data: {}", e))?;
 
         let mut current_columns = self.get_table_columns(&engine, &base_table.name).await?;
         let base_prefix = base_table.alias.as_ref().unwrap_or(&base_table.name);
-        current_columns = current_columns.iter()
+        current_columns = current_columns
+            .iter()
             .map(|col| format!("{}.{}", base_prefix, col))
             .collect();
 
         // Apply each JOIN in sequence
         for join in joins {
-            let (new_data, new_columns) = self.execute_single_join(
-                &current_data,
-                &current_columns,
-                join
-            ).await?;
+            let (new_data, new_columns) = self
+                .execute_single_join(&current_data, &current_columns, join)
+                .await?;
 
             current_data = new_data;
             current_columns = new_columns;
@@ -3779,17 +4253,19 @@ impl<'a> QueryExecutor<'a> {
         &self,
         left_data: &[Value],
         left_columns: &[String],
-        join: &Join
+        join: &Join,
     ) -> Result<(Vec<Value>, Vec<String>)> {
         let engine = self.engine_read()?;
 
         // Get right table data
-        let right_data = engine.get_table_data(&join.table)
+        let right_data = engine
+            .get_table_data(&join.table)
             .map_err(|e| anyhow!("Failed to get table data for {}: {}", join.table, e))?;
 
         let right_table_columns = self.get_table_columns(&engine, &join.table).await?;
         let right_prefix = join.table_alias.as_ref().unwrap_or(&join.table);
-        let right_columns: Vec<String> = right_table_columns.iter()
+        let right_columns: Vec<String> = right_table_columns
+            .iter()
             .map(|col| format!("{}.{}", right_prefix, col))
             .collect();
 
@@ -3810,9 +4286,7 @@ impl<'a> QueryExecutor<'a> {
             JoinType::FullOuter => {
                 self.execute_full_outer_join(left_data, &right_data, join, &combined_columns)
             }
-            JoinType::Cross => {
-                self.execute_cross_join(left_data, &right_data, &combined_columns)
-            }
+            JoinType::Cross => self.execute_cross_join(left_data, &right_data, &combined_columns),
         }
     }
 
@@ -3822,7 +4296,7 @@ impl<'a> QueryExecutor<'a> {
         left_data: &[Value],
         right_data: &[Value],
         join: &Join,
-        combined_columns: &[String]
+        combined_columns: &[String],
     ) -> Result<(Vec<Value>, Vec<String>)> {
         let mut result_rows = Vec::new();
 
@@ -3844,7 +4318,7 @@ impl<'a> QueryExecutor<'a> {
         left_data: &[Value],
         right_data: &[Value],
         join: &Join,
-        combined_columns: &[String]
+        combined_columns: &[String],
     ) -> Result<(Vec<Value>, Vec<String>)> {
         let mut result_rows = Vec::new();
 
@@ -3861,7 +4335,8 @@ impl<'a> QueryExecutor<'a> {
 
             // If no match found, add left row with NULLs for right side
             if !found_match {
-                let null_right = self.create_null_row_for_table(&join.table, join.table_alias.as_ref())?;
+                let null_right =
+                    self.create_null_row_for_table(&join.table, join.table_alias.as_ref())?;
                 let combined_row = self.combine_rows(left_row, &null_right)?;
                 result_rows.push(combined_row);
             }
@@ -3876,7 +4351,7 @@ impl<'a> QueryExecutor<'a> {
         left_data: &[Value],
         right_data: &[Value],
         join: &Join,
-        combined_columns: &[String]
+        combined_columns: &[String],
     ) -> Result<(Vec<Value>, Vec<String>)> {
         let mut result_rows = Vec::new();
 
@@ -3894,7 +4369,9 @@ impl<'a> QueryExecutor<'a> {
             // If no match found, add right row with NULLs for left side
             if !found_match {
                 // Create a null row for the left side - we need to determine left table info
-                let null_left = self.create_null_row_from_columns(&combined_columns[..combined_columns.len() - self.count_right_columns(join)?])?;
+                let null_left = self.create_null_row_from_columns(
+                    &combined_columns[..combined_columns.len() - self.count_right_columns(join)?],
+                )?;
                 let combined_row = self.combine_rows(&null_left, right_row)?;
                 result_rows.push(combined_row);
             }
@@ -3909,7 +4386,7 @@ impl<'a> QueryExecutor<'a> {
         left_data: &[Value],
         right_data: &[Value],
         join: &Join,
-        combined_columns: &[String]
+        combined_columns: &[String],
     ) -> Result<(Vec<Value>, Vec<String>)> {
         let mut result_rows = Vec::new();
         let mut matched_right_indices = std::collections::HashSet::new();
@@ -3928,7 +4405,8 @@ impl<'a> QueryExecutor<'a> {
             }
 
             if !found_match {
-                let null_right = self.create_null_row_for_table(&join.table, join.table_alias.as_ref())?;
+                let null_right =
+                    self.create_null_row_for_table(&join.table, join.table_alias.as_ref())?;
                 let combined_row = self.combine_rows(left_row, &null_right)?;
                 result_rows.push(combined_row);
             }
@@ -3937,7 +4415,9 @@ impl<'a> QueryExecutor<'a> {
         // Process unmatched right side
         for (right_idx, right_row) in right_data.iter().enumerate() {
             if !matched_right_indices.contains(&right_idx) {
-                let null_left = self.create_null_row_from_columns(&combined_columns[..combined_columns.len() - self.count_right_columns(join)?])?;
+                let null_left = self.create_null_row_from_columns(
+                    &combined_columns[..combined_columns.len() - self.count_right_columns(join)?],
+                )?;
                 let combined_row = self.combine_rows(&null_left, right_row)?;
                 result_rows.push(combined_row);
             }
@@ -3951,7 +4431,7 @@ impl<'a> QueryExecutor<'a> {
         &self,
         left_data: &[Value],
         right_data: &[Value],
-        combined_columns: &[String]
+        combined_columns: &[String],
     ) -> Result<(Vec<Value>, Vec<String>)> {
         let result_rows = self.create_cartesian_product(&[left_data.to_vec(), right_data.to_vec()]);
         Ok((result_rows, combined_columns.to_vec()))
@@ -3991,15 +4471,28 @@ impl<'a> QueryExecutor<'a> {
     }
 
     /// Check if JOIN condition matches between two rows
-    fn join_condition_matches(&self, left_row: &Value, right_row: &Value, join: &Join) -> Result<bool> {
+    fn join_condition_matches(
+        &self,
+        left_row: &Value,
+        right_row: &Value,
+        join: &Join,
+    ) -> Result<bool> {
         let condition = match &join.condition {
             Some(cond) => cond,
             None => return Ok(true), // CROSS JOIN always matches
         };
 
         // Get values from both rows
-        let left_value = self.get_column_value_from_row(left_row, &condition.left_table, &condition.left_column)?;
-        let right_value = self.get_column_value_from_row(right_row, &condition.right_table, &condition.right_column)?;
+        let left_value = self.get_column_value_from_row(
+            left_row,
+            &condition.left_table,
+            &condition.left_column,
+        )?;
+        let right_value = self.get_column_value_from_row(
+            right_row,
+            &condition.right_table,
+            &condition.right_column,
+        )?;
 
         // Compare based on operator
         match condition.operator.as_str() {
@@ -4008,25 +4501,30 @@ impl<'a> QueryExecutor<'a> {
             "<" => {
                 let ordering = self.compare_values(&left_value, &right_value);
                 Ok(ordering == std::cmp::Ordering::Less)
-            },
+            }
             ">" => {
                 let ordering = self.compare_values(&left_value, &right_value);
                 Ok(ordering == std::cmp::Ordering::Greater)
-            },
+            }
             "<=" => {
                 let ordering = self.compare_values(&left_value, &right_value);
                 Ok(ordering != std::cmp::Ordering::Greater)
-            },
+            }
             ">=" => {
                 let ordering = self.compare_values(&left_value, &right_value);
                 Ok(ordering != std::cmp::Ordering::Less)
-            },
+            }
             _ => Err(anyhow!("Unsupported JOIN operator: {}", condition.operator)),
         }
     }
 
     /// Get column value from row with table qualification
-    fn get_column_value_from_row(&self, row: &Value, table_name: &str, column_name: &str) -> Result<Value> {
+    fn get_column_value_from_row(
+        &self,
+        row: &Value,
+        table_name: &str,
+        column_name: &str,
+    ) -> Result<Value> {
         if let Value::Object(map) = row {
             // Try table.column format first
             let qualified_column = if table_name.is_empty() {
@@ -4055,7 +4553,6 @@ impl<'a> QueryExecutor<'a> {
         Ok(Value::Null)
     }
 
-
     /// Combine two rows into a single row
     fn combine_rows(&self, left_row: &Value, right_row: &Value) -> Result<Value> {
         if let (Value::Object(left_map), Value::Object(right_map)) = (left_row, right_row) {
@@ -4068,7 +4565,11 @@ impl<'a> QueryExecutor<'a> {
     }
 
     /// Create a row of NULL values for a table
-    fn create_null_row_for_table(&self, table_name: &str, table_alias: Option<&String>) -> Result<Value> {
+    fn create_null_row_for_table(
+        &self,
+        table_name: &str,
+        table_alias: Option<&String>,
+    ) -> Result<Value> {
         // This is a simplified implementation
         // In a real system, we'd get the actual schema for the table
         let mut null_row = serde_json::Map::new();
@@ -4111,7 +4612,7 @@ impl<'a> QueryExecutor<'a> {
             "name".to_string(),
             "value".to_string(),
             "created_at".to_string(),
-            "updated_at".to_string()
+            "updated_at".to_string(),
         ])
     }
 
@@ -4119,14 +4620,15 @@ impl<'a> QueryExecutor<'a> {
     async fn get_filtered_table_data(
         &self,
         table_name: &str,
-        conditions: &[(String, String, Value)]
+        conditions: &[(String, String, Value)],
     ) -> Result<Vec<Value>> {
         let engine = self.engine_read()?;
 
         // Check if we should use indexes
         if !self.use_indexes || conditions.is_empty() {
             // No index optimization, fetch all data
-            return engine.get_table_data(table_name)
+            return engine
+                .get_table_data(table_name)
                 .map_err(|e| anyhow!("Failed to get table data: {}", e));
         }
 
@@ -4172,8 +4674,12 @@ impl<'a> QueryExecutor<'a> {
                         }
                     }
 
-                    info!("Index scan on {} returned {} rows (filtered from {} candidates)",
-                          column, filtered.len(), num_candidates);
+                    info!(
+                        "Index scan on {} returned {} rows (filtered from {} candidates)",
+                        column,
+                        filtered.len(),
+                        num_candidates
+                    );
                     return Ok(filtered);
                 }
             }
@@ -4181,7 +4687,8 @@ impl<'a> QueryExecutor<'a> {
 
         // No suitable index found, fall back to full table scan
         debug!("No suitable index found for WHERE clause, performing full table scan");
-        engine.get_table_data(table_name)
+        engine
+            .get_table_data(table_name)
             .map_err(|e| anyhow!("Failed to get table data: {}", e))
     }
 
@@ -4189,7 +4696,10 @@ impl<'a> QueryExecutor<'a> {
     fn can_use_index(&self, conditions: &[WhereCondition]) -> Option<String> {
         // Look for simple equality conditions that can use an index
         for condition in conditions {
-            if let WhereCondition::Simple { column, operator, .. } = condition {
+            if let WhereCondition::Simple {
+                column, operator, ..
+            } = condition
+            {
                 if operator == "=" {
                     return Some(column.clone());
                 }
@@ -4218,18 +4728,19 @@ impl<'a> QueryExecutor<'a> {
                         .map(|col| {
                             // Try direct column access or with table prefix
                             map.get(col)
-                                .or_else(|| map.iter()
-                                    .find(|(k, _)| k.ends_with(&format!(".{}", col)))
-                                    .map(|(_, v)| v))
+                                .or_else(|| {
+                                    map.iter()
+                                        .find(|(k, _)| k.ends_with(&format!(".{}", col)))
+                                        .map(|(_, v)| v)
+                                })
                                 .cloned()
                                 .unwrap_or(Value::Null)
                         })
                         .collect::<Vec<_>>()
                 } else {
                     // DISTINCT on all columns
-                    let mut values: Vec<(String, Value)> = map.iter()
-                        .map(|(k, v)| (k.clone(), v.clone()))
-                        .collect();
+                    let mut values: Vec<(String, Value)> =
+                        map.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
                     values.sort_by_key(|(k, _)| k.clone());
                     values.into_iter().map(|(_, v)| v).collect()
                 };
@@ -4270,12 +4781,20 @@ impl<'a> QueryExecutor<'a> {
                 let right = sql[pos + keyword.len()..].trim();
 
                 // Both sides must be SELECT statements
-                if !left.to_lowercase().starts_with("select") || !right.to_lowercase().starts_with("select") {
-                    if left.starts_with("(") && left.ends_with(")") && right.starts_with("(") && right.ends_with(")") {
+                if !left.to_lowercase().starts_with("select")
+                    || !right.to_lowercase().starts_with("select")
+                {
+                    if left.starts_with("(")
+                        && left.ends_with(")")
+                        && right.starts_with("(")
+                        && right.ends_with(")")
+                    {
                         // Handle parenthesized subqueries
-                        let left_inner = &left[1..left.len()-1];
-                        let right_inner = &right[1..right.len()-1];
-                        if left_inner.to_lowercase().starts_with("select") && right_inner.to_lowercase().starts_with("select") {
+                        let left_inner = &left[1..left.len() - 1];
+                        let right_inner = &right[1..right.len() - 1];
+                        if left_inner.to_lowercase().starts_with("select")
+                            && right_inner.to_lowercase().starts_with("select")
+                        {
                             return Ok(Some(SetOperationQuery {
                                 left: left_inner.to_string(),
                                 right: right_inner.to_string(),
@@ -4313,13 +4832,20 @@ impl<'a> QueryExecutor<'a> {
 
         let (right_columns, right_rows) = match right_result {
             QueryResult::Select { columns, rows } => (columns, rows),
-            _ => return Err(anyhow!("Right side of set operation must be a SELECT query")),
+            _ => {
+                return Err(anyhow!(
+                    "Right side of set operation must be a SELECT query"
+                ))
+            }
         };
 
         // Validate that column counts match
         if left_columns.len() != right_columns.len() {
-            return Err(anyhow!("Set operation requires equal number of columns: {} vs {}",
-                left_columns.len(), right_columns.len()));
+            return Err(anyhow!(
+                "Set operation requires equal number of columns: {} vs {}",
+                left_columns.len(),
+                right_columns.len()
+            ));
         }
 
         // Apply the set operation
@@ -4339,7 +4865,12 @@ impl<'a> QueryExecutor<'a> {
     }
 
     /// Apply UNION operation
-    fn apply_union(&self, left: Vec<Vec<Value>>, right: Vec<Vec<Value>>, keep_duplicates: bool) -> Vec<Vec<Value>> {
+    fn apply_union(
+        &self,
+        left: Vec<Vec<Value>>,
+        right: Vec<Vec<Value>>,
+        keep_duplicates: bool,
+    ) -> Vec<Vec<Value>> {
         use std::collections::HashSet;
 
         if keep_duplicates {
@@ -4364,7 +4895,12 @@ impl<'a> QueryExecutor<'a> {
     }
 
     /// Apply INTERSECT operation
-    fn apply_intersect(&self, left: Vec<Vec<Value>>, right: Vec<Vec<Value>>, keep_duplicates: bool) -> Vec<Vec<Value>> {
+    fn apply_intersect(
+        &self,
+        left: Vec<Vec<Value>>,
+        right: Vec<Vec<Value>>,
+        keep_duplicates: bool,
+    ) -> Vec<Vec<Value>> {
         use std::collections::{HashMap, HashSet};
 
         if keep_duplicates {
@@ -4389,9 +4925,7 @@ impl<'a> QueryExecutor<'a> {
             result
         } else {
             // INTERSECT - only distinct common rows
-            let right_set: HashSet<String> = right.iter()
-                .map(|row| format!("{:?}", row))
-                .collect();
+            let right_set: HashSet<String> = right.iter().map(|row| format!("{:?}", row)).collect();
 
             let mut seen = HashSet::new();
             let mut result = Vec::new();
@@ -4408,7 +4942,12 @@ impl<'a> QueryExecutor<'a> {
     }
 
     /// Apply EXCEPT operation
-    fn apply_except(&self, left: Vec<Vec<Value>>, right: Vec<Vec<Value>>, keep_duplicates: bool) -> Vec<Vec<Value>> {
+    fn apply_except(
+        &self,
+        left: Vec<Vec<Value>>,
+        right: Vec<Vec<Value>>,
+        keep_duplicates: bool,
+    ) -> Vec<Vec<Value>> {
         use std::collections::{HashMap, HashSet};
 
         if keep_duplicates {
@@ -4433,9 +4972,7 @@ impl<'a> QueryExecutor<'a> {
             result
         } else {
             // EXCEPT - remove any rows that appear in right
-            let right_set: HashSet<String> = right.iter()
-                .map(|row| format!("{:?}", row))
-                .collect();
+            let right_set: HashSet<String> = right.iter().map(|row| format!("{:?}", row)).collect();
 
             let mut seen = HashSet::new();
             let mut result = Vec::new();
@@ -4458,7 +4995,7 @@ impl<'a> QueryExecutor<'a> {
         all_columns: &[String],
         selected_columns: &[String],
         order_by: Option<OrderBy>,
-        limit: Option<usize>
+        limit: Option<usize>,
     ) -> Result<QueryResult> {
         if joined_data.is_empty() {
             return Ok(QueryResult::Select {
@@ -4472,43 +5009,57 @@ impl<'a> QueryExecutor<'a> {
         if let Value::Object(map) = first {
             for col in selected_columns {
                 // Check if column exists directly or with any table prefix
-                let column_exists = map.contains_key(col) ||
-                    map.keys().any(|key| key.ends_with(&format!(".{}", col))) ||
-                    all_columns.contains(col) ||
-                    all_columns.iter().any(|c| c.ends_with(&format!(".{}", col)));
+                let column_exists = map.contains_key(col)
+                    || map.keys().any(|key| key.ends_with(&format!(".{}", col)))
+                    || all_columns.contains(col)
+                    || all_columns
+                        .iter()
+                        .any(|c| c.ends_with(&format!(".{}", col)));
 
                 if !column_exists {
-                    return Err(anyhow!("Column '{}' does not exist in the joined result", col));
+                    return Err(anyhow!(
+                        "Column '{}' does not exist in the joined result",
+                        col
+                    ));
                 }
             }
         }
 
         // Extract only the requested columns from each row
-        let mut rows: Vec<Vec<Value>> = joined_data.into_iter().map(|record| {
-            if let Value::Object(map) = record {
-                selected_columns.iter().map(|col| {
-                    // Try exact match first
-                    if let Some(value) = map.get(col) {
-                        return value.clone();
-                    }
+        let mut rows: Vec<Vec<Value>> = joined_data
+            .into_iter()
+            .map(|record| {
+                if let Value::Object(map) = record {
+                    selected_columns
+                        .iter()
+                        .map(|col| {
+                            // Try exact match first
+                            if let Some(value) = map.get(col) {
+                                return value.clone();
+                            }
 
-                    // Try to find column with any table prefix
-                    for (key, value) in &map {
-                        if key.ends_with(&format!(".{}", col)) {
-                            return value.clone();
-                        }
-                    }
+                            // Try to find column with any table prefix
+                            for (key, value) in &map {
+                                if key.ends_with(&format!(".{}", col)) {
+                                    return value.clone();
+                                }
+                            }
 
-                    Value::Null
-                }).collect()
-            } else {
-                vec![Value::Null; selected_columns.len()]
-            }
-        }).collect();
+                            Value::Null
+                        })
+                        .collect()
+                } else {
+                    vec![Value::Null; selected_columns.len()]
+                }
+            })
+            .collect();
 
         // Apply ORDER BY if specified
         if let Some(ref order_by) = order_by {
-            debug!("Applying ORDER BY: {} {:?}", order_by.column, order_by.direction);
+            debug!(
+                "Applying ORDER BY: {} {:?}",
+                order_by.column, order_by.direction
+            );
             self.sort_rows(&mut rows, selected_columns, order_by)?;
         }
 
@@ -4518,7 +5069,12 @@ impl<'a> QueryExecutor<'a> {
             rows.truncate(limit_count);
         }
 
-        debug!("Returning {} rows with {} selected columns: {:?}", rows.len(), selected_columns.len(), selected_columns);
+        debug!(
+            "Returning {} rows with {} selected columns: {:?}",
+            rows.len(),
+            selected_columns.len(),
+            selected_columns
+        );
         Ok(QueryResult::Select {
             columns: selected_columns.to_vec(),
             rows,
@@ -4531,7 +5087,7 @@ impl<'a> QueryExecutor<'a> {
         joined_data: Vec<Value>,
         all_columns: Vec<String>,
         order_by: Option<OrderBy>,
-        limit: Option<usize>
+        limit: Option<usize>,
     ) -> Result<QueryResult> {
         if joined_data.is_empty() {
             return Ok(QueryResult::Select {
@@ -4543,19 +5099,26 @@ impl<'a> QueryExecutor<'a> {
         // Use the columns from the JOIN operation
         let columns = all_columns;
 
-        let mut rows: Vec<Vec<Value>> = joined_data.into_iter().map(|record| {
-            if let Value::Object(map) = record {
-                columns.iter().map(|col| {
-                    map.get(col).cloned().unwrap_or(Value::Null)
-                }).collect()
-            } else {
-                vec![Value::Null; columns.len()]
-            }
-        }).collect();
+        let mut rows: Vec<Vec<Value>> = joined_data
+            .into_iter()
+            .map(|record| {
+                if let Value::Object(map) = record {
+                    columns
+                        .iter()
+                        .map(|col| map.get(col).cloned().unwrap_or(Value::Null))
+                        .collect()
+                } else {
+                    vec![Value::Null; columns.len()]
+                }
+            })
+            .collect();
 
         // Apply ORDER BY if specified
         if let Some(ref order_by) = order_by {
-            debug!("Applying ORDER BY: {} {:?}", order_by.column, order_by.direction);
+            debug!(
+                "Applying ORDER BY: {} {:?}",
+                order_by.column, order_by.direction
+            );
             self.sort_rows(&mut rows, &columns, order_by)?;
         }
 
@@ -4565,7 +5128,12 @@ impl<'a> QueryExecutor<'a> {
             rows.truncate(limit_count);
         }
 
-        debug!("Returning {} joined rows with {} columns: {:?}", rows.len(), columns.len(), columns);
+        debug!(
+            "Returning {} joined rows with {} columns: {:?}",
+            rows.len(),
+            columns.len(),
+            columns
+        );
         Ok(QueryResult::Select { columns, rows })
     }
 
@@ -4592,13 +5160,16 @@ impl<'a> QueryExecutor<'a> {
         let is_read_only = lower.contains("read only");
 
         // Begin transaction
-        let txn_id = self.transaction_manager
+        let txn_id = self
+            .transaction_manager
             .begin_transaction(&self.session_id, isolation_level, is_read_only)
             .await?;
 
-        info!("Started transaction {} for session {}", txn_id, self.session_id);
-        // PostgreSQL expects a specific response for BEGIN
-        Ok(QueryResult::CreateTable) // We'll repurpose this temporarily
+        info!(
+            "Started transaction {} for session {}",
+            txn_id, self.session_id
+        );
+        Ok(QueryResult::Begin)
     }
 
     /// Execute COMMIT transaction
@@ -4617,7 +5188,8 @@ impl<'a> QueryExecutor<'a> {
 
         // Check for ROLLBACK TO SAVEPOINT
         if lower.contains("to savepoint ") || lower.contains("to ") {
-            let savepoint_pos = lower.find("to savepoint ")
+            let savepoint_pos = lower
+                .find("to savepoint ")
                 .map(|p| p + 13)
                 .or_else(|| lower.find("to ").map(|p| p + 3))
                 .unwrap();
@@ -4627,7 +5199,10 @@ impl<'a> QueryExecutor<'a> {
             self.transaction_manager
                 .rollback_to_savepoint(&self.session_id, savepoint_name)?;
 
-            info!("Rolled back to savepoint {} for session {}", savepoint_name, self.session_id);
+            info!(
+                "Rolled back to savepoint {} for session {}",
+                savepoint_name, self.session_id
+            );
         } else {
             // Full rollback
             self.transaction_manager
@@ -4642,7 +5217,9 @@ impl<'a> QueryExecutor<'a> {
 
     /// Execute SAVEPOINT
     async fn execute_savepoint(&self, sql: &str) -> Result<QueryResult> {
-        let savepoint_pos = sql.to_lowercase().find("savepoint ")
+        let savepoint_pos = sql
+            .to_lowercase()
+            .find("savepoint ")
             .ok_or_else(|| anyhow!("Invalid SAVEPOINT syntax"))?;
 
         let savepoint_name = sql[savepoint_pos + 10..]
@@ -4653,21 +5230,27 @@ impl<'a> QueryExecutor<'a> {
         self.transaction_manager
             .create_savepoint(&self.session_id, savepoint_name.clone())?;
 
-        info!("Created savepoint {} for session {}", savepoint_name, self.session_id);
+        info!(
+            "Created savepoint {} for session {}",
+            savepoint_name, self.session_id
+        );
         Ok(QueryResult::Empty)
     }
 
     /// Execute RELEASE SAVEPOINT
     async fn execute_release_savepoint(&self, sql: &str) -> Result<QueryResult> {
-        let savepoint_pos = sql.to_lowercase().find("savepoint ")
+        let savepoint_pos = sql
+            .to_lowercase()
+            .find("savepoint ")
             .ok_or_else(|| anyhow!("Invalid RELEASE SAVEPOINT syntax"))?;
 
-        let savepoint_name = sql[savepoint_pos + 10..]
-            .trim()
-            .trim_matches(';');
+        let savepoint_name = sql[savepoint_pos + 10..].trim().trim_matches(';');
 
         // For now, just log - actual release would remove from savepoint list
-        info!("Released savepoint {} for session {}", savepoint_name, self.session_id);
+        info!(
+            "Released savepoint {} for session {}",
+            savepoint_name, self.session_id
+        );
         Ok(QueryResult::Empty)
     }
 
@@ -4706,7 +5289,9 @@ mod tests {
         let engine = Arc::new(RwLock::new(Engine::init(temp_dir.path()).unwrap()));
         let executor = QueryExecutor::new(engine);
 
-        let conditions = executor.parse_where_clause("name = 'Alice' AND age > 25").unwrap();
+        let conditions = executor
+            .parse_where_clause("name = 'Alice' AND age > 25")
+            .unwrap();
         assert_eq!(conditions.len(), 2);
         assert_eq!(conditions[0].0, "name");
         assert_eq!(conditions[0].1, "=");
@@ -4794,7 +5379,10 @@ mod tests {
         let executor = QueryExecutor::new(engine.clone());
 
         // Create a test table
-        let result = executor.execute("CREATE TABLE users (pk = id)").await.unwrap();
+        let result = executor
+            .execute("CREATE TABLE users (pk = id)")
+            .await
+            .unwrap();
         assert!(matches!(result, QueryResult::CreateTable));
 
         // Insert test data
@@ -4811,13 +5399,17 @@ mod tests {
         }
 
         // Test ORDER BY age ASC
-        let result = executor.execute("SELECT * FROM users ORDER BY age ASC").await.unwrap();
+        let result = executor
+            .execute("SELECT * FROM users ORDER BY age ASC")
+            .await
+            .unwrap();
         if let QueryResult::Select { columns, rows } = result {
             assert!(columns.contains(&"age".to_string()));
             assert_eq!(rows.len(), 4);
 
             let age_index = columns.iter().position(|c| c == "age").unwrap();
-            let ages: Vec<i64> = rows.iter()
+            let ages: Vec<i64> = rows
+                .iter()
                 .map(|row| row[age_index].as_i64().unwrap())
                 .collect();
             assert_eq!(ages, vec![25, 28, 30, 35]); // Should be sorted ascending
@@ -4826,12 +5418,16 @@ mod tests {
         }
 
         // Test ORDER BY age DESC with LIMIT
-        let result = executor.execute("SELECT * FROM users ORDER BY age DESC LIMIT 2").await.unwrap();
+        let result = executor
+            .execute("SELECT * FROM users ORDER BY age DESC LIMIT 2")
+            .await
+            .unwrap();
         if let QueryResult::Select { columns, rows } = result {
             assert_eq!(rows.len(), 2); // Should be limited to 2 rows
 
             let age_index = columns.iter().position(|c| c == "age").unwrap();
-            let ages: Vec<i64> = rows.iter()
+            let ages: Vec<i64> = rows
+                .iter()
                 .map(|row| row[age_index].as_i64().unwrap())
                 .collect();
             assert_eq!(ages, vec![35, 30]); // Should be sorted descending and limited
@@ -4840,10 +5436,14 @@ mod tests {
         }
 
         // Test ORDER BY name ASC (string sorting)
-        let result = executor.execute("SELECT * FROM users ORDER BY name ASC").await.unwrap();
+        let result = executor
+            .execute("SELECT * FROM users ORDER BY name ASC")
+            .await
+            .unwrap();
         if let QueryResult::Select { columns, rows } = result {
             let name_index = columns.iter().position(|c| c == "name").unwrap();
-            let names: Vec<String> = rows.iter()
+            let names: Vec<String> = rows
+                .iter()
                 .map(|row| row[name_index].as_str().unwrap().to_string())
                 .collect();
             assert_eq!(names, vec!["Alice", "Bob", "Charlie", "David"]); // Should be sorted alphabetically
@@ -4852,12 +5452,16 @@ mod tests {
         }
 
         // Test WHERE + ORDER BY + LIMIT
-        let result = executor.execute("SELECT * FROM users WHERE age >= 28 ORDER BY age ASC LIMIT 2").await.unwrap();
+        let result = executor
+            .execute("SELECT * FROM users WHERE age >= 28 ORDER BY age ASC LIMIT 2")
+            .await
+            .unwrap();
         if let QueryResult::Select { columns, rows } = result {
             assert_eq!(rows.len(), 2); // Should be limited to 2 rows
 
             let age_index = columns.iter().position(|c| c == "age").unwrap();
-            let ages: Vec<i64> = rows.iter()
+            let ages: Vec<i64> = rows
+                .iter()
                 .map(|row| row[age_index].as_i64().unwrap())
                 .collect();
             assert_eq!(ages, vec![28, 30]); // Should have ages >= 28, sorted ascending, limited to 2
@@ -4874,7 +5478,10 @@ mod tests {
         let executor = QueryExecutor::new(engine.clone());
 
         // Create a test table
-        let result = executor.execute("CREATE TABLE users (pk = id)").await.unwrap();
+        let result = executor
+            .execute("CREATE TABLE users (pk = id)")
+            .await
+            .unwrap();
         assert!(matches!(result, QueryResult::CreateTable));
 
         // Insert test data
@@ -4890,7 +5497,10 @@ mod tests {
         }
 
         // Test COUNT(*)
-        let result = executor.execute("SELECT COUNT(*) FROM users").await.unwrap();
+        let result = executor
+            .execute("SELECT COUNT(*) FROM users")
+            .await
+            .unwrap();
         if let QueryResult::Select { columns, rows } = result {
             assert_eq!(columns.len(), 1);
             assert_eq!(columns[0], "count(*)");
@@ -4909,7 +5519,10 @@ mod tests {
         let executor = QueryExecutor::new(engine.clone());
 
         // Create a test table
-        let result = executor.execute("CREATE TABLE users (pk = id)").await.unwrap();
+        let result = executor
+            .execute("CREATE TABLE users (pk = id)")
+            .await
+            .unwrap();
         assert!(matches!(result, QueryResult::CreateTable));
 
         // Insert test data with some null ages
@@ -4925,7 +5538,10 @@ mod tests {
         }
 
         // Test COUNT(age) - should exclude null values
-        let result = executor.execute("SELECT COUNT(age) FROM users").await.unwrap();
+        let result = executor
+            .execute("SELECT COUNT(age) FROM users")
+            .await
+            .unwrap();
         if let QueryResult::Select { columns, rows } = result {
             assert_eq!(columns.len(), 1);
             assert_eq!(columns[0], "count(age)");
@@ -4944,7 +5560,10 @@ mod tests {
         let executor = QueryExecutor::new(engine.clone());
 
         // Create a test table
-        let result = executor.execute("CREATE TABLE employees (pk = id)").await.unwrap();
+        let result = executor
+            .execute("CREATE TABLE employees (pk = id)")
+            .await
+            .unwrap();
         assert!(matches!(result, QueryResult::CreateTable));
 
         // Insert test data
@@ -4960,7 +5579,10 @@ mod tests {
         }
 
         // Test SUM(salary)
-        let result = executor.execute("SELECT SUM(salary) FROM employees").await.unwrap();
+        let result = executor
+            .execute("SELECT SUM(salary) FROM employees")
+            .await
+            .unwrap();
         if let QueryResult::Select { columns, rows } = result {
             assert_eq!(columns.len(), 1);
             assert_eq!(columns[0], "sum(salary)");
@@ -4979,7 +5601,10 @@ mod tests {
         let executor = QueryExecutor::new(engine.clone());
 
         // Create a test table
-        let result = executor.execute("CREATE TABLE test_scores (pk = id)").await.unwrap();
+        let result = executor
+            .execute("CREATE TABLE test_scores (pk = id)")
+            .await
+            .unwrap();
         assert!(matches!(result, QueryResult::CreateTable));
 
         // Insert test data
@@ -4995,7 +5620,10 @@ mod tests {
         }
 
         // Test AVG(score)
-        let result = executor.execute("SELECT AVG(score) FROM test_scores").await.unwrap();
+        let result = executor
+            .execute("SELECT AVG(score) FROM test_scores")
+            .await
+            .unwrap();
         if let QueryResult::Select { columns, rows } = result {
             assert_eq!(columns.len(), 1);
             assert_eq!(columns[0], "avg(score)");
@@ -5020,7 +5648,10 @@ mod tests {
         let executor = QueryExecutor::new(engine.clone());
 
         // Create a test table
-        let result = executor.execute("CREATE TABLE users (pk = id)").await.unwrap();
+        let result = executor
+            .execute("CREATE TABLE users (pk = id)")
+            .await
+            .unwrap();
         assert!(matches!(result, QueryResult::CreateTable));
 
         // Insert test data
@@ -5037,7 +5668,10 @@ mod tests {
         }
 
         // Test MIN(age)
-        let result = executor.execute("SELECT MIN(age) FROM users").await.unwrap();
+        let result = executor
+            .execute("SELECT MIN(age) FROM users")
+            .await
+            .unwrap();
         if let QueryResult::Select { columns, rows } = result {
             assert_eq!(columns.len(), 1);
             assert_eq!(columns[0], "min(age)");
@@ -5048,7 +5682,10 @@ mod tests {
         }
 
         // Test MAX(age)
-        let result = executor.execute("SELECT MAX(age) FROM users").await.unwrap();
+        let result = executor
+            .execute("SELECT MAX(age) FROM users")
+            .await
+            .unwrap();
         if let QueryResult::Select { columns, rows } = result {
             assert_eq!(columns.len(), 1);
             assert_eq!(columns[0], "max(age)");
@@ -5067,7 +5704,10 @@ mod tests {
         let executor = QueryExecutor::new(engine.clone());
 
         // Create a test table
-        let result = executor.execute("CREATE TABLE employees (pk = id)").await.unwrap();
+        let result = executor
+            .execute("CREATE TABLE employees (pk = id)")
+            .await
+            .unwrap();
         assert!(matches!(result, QueryResult::CreateTable));
 
         // Insert test data
@@ -5084,7 +5724,10 @@ mod tests {
         }
 
         // Test COUNT(*) with WHERE clause
-        let result = executor.execute("SELECT COUNT(*) FROM employees WHERE department = 'Engineering'").await.unwrap();
+        let result = executor
+            .execute("SELECT COUNT(*) FROM employees WHERE department = 'Engineering'")
+            .await
+            .unwrap();
         if let QueryResult::Select { columns, rows } = result {
             assert_eq!(columns.len(), 1);
             assert_eq!(columns[0], "count(*)");
@@ -5095,7 +5738,10 @@ mod tests {
         }
 
         // Test AVG(salary) with WHERE clause
-        let result = executor.execute("SELECT AVG(salary) FROM employees WHERE department = 'Engineering'").await.unwrap();
+        let result = executor
+            .execute("SELECT AVG(salary) FROM employees WHERE department = 'Engineering'")
+            .await
+            .unwrap();
         if let QueryResult::Select { columns, rows } = result {
             assert_eq!(columns.len(), 1);
             assert_eq!(columns[0], "avg(salary)");
@@ -5120,7 +5766,10 @@ mod tests {
         let executor = QueryExecutor::new(engine.clone());
 
         // Create a test table
-        let result = executor.execute("CREATE TABLE users (pk = id)").await.unwrap();
+        let result = executor
+            .execute("CREATE TABLE users (pk = id)")
+            .await
+            .unwrap();
         assert!(matches!(result, QueryResult::CreateTable));
 
         // Insert test data
@@ -5136,7 +5785,10 @@ mod tests {
         }
 
         // Test multiple aggregations in one query
-        let result = executor.execute("SELECT COUNT(*), MIN(age), MAX(age), AVG(age) FROM users").await.unwrap();
+        let result = executor
+            .execute("SELECT COUNT(*), MIN(age), MAX(age), AVG(age) FROM users")
+            .await
+            .unwrap();
         if let QueryResult::Select { columns, rows } = result {
             assert_eq!(columns.len(), 4);
             assert_eq!(columns[0], "count(*)");
@@ -5169,11 +5821,17 @@ mod tests {
         let executor = QueryExecutor::new(engine.clone());
 
         // Create a test table but don't insert any data
-        let result = executor.execute("CREATE TABLE empty_table (pk = id)").await.unwrap();
+        let result = executor
+            .execute("CREATE TABLE empty_table (pk = id)")
+            .await
+            .unwrap();
         assert!(matches!(result, QueryResult::CreateTable));
 
         // Test COUNT(*) on empty table
-        let result = executor.execute("SELECT COUNT(*) FROM empty_table").await.unwrap();
+        let result = executor
+            .execute("SELECT COUNT(*) FROM empty_table")
+            .await
+            .unwrap();
         if let QueryResult::Select { columns, rows } = result {
             assert_eq!(columns.len(), 1);
             assert_eq!(columns[0], "count(*)");
@@ -5184,7 +5842,10 @@ mod tests {
         }
 
         // Test SUM on empty table - should return NULL
-        let result = executor.execute("SELECT SUM(value) FROM empty_table").await.unwrap();
+        let result = executor
+            .execute("SELECT SUM(value) FROM empty_table")
+            .await
+            .unwrap();
         if let QueryResult::Select { columns, rows } = result {
             assert_eq!(columns.len(), 1);
             assert_eq!(columns[0], "sum(value)");
@@ -5203,7 +5864,10 @@ mod tests {
         let executor = QueryExecutor::new(engine.clone());
 
         // Create a test table
-        let result = executor.execute("CREATE TABLE users (pk = id)").await.unwrap();
+        let result = executor
+            .execute("CREATE TABLE users (pk = id)")
+            .await
+            .unwrap();
         assert!(matches!(result, QueryResult::CreateTable));
 
         // Insert test data
@@ -5219,7 +5883,10 @@ mod tests {
         }
 
         // Test MIN/MAX on string columns
-        let result = executor.execute("SELECT MIN(name), MAX(name) FROM users").await.unwrap();
+        let result = executor
+            .execute("SELECT MIN(name), MAX(name) FROM users")
+            .await
+            .unwrap();
         if let QueryResult::Select { columns, rows } = result {
             assert_eq!(columns.len(), 2);
             assert_eq!(columns[0], "min(name)");
@@ -5240,7 +5907,10 @@ mod tests {
         let executor = QueryExecutor::new(engine.clone());
 
         // Create a test table
-        let result = executor.execute("CREATE TABLE employees (pk = id)").await.unwrap();
+        let result = executor
+            .execute("CREATE TABLE employees (pk = id)")
+            .await
+            .unwrap();
         assert!(matches!(result, QueryResult::CreateTable));
 
         // Insert test data
@@ -5258,7 +5928,10 @@ mod tests {
         }
 
         // Test basic GROUP BY with COUNT
-        let result = executor.execute("SELECT department, COUNT(*) FROM employees GROUP BY department").await.unwrap();
+        let result = executor
+            .execute("SELECT department, COUNT(*) FROM employees GROUP BY department")
+            .await
+            .unwrap();
         if let QueryResult::Select { columns, rows } = result {
             assert_eq!(columns.len(), 2);
             assert_eq!(columns[0], "department");
@@ -5286,7 +5959,10 @@ mod tests {
         let executor = QueryExecutor::new(engine.clone());
 
         // Create a test table
-        let result = executor.execute("CREATE TABLE employees (pk = id)").await.unwrap();
+        let result = executor
+            .execute("CREATE TABLE employees (pk = id)")
+            .await
+            .unwrap();
         assert!(matches!(result, QueryResult::CreateTable));
 
         // Insert test data
@@ -5303,7 +5979,10 @@ mod tests {
         }
 
         // Test GROUP BY with AVG
-        let result = executor.execute("SELECT department, AVG(salary) FROM employees GROUP BY department").await.unwrap();
+        let result = executor
+            .execute("SELECT department, AVG(salary) FROM employees GROUP BY department")
+            .await
+            .unwrap();
         if let QueryResult::Select { columns, rows } = result {
             assert_eq!(columns.len(), 2);
             assert_eq!(columns[0], "department");
@@ -5344,7 +6023,10 @@ mod tests {
         let executor = QueryExecutor::new(engine.clone());
 
         // Create a test table
-        let result = executor.execute("CREATE TABLE employees (pk = id)").await.unwrap();
+        let result = executor
+            .execute("CREATE TABLE employees (pk = id)")
+            .await
+            .unwrap();
         assert!(matches!(result, QueryResult::CreateTable));
 
         // Insert test data with department and level
@@ -5362,7 +6044,10 @@ mod tests {
         }
 
         // Test GROUP BY with multiple columns
-        let result = executor.execute("SELECT department, level, COUNT(*) FROM employees GROUP BY department, level").await.unwrap();
+        let result = executor
+            .execute("SELECT department, level, COUNT(*) FROM employees GROUP BY department, level")
+            .await
+            .unwrap();
         if let QueryResult::Select { columns, rows } = result {
             assert_eq!(columns.len(), 3);
             assert_eq!(columns[0], "department");
@@ -5382,7 +6067,10 @@ mod tests {
         let executor = QueryExecutor::new(engine.clone());
 
         // Create a test table
-        let result = executor.execute("CREATE TABLE employees (pk = id)").await.unwrap();
+        let result = executor
+            .execute("CREATE TABLE employees (pk = id)")
+            .await
+            .unwrap();
         assert!(matches!(result, QueryResult::CreateTable));
 
         // Insert test data
@@ -5400,7 +6088,12 @@ mod tests {
         }
 
         // Test GROUP BY with WHERE clause
-        let result = executor.execute("SELECT department, COUNT(*) FROM employees WHERE age > 25 GROUP BY department").await.unwrap();
+        let result = executor
+            .execute(
+                "SELECT department, COUNT(*) FROM employees WHERE age > 25 GROUP BY department",
+            )
+            .await
+            .unwrap();
         if let QueryResult::Select { columns, rows } = result {
             assert_eq!(columns.len(), 2);
             assert_eq!(columns[0], "department");
@@ -5428,7 +6121,10 @@ mod tests {
         let executor = QueryExecutor::new(engine.clone());
 
         // Create a test table
-        let result = executor.execute("CREATE TABLE employees (pk = id)").await.unwrap();
+        let result = executor
+            .execute("CREATE TABLE employees (pk = id)")
+            .await
+            .unwrap();
         assert!(matches!(result, QueryResult::CreateTable));
 
         // Insert test data
@@ -5473,7 +6169,10 @@ mod tests {
         let executor = QueryExecutor::new(engine.clone());
 
         // Create a test table
-        let result = executor.execute("CREATE TABLE employees (pk = id)").await.unwrap();
+        let result = executor
+            .execute("CREATE TABLE employees (pk = id)")
+            .await
+            .unwrap();
         assert!(matches!(result, QueryResult::CreateTable));
 
         // Insert test data
@@ -5527,7 +6226,10 @@ mod tests {
         let executor = QueryExecutor::new(engine.clone());
 
         // Create a test table
-        let result = executor.execute("CREATE TABLE employees (pk = id)").await.unwrap();
+        let result = executor
+            .execute("CREATE TABLE employees (pk = id)")
+            .await
+            .unwrap();
         assert!(matches!(result, QueryResult::CreateTable));
 
         // Insert test data
@@ -5564,7 +6266,7 @@ mod tests {
             assert_eq!(sorted_rows[0][1], Value::Number(3.into())); // COUNT
             assert_eq!(sorted_rows[0][2], Value::Number(60000.into())); // MIN
             assert_eq!(sorted_rows[0][3], Value::Number(80000.into())); // MAX
-            // AVG = (70000 + 80000 + 60000) / 3 = 70000
+                                                                        // AVG = (70000 + 80000 + 60000) / 3 = 70000
             if let Value::Number(n) = &sorted_rows[0][4] {
                 let avg = n.as_f64().unwrap();
                 assert!((avg - 70000.0).abs() < 0.0001);
@@ -5577,7 +6279,7 @@ mod tests {
             assert_eq!(sorted_rows[1][1], Value::Number(2.into())); // COUNT
             assert_eq!(sorted_rows[1][2], Value::Number(50000.into())); // MIN
             assert_eq!(sorted_rows[1][3], Value::Number(70000.into())); // MAX
-            // AVG = (50000 + 70000) / 2 = 60000
+                                                                        // AVG = (50000 + 70000) / 2 = 60000
             if let Value::Number(n) = &sorted_rows[1][4] {
                 let avg = n.as_f64().unwrap();
                 assert!((avg - 60000.0).abs() < 0.0001);
@@ -5597,7 +6299,10 @@ mod tests {
         let executor = QueryExecutor::new(engine.clone());
 
         // Create a test table
-        let result = executor.execute("CREATE TABLE employees (pk = id)").await.unwrap();
+        let result = executor
+            .execute("CREATE TABLE employees (pk = id)")
+            .await
+            .unwrap();
         assert!(matches!(result, QueryResult::CreateTable));
 
         // Insert some test data
@@ -5613,18 +6318,24 @@ mod tests {
         }
 
         // Test single column selection
-        let result = executor.execute("SELECT name FROM employees").await.unwrap();
+        let result = executor
+            .execute("SELECT name FROM employees")
+            .await
+            .unwrap();
         if let QueryResult::Select { columns, rows } = result {
             assert_eq!(columns, vec!["name"]);
             assert_eq!(rows.len(), 3);
             // Check that all expected names are present (order may vary)
-            let names: Vec<String> = rows.iter().map(|row| {
-                if let serde_json::Value::String(name) = &row[0] {
-                    name.clone()
-                } else {
-                    panic!("Expected string name");
-                }
-            }).collect();
+            let names: Vec<String> = rows
+                .iter()
+                .map(|row| {
+                    if let serde_json::Value::String(name) = &row[0] {
+                        name.clone()
+                    } else {
+                        panic!("Expected string name");
+                    }
+                })
+                .collect();
             assert!(names.contains(&"Alice".to_string()));
             assert!(names.contains(&"Bob".to_string()));
             assert!(names.contains(&"Charlie".to_string()));
@@ -5633,18 +6344,26 @@ mod tests {
         }
 
         // Test multiple column selection
-        let result = executor.execute("SELECT name, department FROM employees").await.unwrap();
+        let result = executor
+            .execute("SELECT name, department FROM employees")
+            .await
+            .unwrap();
         if let QueryResult::Select { columns, rows } = result {
             assert_eq!(columns, vec!["name", "department"]);
             assert_eq!(rows.len(), 3);
             // Check that all expected combinations are present
-            let results: Vec<(String, String)> = rows.iter().map(|row| {
-                if let (serde_json::Value::String(name), serde_json::Value::String(dept)) = (&row[0], &row[1]) {
-                    (name.clone(), dept.clone())
-                } else {
-                    panic!("Expected string values");
-                }
-            }).collect();
+            let results: Vec<(String, String)> = rows
+                .iter()
+                .map(|row| {
+                    if let (serde_json::Value::String(name), serde_json::Value::String(dept)) =
+                        (&row[0], &row[1])
+                    {
+                        (name.clone(), dept.clone())
+                    } else {
+                        panic!("Expected string values");
+                    }
+                })
+                .collect();
             assert!(results.contains(&("Alice".to_string(), "Engineering".to_string())));
             assert!(results.contains(&("Bob".to_string(), "Sales".to_string())));
             assert!(results.contains(&("Charlie".to_string(), "Engineering".to_string())));
@@ -5653,18 +6372,26 @@ mod tests {
         }
 
         // Test column selection with WHERE clause
-        let result = executor.execute("SELECT name, salary FROM employees WHERE department = 'Engineering'").await.unwrap();
+        let result = executor
+            .execute("SELECT name, salary FROM employees WHERE department = 'Engineering'")
+            .await
+            .unwrap();
         if let QueryResult::Select { columns, rows } = result {
             assert_eq!(columns, vec!["name", "salary"]);
             assert_eq!(rows.len(), 2);
             // Check that both engineering employees are present
-            let results: Vec<(String, i64)> = rows.iter().map(|row| {
-                if let (serde_json::Value::String(name), serde_json::Value::Number(salary)) = (&row[0], &row[1]) {
-                    (name.clone(), salary.as_i64().unwrap())
-                } else {
-                    panic!("Expected string and number values");
-                }
-            }).collect();
+            let results: Vec<(String, i64)> = rows
+                .iter()
+                .map(|row| {
+                    if let (serde_json::Value::String(name), serde_json::Value::Number(salary)) =
+                        (&row[0], &row[1])
+                    {
+                        (name.clone(), salary.as_i64().unwrap())
+                    } else {
+                        panic!("Expected string and number values");
+                    }
+                })
+                .collect();
             assert!(results.contains(&("Alice".to_string(), 75000)));
             assert!(results.contains(&("Charlie".to_string(), 85000)));
         } else {
@@ -5672,12 +6399,17 @@ mod tests {
         }
 
         // Test column selection with ORDER BY
-        let result = executor.execute("SELECT name, salary FROM employees ORDER BY salary DESC").await.unwrap();
+        let result = executor
+            .execute("SELECT name, salary FROM employees ORDER BY salary DESC")
+            .await
+            .unwrap();
         if let QueryResult::Select { columns, rows } = result {
             assert_eq!(columns, vec!["name", "salary"]);
             assert_eq!(rows.len(), 3);
             // First row should be Charlie with highest salary (85000)
-            if let (serde_json::Value::String(name), serde_json::Value::Number(salary)) = (&rows[0][0], &rows[0][1]) {
+            if let (serde_json::Value::String(name), serde_json::Value::Number(salary)) =
+                (&rows[0][0], &rows[0][1])
+            {
                 assert_eq!(name, "Charlie");
                 assert_eq!(salary.as_i64().unwrap(), 85000);
             } else {
@@ -5688,7 +6420,10 @@ mod tests {
         }
 
         // Test column selection with LIMIT
-        let result = executor.execute("SELECT name FROM employees LIMIT 2").await.unwrap();
+        let result = executor
+            .execute("SELECT name FROM employees LIMIT 2")
+            .await
+            .unwrap();
         if let QueryResult::Select { columns, rows } = result {
             assert_eq!(columns, vec!["name"]);
             assert_eq!(rows.len(), 2);
@@ -5697,7 +6432,9 @@ mod tests {
         }
 
         // Test error case: non-existent column
-        let result = executor.execute("SELECT nonexistent_column FROM employees").await;
+        let result = executor
+            .execute("SELECT nonexistent_column FROM employees")
+            .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("does not exist"));
     }
@@ -5710,21 +6447,36 @@ mod tests {
         let executor = QueryExecutor::new(engine.clone());
 
         // Create a test table
-        let result = executor.execute("CREATE TABLE employees (pk = id)").await.unwrap();
+        let result = executor
+            .execute("CREATE TABLE employees (pk = id)")
+            .await
+            .unwrap();
         assert!(matches!(result, QueryResult::CreateTable));
 
         // Test error: column not in GROUP BY
-        let result = executor.execute("SELECT name, department, COUNT(*) FROM employees GROUP BY department").await;
+        let result = executor
+            .execute("SELECT name, department, COUNT(*) FROM employees GROUP BY department")
+            .await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("must be in GROUP BY clause"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("must be in GROUP BY clause"));
 
         // Test error: SELECT * with GROUP BY
-        let result = executor.execute("SELECT * FROM employees GROUP BY department").await;
+        let result = executor
+            .execute("SELECT * FROM employees GROUP BY department")
+            .await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("SELECT * with GROUP BY is not supported"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("SELECT * with GROUP BY is not supported"));
 
         // Test success: columns without GROUP BY should now work
-        let result = executor.execute("SELECT name, department FROM employees").await;
+        let result = executor
+            .execute("SELECT name, department FROM employees")
+            .await;
         assert!(result.is_ok());
         if let Ok(QueryResult::Select { columns, rows: _ }) = result {
             assert_eq!(columns, vec!["name", "department"]);

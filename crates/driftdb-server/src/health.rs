@@ -5,19 +5,13 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use axum::{
-    extract::State,
-    http::StatusCode,
-    response::Json,
-    routing::get,
-    Router,
-};
-use serde_json::{json, Value};
+use axum::{extract::State, http::StatusCode, response::Json, routing::get, Router};
 use parking_lot::RwLock;
+use serde_json::{json, Value};
 use tracing::{debug, error, info};
 
-use driftdb_core::Engine;
 use crate::session::SessionManager;
+use driftdb_core::Engine;
 
 /// Application state for health check endpoints
 #[derive(Clone)]
@@ -142,7 +136,7 @@ async fn check_disk_space() -> anyhow::Result<f64> {
         use std::process::Command;
 
         let output = Command::new("df")
-            .arg("-k")  // Use 1K blocks
+            .arg("-k") // Use 1K blocks
             .arg(".")
             .output()?;
 
@@ -197,8 +191,8 @@ async fn check_disk_space() -> anyhow::Result<f64> {
 mod tests {
     use super::*;
     use axum::http::StatusCode;
-    use tempfile::TempDir;
     use driftdb_core::Engine;
+    use tempfile::TempDir;
 
     #[tokio::test]
     async fn test_liveness_check() {

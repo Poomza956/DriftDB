@@ -3,10 +3,9 @@
 //! Implements the PostgreSQL v3 wire protocol to allow any PostgreSQL
 //! client to connect to DriftDB.
 
-pub mod messages;
-pub mod codec;
 pub mod auth;
-
+pub mod codec;
+pub mod messages;
 
 pub use messages::Message;
 
@@ -17,10 +16,10 @@ pub const PROTOCOL_VERSION: i32 = 196608; // 3.0
 /// Transaction status for ReadyForQuery message
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TransactionStatus {
-    Idle,           // 'I'
-    InTransaction,  // 'T'
+    Idle,          // 'I'
+    InTransaction, // 'T'
     #[allow(dead_code)]
-    Failed,         // 'E'
+    Failed, // 'E'
 }
 
 impl TransactionStatus {
@@ -115,10 +114,11 @@ pub mod error_codes {
     pub const INVALID_TRANSACTION_STATE: &str = "25000";
     pub const INVALID_AUTHORIZATION: &str = "28000";
     pub const INVALID_CATALOG_NAME: &str = "3D000";
+    pub const INVALID_CURSOR_NAME: &str = "34000";
+    pub const INVALID_SQL_STATEMENT_NAME: &str = "26000";
     pub const UNDEFINED_TABLE: &str = "42P01";
     pub const SYNTAX_ERROR: &str = "42601";
     pub const INSUFFICIENT_PRIVILEGE: &str = "42501";
     pub const TOO_MANY_CONNECTIONS: &str = "53300";
     pub const INTERNAL_ERROR: &str = "XX000";
 }
-

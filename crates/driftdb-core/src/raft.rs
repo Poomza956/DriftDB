@@ -6,16 +6,16 @@
 //! - Membership changes using joint consensus
 //! - Snapshot support for log compaction
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use std::collections::HashMap;
 
 use parking_lot::RwLock;
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::interval;
 use tracing::{debug, info, instrument};
-use rand::Rng;
 
 use crate::errors::{DriftError, Result};
 use crate::wal::WalEntry;
@@ -66,10 +66,7 @@ pub enum RaftMessage {
         last_log_term: u64,
     },
     /// Vote response
-    VoteResponse {
-        term: u64,
-        vote_granted: bool,
-    },
+    VoteResponse { term: u64, vote_granted: bool },
     /// Append entries from leader
     AppendEntries {
         term: u64,
@@ -98,10 +95,7 @@ pub enum RaftMessage {
         done: bool,
     },
     /// Snapshot response
-    SnapshotResponse {
-        term: u64,
-        success: bool,
-    },
+    SnapshotResponse { term: u64, success: bool },
 }
 
 /// Raft node configuration
@@ -190,7 +184,8 @@ impl RaftNode {
             last_applied: 0,
             state: RaftState::Follower,
             current_leader: None,
-            election_deadline: Instant::now() + Duration::from_millis(config.election_timeout_min_ms),
+            election_deadline: Instant::now()
+                + Duration::from_millis(config.election_timeout_min_ms),
         };
 
         let (command_tx, command_rx) = mpsc::channel(1000);
@@ -219,9 +214,15 @@ impl RaftNode {
         self.shutdown_tx = Some(shutdown_tx);
 
         // Take ownership of receivers
-        let command_rx = self.command_rx.write().take()
+        let command_rx = self
+            .command_rx
+            .write()
+            .take()
             .ok_or_else(|| DriftError::Other("Command receiver already taken".into()))?;
-        let rpc_rx = self.rpc_rx.write().take()
+        let rpc_rx = self
+            .rpc_rx
+            .write()
+            .take()
             .ok_or_else(|| DriftError::Other("RPC receiver already taken".into()))?;
 
         // Start main event loop
@@ -248,7 +249,9 @@ impl RaftNode {
     /// Propose a command to the cluster
     pub async fn propose(&self, command: Command) -> Result<()> {
         let (tx, rx) = oneshot::channel();
-        self.command_tx.send((command, tx)).await
+        self.command_tx
+            .send((command, tx))
+            .await
             .map_err(|_| DriftError::Other("Failed to send command".into()))?;
         rx.await
             .map_err(|_| DriftError::Other("Command processing failed".into()))?
@@ -256,7 +259,9 @@ impl RaftNode {
 
     /// Handle incoming RPC message
     pub async fn handle_rpc(&self, from: String, message: RaftMessage) -> Result<()> {
-        self.rpc_tx.send((from, message)).await
+        self.rpc_tx
+            .send((from, message))
+            .await
             .map_err(|_| DriftError::Other("Failed to send RPC".into()))
     }
 
@@ -360,7 +365,7 @@ impl RaftNodeInner {
 
             // Reset election timer with randomization
             let timeout = rand::thread_rng().gen_range(
-                self.config.election_timeout_min_ms..=self.config.election_timeout_max_ms
+                self.config.election_timeout_min_ms..=self.config.election_timeout_max_ms,
             );
             volatile.election_deadline = Instant::now() + Duration::from_millis(timeout);
 
@@ -371,7 +376,10 @@ impl RaftNodeInner {
             (term, last_log_index, last_log_term)
         };
 
-        info!("Node {} starting election for term {}", self.config.node_id, term);
+        info!(
+            "Node {} starting election for term {}",
+            self.config.node_id, term
+        );
 
         // Request votes from all peers
         let votes_received = 1; // Vote for self
@@ -400,8 +408,11 @@ impl RaftNodeInner {
 
     /// Become leader
     async fn become_leader(&self) {
-        info!("Node {} became leader for term {}",
-              self.config.node_id, self.persistent.read().current_term);
+        info!(
+            "Node {} became leader for term {}",
+            self.config.node_id,
+            self.persistent.read().current_term
+        );
 
         {
             let mut volatile = self.volatile.write();
@@ -441,7 +452,9 @@ impl RaftNodeInner {
                 for (peer_id, &next_idx) in &leader.next_index {
                     let prev_log_index = next_idx.saturating_sub(1);
                     let prev_log_term = if prev_log_index > 0 {
-                        persistent.log.get(prev_log_index as usize - 1)
+                        persistent
+                            .log
+                            .get(prev_log_index as usize - 1)
                             .map(|e| e.term)
                             .unwrap_or(0)
                     } else {
@@ -511,7 +524,8 @@ impl RaftNodeInner {
                 for (peer_id, &next_idx) in &leader.next_index {
                     if index >= next_idx {
                         // Send entries from next_idx to index
-                        let entries: Vec<LogEntry> = persistent.log
+                        let entries: Vec<LogEntry> = persistent
+                            .log
                             .iter()
                             .skip(next_idx as usize - 1)
                             .take(self.config.max_entries_per_append)
@@ -520,7 +534,9 @@ impl RaftNodeInner {
 
                         let prev_log_index = next_idx.saturating_sub(1);
                         let prev_log_term = if prev_log_index > 0 {
-                            persistent.log.get(prev_log_index as usize - 1)
+                            persistent
+                                .log
+                                .get(prev_log_index as usize - 1)
                                 .map(|e| e.term)
                                 .unwrap_or(0)
                         } else {
@@ -554,14 +570,50 @@ impl RaftNodeInner {
     /// Process RPC message
     async fn process_rpc(&self, from: String, message: RaftMessage) {
         match message {
-            RaftMessage::RequestVote { term, candidate_id, last_log_index, last_log_term } => {
-                self.handle_request_vote(from, term, candidate_id, last_log_index, last_log_term).await;
+            RaftMessage::RequestVote {
+                term,
+                candidate_id,
+                last_log_index,
+                last_log_term,
+            } => {
+                self.handle_request_vote(from, term, candidate_id, last_log_index, last_log_term)
+                    .await;
             }
-            RaftMessage::AppendEntries { term, leader_id, prev_log_index, prev_log_term, entries, leader_commit } => {
-                self.handle_append_entries(from, term, leader_id, prev_log_index, prev_log_term, entries, leader_commit).await;
+            RaftMessage::AppendEntries {
+                term,
+                leader_id,
+                prev_log_index,
+                prev_log_term,
+                entries,
+                leader_commit,
+            } => {
+                self.handle_append_entries(
+                    from,
+                    term,
+                    leader_id,
+                    prev_log_index,
+                    prev_log_term,
+                    entries,
+                    leader_commit,
+                )
+                .await;
             }
-            RaftMessage::AppendEntriesResponse { term, success, match_index, conflict_term, conflict_index } => {
-                self.handle_append_response(from, term, success, match_index, conflict_term, conflict_index).await;
+            RaftMessage::AppendEntriesResponse {
+                term,
+                success,
+                match_index,
+                conflict_term,
+                conflict_index,
+            } => {
+                self.handle_append_response(
+                    from,
+                    term,
+                    success,
+                    match_index,
+                    conflict_term,
+                    conflict_index,
+                )
+                .await;
             }
             _ => {}
         }
@@ -596,17 +648,22 @@ impl RaftNodeInner {
                     let our_last_term = last_entry.map(|e| e.term).unwrap_or(0);
                     let our_last_index = persistent.log.len() as u64;
 
-                    last_log_term > our_last_term ||
-                        (last_log_term == our_last_term && last_log_index >= our_last_index)
+                    last_log_term > our_last_term
+                        || (last_log_term == our_last_term && last_log_index >= our_last_index)
                 };
 
-                if log_ok && persistent.voted_for.as_ref().map_or(true, |v| v == &candidate_id) {
+                if log_ok
+                    && persistent
+                        .voted_for
+                        .as_ref()
+                        .map_or(true, |v| v == &candidate_id)
+                {
                     persistent.voted_for = Some(candidate_id);
                     vote_granted = true;
 
                     // Reset election timer
                     let timeout = rand::thread_rng().gen_range(
-                        self.config.election_timeout_min_ms..=self.config.election_timeout_max_ms
+                        self.config.election_timeout_min_ms..=self.config.election_timeout_max_ms,
                     );
                     volatile.election_deadline = Instant::now() + Duration::from_millis(timeout);
                 }
@@ -651,7 +708,7 @@ impl RaftNodeInner {
             } else {
                 // Reset election timer
                 let timeout = rand::thread_rng().gen_range(
-                    self.config.election_timeout_min_ms..=self.config.election_timeout_max_ms
+                    self.config.election_timeout_min_ms..=self.config.election_timeout_max_ms,
                 );
                 volatile.election_deadline = Instant::now() + Duration::from_millis(timeout);
                 volatile.current_leader = Some(leader_id);
@@ -766,7 +823,10 @@ impl RaftNodeInner {
 
                 if volatile.last_applied < volatile.commit_index {
                     volatile.last_applied += 1;
-                    persistent.log.get(volatile.last_applied as usize - 1).cloned()
+                    persistent
+                        .log
+                        .get(volatile.last_applied as usize - 1)
+                        .cloned()
                 } else {
                     None
                 }

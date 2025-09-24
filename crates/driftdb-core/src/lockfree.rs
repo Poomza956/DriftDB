@@ -2,12 +2,12 @@
 //!
 //! Implements RCU (Read-Copy-Update) pattern for read-heavy workloads
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::collections::HashMap;
-use parking_lot::RwLock;
 use crossbeam_epoch::{self as epoch, Atomic, Owned};
+use parking_lot::RwLock;
 use serde_json::Value;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use crate::errors::Result;
 
@@ -47,10 +47,7 @@ impl LockFreeTable {
         let data = self.data.load(Ordering::Acquire, guard);
 
         // Safe because we're protected by the epoch guard
-        unsafe {
-            data.as_ref()
-                .and_then(|d| d.map.get(key).cloned())
-        }
+        unsafe { data.as_ref().and_then(|d| d.map.get(key).cloned()) }
     }
 
     /// Lock-free scan operation for range queries
@@ -64,7 +61,8 @@ impl LockFreeTable {
         unsafe {
             data.as_ref()
                 .map(|d| {
-                    d.map.iter()
+                    d.map
+                        .iter()
                         .filter(|(k, v)| predicate(k, v))
                         .map(|(k, v)| (k.clone(), v.clone()))
                         .collect()
@@ -82,11 +80,7 @@ impl LockFreeTable {
         let current = self.data.load(Ordering::Acquire, guard);
 
         // Create new version with the update
-        let mut new_map = unsafe {
-            current.as_ref()
-                .map(|d| d.map.clone())
-                .unwrap_or_default()
-        };
+        let mut new_map = unsafe { current.as_ref().map(|d| d.map.clone()).unwrap_or_default() };
 
         new_map.insert(key, value);
 
@@ -116,11 +110,7 @@ impl LockFreeTable {
         let guard = &epoch::pin();
         let current = self.data.load(Ordering::Acquire, guard);
 
-        let mut new_map = unsafe {
-            current.as_ref()
-                .map(|d| d.map.clone())
-                .unwrap_or_default()
-        };
+        let mut new_map = unsafe { current.as_ref().map(|d| d.map.clone()).unwrap_or_default() };
 
         for (key, value) in updates {
             new_map.insert(key, value);
@@ -215,7 +205,8 @@ impl LockFreeIndex {
         let current = self.root.load(Ordering::Acquire, guard);
 
         let mut new_node = unsafe {
-            current.as_ref()
+            current
+                .as_ref()
                 .map(|n| self.clone_node(n))
                 .unwrap_or_else(|| IndexNode {
                     keys: Vec::new(),
@@ -282,13 +273,13 @@ impl OptimizedReadPath {
 
     /// Perform lock-free read
     pub fn read(&self, table: &str, key: &str) -> Option<Value> {
-        self.tables.get(table)
-            .and_then(|t| t.read(key))
+        self.tables.get(table).and_then(|t| t.read(key))
     }
 
     /// Perform lock-free index lookup
     pub fn lookup_index(&self, index: &str, key: &str) -> Vec<String> {
-        self.indexes.get(index)
+        self.indexes
+            .get(index)
             .map(|idx| idx.lookup(key))
             .unwrap_or_default()
     }
@@ -304,19 +295,25 @@ mod tests {
         let table = LockFreeTable::new();
 
         // Test write and read
-        table.write("key1".to_string(), json!({"value": 1})).unwrap();
+        table
+            .write("key1".to_string(), json!({"value": 1}))
+            .unwrap();
         assert_eq!(table.read("key1"), Some(json!({"value": 1})));
         assert_eq!(table.read("key2"), None);
 
         // Test overwrite
-        table.write("key1".to_string(), json!({"value": 2})).unwrap();
+        table
+            .write("key1".to_string(), json!({"value": 2}))
+            .unwrap();
         assert_eq!(table.read("key1"), Some(json!({"value": 2})));
 
         // Test batch write
-        table.write_batch(vec![
-            ("key2".to_string(), json!({"value": 20})),
-            ("key3".to_string(), json!({"value": 30})),
-        ]).unwrap();
+        table
+            .write_batch(vec![
+                ("key2".to_string(), json!({"value": 20})),
+                ("key3".to_string(), json!({"value": 30})),
+            ])
+            .unwrap();
 
         assert_eq!(table.read("key2"), Some(json!({"value": 20})));
         assert_eq!(table.read("key3"), Some(json!({"value": 30})));
@@ -327,9 +324,13 @@ mod tests {
         let index = LockFreeIndex::new();
 
         // Test insert and lookup
-        index.insert("alice".to_string(), "doc1".to_string()).unwrap();
+        index
+            .insert("alice".to_string(), "doc1".to_string())
+            .unwrap();
         index.insert("bob".to_string(), "doc2".to_string()).unwrap();
-        index.insert("alice".to_string(), "doc3".to_string()).unwrap();
+        index
+            .insert("alice".to_string(), "doc3".to_string())
+            .unwrap();
 
         let alice_docs = index.lookup("alice");
         assert_eq!(alice_docs.len(), 2);

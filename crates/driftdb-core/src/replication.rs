@@ -7,21 +7,21 @@
 //! - Point-in-time recovery from replicas
 
 // Suppress certain clippy warnings that don't apply well to our hybrid sync/async architecture
-#![allow(clippy::collapsible_match)]  // Personal preference for readability
-#![allow(clippy::collapsible_if)]     // Personal preference for readability
+#![allow(clippy::collapsible_match)] // Personal preference for readability
+#![allow(clippy::collapsible_if)] // Personal preference for readability
 
-use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
+use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use futures::future;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{mpsc, oneshot, Mutex};
-use tokio::net::{TcpListener, TcpStream};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tracing::{error, info, warn, instrument};
-use futures::future;
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::{mpsc, oneshot, Mutex};
+use tracing::{error, info, instrument, warn};
 
 use crate::errors::{DriftError, Result};
 use crate::wal::WalEntry;
@@ -86,44 +86,21 @@ pub enum ReplicationMessage {
         last_seq: u64,
     },
     /// WAL entry to replicate
-    WalEntry {
-        entry: WalEntry,
-        sequence: u64,
-    },
+    WalEntry { entry: WalEntry, sequence: u64 },
     /// Acknowledgment from replica
-    Ack {
-        sequence: u64,
-        timestamp_ms: u64,
-    },
+    Ack { sequence: u64, timestamp_ms: u64 },
     /// Heartbeat for liveness
-    Heartbeat {
-        sequence: u64,
-        timestamp_ms: u64,
-    },
+    Heartbeat { sequence: u64, timestamp_ms: u64 },
     /// Request for missing entries
-    CatchupRequest {
-        from_seq: u64,
-        to_seq: u64,
-    },
+    CatchupRequest { from_seq: u64, to_seq: u64 },
     /// Batch of catch-up entries
-    CatchupResponse {
-        entries: Vec<WalEntry>,
-    },
+    CatchupResponse { entries: Vec<WalEntry> },
     /// Initiate failover
-    FailoverRequest {
-        new_master: String,
-        reason: String,
-    },
+    FailoverRequest { new_master: String, reason: String },
     /// Vote for failover
-    FailoverVote {
-        node_id: String,
-        accept: bool,
-    },
+    FailoverVote { node_id: String, accept: bool },
     /// New master announcement
-    NewMaster {
-        node_id: String,
-        sequence: u64,
-    },
+    NewMaster { node_id: String, sequence: u64 },
 }
 
 /// Replica connection state
@@ -199,9 +176,7 @@ impl ReplicationCoordinator {
 
         match self.config.role {
             NodeRole::Master => self.start_as_master(shutdown_rx).await?,
-            NodeRole::Slave | NodeRole::StandbyMaster => {
-                self.start_as_replica(shutdown_rx).await?
-            }
+            NodeRole::Slave | NodeRole::StandbyMaster => self.start_as_replica(shutdown_rx).await?,
         }
 
         Ok(())
@@ -210,7 +185,10 @@ impl ReplicationCoordinator {
     /// Start as master node
     async fn start_as_master(&self, mut shutdown_rx: mpsc::Receiver<()>) -> Result<()> {
         let listener = TcpListener::bind(&self.config.listen_addr).await?;
-        info!("Master listening for replicas on {}", self.config.listen_addr);
+        info!(
+            "Master listening for replicas on {}",
+            self.config.listen_addr
+        );
 
         // Accept replica connections
         let replicas = self.replicas.clone();
@@ -258,7 +236,12 @@ impl ReplicationCoordinator {
         match stream.read(&mut buf).await {
             Ok(n) if n > 0 => {
                 if let Ok(msg) = bincode::deserialize::<ReplicationMessage>(&buf[..n]) {
-                    if let ReplicationMessage::Hello { node_id, role, last_seq } = msg {
+                    if let ReplicationMessage::Hello {
+                        node_id,
+                        role,
+                        last_seq,
+                    } = msg
+                    {
                         info!("Replica {} connected with last_seq {}", node_id, last_seq);
 
                         let conn = ReplicaConnection {
@@ -282,7 +265,10 @@ impl ReplicationCoordinator {
 
     /// Start as replica node
     async fn start_as_replica(&self, mut shutdown_rx: mpsc::Receiver<()>) -> Result<()> {
-        let master_addr = self.config.master_addr.as_ref()
+        let master_addr = self
+            .config
+            .master_addr
+            .as_ref()
             .ok_or_else(|| DriftError::Other("Master address not configured".into()))?;
 
         info!("Connecting to master at {}", master_addr);
@@ -378,14 +364,16 @@ impl ReplicationCoordinator {
                 state.write().master_id = Some(node_id);
             }
             ReplicationMessage::FailoverRequest { new_master, reason } => {
-                info!("Received failover request for {} due to: {}", new_master, reason);
+                info!(
+                    "Received failover request for {} due to: {}",
+                    new_master, reason
+                );
 
                 // Evaluate if we should vote for this failover
                 let should_accept = {
                     let state_guard = state.read();
                     // Accept if: not already in failover, and requester has caught up
-                    !state_guard.failover_in_progress &&
-                    state_guard.role == NodeRole::Slave
+                    !state_guard.failover_in_progress && state_guard.role == NodeRole::Slave
                 };
 
                 // Send vote response
@@ -430,9 +418,7 @@ impl ReplicationCoordinator {
                     // Clone the replicas to avoid holding lock across await
                     let replica_streams: Vec<_> = {
                         let replicas_guard = replicas.read();
-                        replicas_guard.values()
-                            .map(|r| r.stream.clone())
-                            .collect()
+                        replicas_guard.values().map(|r| r.stream.clone()).collect()
                     };
 
                     for stream in replica_streams {
@@ -450,7 +436,7 @@ impl ReplicationCoordinator {
 
     /// Replicate a WAL entry to replicas
     #[instrument(skip(self, entry))]
-    #[allow(clippy::await_holding_lock)]  // Intentional: hybrid sync/async architecture
+    #[allow(clippy::await_holding_lock)] // Intentional: hybrid sync/async architecture
     pub async fn replicate(&self, entry: WalEntry, sequence: u64) -> Result<()> {
         if self.state.read().role != NodeRole::Master {
             return Ok(());
@@ -473,23 +459,23 @@ impl ReplicationCoordinator {
         // Wait for sync replicas if configured
         if self.config.mode == ReplicationMode::Synchronous {
             if sync_count < self.config.min_sync_replicas {
-                return Err(DriftError::Other(
-                    format!("Insufficient sync replicas: {} < {}",
-                            sync_count, self.config.min_sync_replicas)
-                ));
+                return Err(DriftError::Other(format!(
+                    "Insufficient sync replicas: {} < {}",
+                    sync_count, self.config.min_sync_replicas
+                )));
             }
 
             // Wait for acknowledgments
             let (tx, rx) = oneshot::channel();
-            self.sync_waiters.lock().await
+            self.sync_waiters
+                .lock()
+                .await
                 .entry(sequence)
                 .or_insert_with(Vec::new)
                 .push(tx);
 
-            tokio::time::timeout(
-                Duration::from_millis(self.config.sync_interval_ms * 10),
-                rx
-            ).await
+            tokio::time::timeout(Duration::from_millis(self.config.sync_interval_ms * 10), rx)
+                .await
                 .map_err(|_| DriftError::Other("Replication timeout".into()))?
                 .map_err(|_| DriftError::Other("Replication failed".into()))?;
         }
@@ -499,7 +485,7 @@ impl ReplicationCoordinator {
 
     /// Initiate failover
     #[instrument(skip(self))]
-    #[allow(clippy::await_holding_lock)]  // Intentional: hybrid sync/async architecture
+    #[allow(clippy::await_holding_lock)] // Intentional: hybrid sync/async architecture
     pub async fn initiate_failover(&self, reason: &str) -> Result<()> {
         if self.state.read().failover_in_progress {
             return Err(DriftError::Other("Failover already in progress".into()));
@@ -537,11 +523,17 @@ impl ReplicationCoordinator {
 
                         // Wait for vote response with timeout
                         let mut response_buf = vec![0u8; 1024];
-                        match tokio::time::timeout(timeout, stream_guard.read(&mut response_buf)).await {
+                        match tokio::time::timeout(timeout, stream_guard.read(&mut response_buf))
+                            .await
+                        {
                             Ok(Ok(n)) if n > 0 => {
                                 // Parse vote response
-                                if let Ok(response) = bincode::deserialize::<ReplicationMessage>(&response_buf[..n]) {
-                                    if let ReplicationMessage::FailoverVote { accept, .. } = response {
+                                if let Ok(response) =
+                                    bincode::deserialize::<ReplicationMessage>(&response_buf[..n])
+                                {
+                                    if let ReplicationMessage::FailoverVote { accept, .. } =
+                                        response
+                                    {
                                         return (node_id, accept);
                                     }
                                 }
@@ -556,9 +548,15 @@ impl ReplicationCoordinator {
 
             // Collect votes
             let vote_results = future::join_all(vote_futures).await;
-            let votes = vote_results.iter().filter(|(_, accepted)| *accepted).count();
+            let votes = vote_results
+                .iter()
+                .filter(|(_, accepted)| *accepted)
+                .count();
 
-            info!("Failover vote results: {}/{} votes received", votes, required_votes);
+            info!(
+                "Failover vote results: {}/{} votes received",
+                votes, required_votes
+            );
 
             if votes >= required_votes {
                 self.promote_to_master().await?;
