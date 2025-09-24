@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Result};
 use tracing::{debug, warn};
+use crate::errors::security_error;
 
 /// SQL validation module to prevent injection attacks
 /// Uses a smarter approach that detects actual injection patterns
@@ -19,6 +20,11 @@ impl SqlValidator {
     /// Validates a SQL query for safety before execution
     /// Uses pattern detection to identify likely injection attempts
     pub fn validate_query(&self, sql: &str) -> Result<()> {
+        self.validate_query_with_context(sql, "unknown")
+    }
+
+    /// Validates a SQL query with client context for better error reporting
+    pub fn validate_query_with_context(&self, sql: &str, client_addr: &str) -> Result<()> {
         debug!("Validating SQL query: {}", sql);
 
         // Check query length
@@ -44,7 +50,8 @@ impl SqlValidator {
 
         // Detect common injection patterns
         if self.detect_comment_injection(&sql_upper) {
-            warn!("SQL comment injection detected");
+            let error = security_error("SQL comment injection detected", client_addr, Some(sql));
+            error.log();
             return Err(anyhow!("SQL injection attempt detected: comment injection"));
         }
 

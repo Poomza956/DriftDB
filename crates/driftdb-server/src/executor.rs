@@ -1941,9 +1941,29 @@ impl<'a> QueryExecutor<'a> {
 
         // Insert the document
         let doc = Value::Object(json_obj);
-        engine
-            .insert_record(table_name, doc)
-            .map_err(|e| anyhow!("Insert failed: {}", e))?;
+
+        // Check if we're in a transaction - if so, buffer the write
+        if let Ok(true) = self.transaction_manager.is_in_transaction(&self.session_id) {
+            // Buffer the write for later commit
+            use crate::transaction::{PendingWrite, WriteOperation};
+            let write = PendingWrite {
+                table: table_name.to_string(),
+                operation: WriteOperation::Insert,
+                data: doc,
+            };
+
+            self.transaction_manager
+                .add_pending_write(&self.session_id, write)
+                .await
+                .map_err(|e| anyhow!("Failed to buffer transaction write: {}", e))?;
+
+            info!("Buffered INSERT for transaction in session {}", self.session_id);
+        } else {
+            // Not in transaction, apply immediately
+            engine
+                .insert_record(table_name, doc)
+                .map_err(|e| anyhow!("Insert failed: {}", e))?;
+        }
 
         Ok(QueryResult::Insert { count: 1 })
     }

@@ -266,9 +266,14 @@ impl TransactionManager {
         self.transactions.read().contains_key(session_id)
     }
 
+    /// Check if session is in an active transaction
+    pub fn is_in_transaction(&self, session_id: &str) -> Result<bool> {
+        let transactions = self.transactions.read();
+        Ok(transactions.get(session_id).map(|state| state.is_active).unwrap_or(false))
+    }
+
     /// Add a pending write to the transaction
-    #[allow(dead_code)]
-    pub fn add_pending_write(&self, session_id: &str, write: PendingWrite) -> Result<()> {
+    pub async fn add_pending_write(&self, session_id: &str, write: PendingWrite) -> Result<()> {
         let mut transactions = self.transactions.write();
 
         let state = transactions

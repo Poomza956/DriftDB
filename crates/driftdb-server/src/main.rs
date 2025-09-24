@@ -3,13 +3,23 @@
 //! This server allows DriftDB to be accessed using any PostgreSQL client,
 //! including psql, pgAdmin, DBeaver, and all PostgreSQL drivers.
 
+mod advanced_pool;
+mod advanced_pool_routes;
+mod errors;
 mod executor;
 mod health;
 mod metrics;
+mod monitoring;
+mod optimized_executor;
+mod ordered_columns;
+mod performance;
+mod performance_routes;
 mod protocol;
 mod security;
 mod session;
+mod tls;
 mod transaction;
+mod transaction_buffer;
 
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
@@ -18,11 +28,13 @@ use std::sync::Arc;
 use anyhow::Result;
 use clap::Parser;
 use tokio::net::TcpListener;
-use tracing::{error, info};
+use tracing::{debug, error, info, warn};
 
 use driftdb_core::{Engine, EnginePool, PoolConfig, RateLimitConfig, RateLimitManager};
 use parking_lot::RwLock as SyncRwLock;
+use performance::{PerformanceMonitor, QueryOptimizer, ConnectionPoolOptimizer};
 use session::SessionManager;
+use tls::{TlsConfig, TlsManager};
 
 #[derive(Parser, Debug)]
 #[command(name = "driftdb-server")]
@@ -112,6 +124,34 @@ struct Args {
     /// Enable adaptive rate limiting based on server load
     #[arg(long, env = "DRIFTDB_RATE_LIMIT_ADAPTIVE", default_value = "true")]
     rate_limit_adaptive: bool,
+
+    /// Enable TLS/SSL support
+    #[arg(long, env = "DRIFTDB_TLS_ENABLED", default_value = "false")]
+    tls_enabled: bool,
+
+    /// Path to TLS certificate file (PEM format)
+    #[arg(long, env = "DRIFTDB_TLS_CERT_PATH")]
+    tls_cert_path: Option<PathBuf>,
+
+    /// Path to TLS private key file (PEM format)
+    #[arg(long, env = "DRIFTDB_TLS_KEY_PATH")]
+    tls_key_path: Option<PathBuf>,
+
+    /// Require TLS for all connections
+    #[arg(long, env = "DRIFTDB_TLS_REQUIRED", default_value = "false")]
+    tls_required: bool,
+
+    /// Enable performance monitoring and optimization
+    #[arg(long, env = "DRIFTDB_PERFORMANCE_MONITORING", default_value = "true")]
+    enable_performance_monitoring: bool,
+
+    /// Maximum concurrent requests for performance limiting
+    #[arg(long, env = "DRIFTDB_MAX_CONCURRENT_REQUESTS", default_value = "10000")]
+    max_concurrent_requests: usize,
+
+    /// Query execution plan cache size
+    #[arg(long, env = "DRIFTDB_QUERY_CACHE_SIZE", default_value = "1000")]
+    query_cache_size: usize,
 }
 
 #[tokio::main]
@@ -232,10 +272,66 @@ async fn main() -> Result<()> {
         rate_limit_manager.clone(),
     ));
 
+    // Initialize TLS if enabled
+    let tls_manager = if args.tls_enabled {
+        if let (Some(cert_path), Some(key_path)) = (&args.tls_cert_path, &args.tls_key_path) {
+            let tls_config = TlsConfig::new(cert_path, key_path)
+                .require_tls(args.tls_required);
+
+            match TlsManager::new(tls_config).await {
+                Ok(manager) => {
+                    info!(
+                        "TLS initialized: cert={:?}, key={:?}, required={}",
+                        cert_path, key_path, args.tls_required
+                    );
+                    Some(Arc::new(manager))
+                }
+                Err(e) => {
+                    error!("Failed to initialize TLS: {}", e);
+                    if args.tls_required {
+                        return Err(e);
+                    } else {
+                        warn!("Continuing without TLS support");
+                        None
+                    }
+                }
+            }
+        } else {
+            error!("TLS enabled but certificate/key paths not provided");
+            if args.tls_required {
+                return Err(anyhow::anyhow!("TLS certificate/key paths required when TLS is enabled"));
+            } else {
+                warn!("Continuing without TLS support");
+                None
+            }
+        }
+    } else {
+        info!("TLS disabled");
+        None
+    };
+
+    // Initialize performance monitoring if enabled
+    let (performance_monitor, query_optimizer, pool_optimizer) = if args.enable_performance_monitoring {
+        let perf_monitor = Arc::new(PerformanceMonitor::new(args.max_concurrent_requests));
+        let query_opt = Arc::new(QueryOptimizer::new());
+        let pool_opt = Arc::new(ConnectionPoolOptimizer::new());
+
+        info!(
+            "Performance monitoring enabled: max_concurrent_requests={}, query_cache_size={}",
+            args.max_concurrent_requests, args.query_cache_size
+        );
+
+        (Some(perf_monitor), Some(query_opt), Some(pool_opt))
+    } else {
+        info!("Performance monitoring disabled");
+        (None, None, None)
+    };
+
     // Start pool health checks, metrics updates, and rate limit cleanup
     let pool_tasks = {
         let pool_clone = engine_pool.clone();
         let rate_limit_clone = rate_limit_manager.clone();
+        let performance_monitor_clone = performance_monitor.clone();
         let enable_metrics = args.enable_metrics;
         tokio::spawn(async move {
             let health_check_future = pool_clone.run_health_checks();
@@ -267,10 +363,25 @@ async fn main() -> Result<()> {
                 }
             };
 
+            let performance_update_future = async {
+                if let Some(monitor) = &performance_monitor_clone {
+                    let mut interval = tokio::time::interval(std::time::Duration::from_secs(60)); // 1 minute
+                    loop {
+                        interval.tick().await;
+                        monitor.update_memory_stats();
+                        debug!("Updated performance metrics");
+                    }
+                } else {
+                    // If no performance monitoring, just sleep forever
+                    std::future::pending::<()>().await;
+                }
+            };
+
             tokio::select! {
                 _ = health_check_future => {},
                 _ = metrics_update_future => {},
                 _ = rate_limit_cleanup_future => {},
+                _ = performance_update_future => {},
             }
         })
     };
@@ -282,6 +393,10 @@ async fn main() -> Result<()> {
         let pool_clone = engine_pool.clone();
         let http_addr = args.http_listen;
 
+        let perf_monitor_clone = performance_monitor.clone();
+        let query_opt_clone = query_optimizer.clone();
+        let pool_opt_clone = pool_optimizer.clone();
+
         tokio::spawn(async move {
             let result = start_http_server(
                 http_addr,
@@ -289,6 +404,9 @@ async fn main() -> Result<()> {
                 session_manager_clone,
                 pool_clone,
                 args.enable_metrics,
+                perf_monitor_clone,
+                query_opt_clone,
+                pool_opt_clone,
             )
             .await;
 
@@ -301,10 +419,11 @@ async fn main() -> Result<()> {
     // Start PostgreSQL protocol server
     let pg_server = {
         let session_manager_clone = session_manager.clone();
+        let tls_manager_clone = tls_manager.clone();
         let pg_addr = args.listen;
 
         tokio::spawn(async move {
-            let result = start_postgres_server(pg_addr, session_manager_clone).await;
+            let result = start_postgres_server(pg_addr, session_manager_clone, tls_manager_clone).await;
 
             if let Err(e) = result {
                 error!("PostgreSQL server error: {}", e);
@@ -370,6 +489,9 @@ async fn start_http_server(
     session_manager: Arc<SessionManager>,
     _engine_pool: EnginePool,
     enable_metrics: bool,
+    performance_monitor: Option<Arc<PerformanceMonitor>>,
+    query_optimizer: Option<Arc<QueryOptimizer>>,
+    pool_optimizer: Option<Arc<ConnectionPoolOptimizer>>,
 ) -> Result<()> {
     use axum::Router;
     use tower_http::trace::TraceLayer;
@@ -390,6 +512,18 @@ async fn start_http_server(
         app = app.merge(metrics_router);
     }
 
+    // Add performance monitoring routes if enabled
+    if performance_monitor.is_some() || query_optimizer.is_some() || pool_optimizer.is_some() {
+        let performance_state = performance_routes::PerformanceState::new(
+            performance_monitor,
+            query_optimizer,
+            pool_optimizer,
+        );
+        let performance_router = performance_routes::create_performance_routes(performance_state);
+        app = app.merge(performance_router);
+        info!("Performance monitoring routes enabled");
+    }
+
     // Start the server
     let listener = tokio::net::TcpListener::bind(addr).await?;
     info!("HTTP server bound to {}", addr);
@@ -403,6 +537,7 @@ async fn start_http_server(
 async fn start_postgres_server(
     addr: SocketAddr,
     session_manager: Arc<SessionManager>,
+    tls_manager: Option<Arc<TlsManager>>,
 ) -> Result<()> {
     // Bind to address
     let listener = TcpListener::bind(addr).await?;
@@ -411,7 +546,7 @@ async fn start_postgres_server(
     // Accept connections
     loop {
         match listener.accept().await {
-            Ok((stream, client_addr)) => {
+            Ok((tcp_stream, client_addr)) => {
                 info!("New connection from {}", client_addr);
 
                 if metrics::REGISTRY.gather().len() > 0 {
@@ -419,8 +554,30 @@ async fn start_postgres_server(
                 }
 
                 let session_mgr = session_manager.clone();
+                let tls_mgr = tls_manager.clone();
                 tokio::spawn(async move {
-                    let result = session_mgr.handle_connection(stream, client_addr).await;
+                    // Handle TLS negotiation if enabled
+                    let secure_stream = match &tls_mgr {
+                        Some(tls) => {
+                            match tls.accept_connection(tcp_stream).await {
+                                Ok(stream) => stream,
+                                Err(e) => {
+                                    error!("TLS handshake failed for {}: {}", client_addr, e);
+                                    if metrics::REGISTRY.gather().len() > 0 {
+                                        metrics::record_error("tls", "handshake");
+                                    }
+                                    return;
+                                }
+                            }
+                        }
+                        None => {
+                            // No TLS configured - handle as plain connection
+                            use crate::tls::SecureStream;
+                            SecureStream::Plain(tcp_stream)
+                        }
+                    };
+
+                    let result = session_mgr.handle_secure_connection(secure_stream, client_addr).await;
 
                     if metrics::REGISTRY.gather().len() > 0 {
                         metrics::record_connection_closed();

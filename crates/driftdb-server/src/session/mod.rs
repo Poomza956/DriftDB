@@ -17,6 +17,7 @@ use self::prepared::PreparedStatementManager;
 use crate::executor::QueryExecutor;
 use crate::protocol::{self, Message, TransactionStatus};
 use crate::security::SqlValidator;
+use crate::tls::SecureStream;
 use crate::transaction::TransactionManager;
 use driftdb_core::{EngineGuard, EnginePool, RateLimitManager};
 
@@ -50,9 +51,36 @@ impl SessionManager {
         &self.rate_limit_manager
     }
 
+    pub async fn handle_secure_connection(
+        self: Arc<Self>,
+        mut stream: SecureStream,
+        addr: SocketAddr,
+    ) -> Result<()> {
+        // Get peer address
+        let peer_addr = stream.peer_addr().unwrap_or(addr);
+
+        // Check if this is a TLS connection
+        if stream.is_tls() {
+            info!("Secure TLS connection established with {}", peer_addr);
+        }
+
+        // Handle the same way as regular connections but with SecureStream
+        self.handle_connection_internal(stream, peer_addr).await
+    }
+
     pub async fn handle_connection(
         self: Arc<Self>,
         mut stream: TcpStream,
+        addr: SocketAddr,
+    ) -> Result<()> {
+        // Wrap TcpStream in SecureStream::Plain for unified handling
+        let secure_stream = SecureStream::Plain(stream);
+        self.handle_connection_internal(secure_stream, addr).await
+    }
+
+    async fn handle_connection_internal(
+        self: Arc<Self>,
+        mut stream: SecureStream,
         addr: SocketAddr,
     ) -> Result<()> {
         // Check rate limiting first
@@ -140,7 +168,7 @@ struct Session {
 }
 
 impl Session {
-    async fn run(mut self, stream: &mut TcpStream) -> Result<()> {
+    async fn run(mut self, stream: &mut SecureStream) -> Result<()> {
         let mut buffer = BytesMut::with_capacity(8192);
         let mut startup_done = false;
 
@@ -306,7 +334,7 @@ impl Session {
 
     async fn handle_startup(
         &mut self,
-        stream: &mut TcpStream,
+        stream: &mut SecureStream,
         parameters: std::collections::HashMap<String, String>,
     ) -> Result<()> {
         // Extract connection parameters
@@ -374,7 +402,7 @@ impl Session {
         Ok(())
     }
 
-    async fn send_startup_complete(&self, stream: &mut TcpStream) -> Result<()> {
+    async fn send_startup_complete(&self, stream: &mut SecureStream) -> Result<()> {
         // Send backend key data
         let key_data = Message::BackendKeyData {
             process_id: self.process_id,
@@ -400,7 +428,7 @@ impl Session {
         Ok(())
     }
 
-    async fn handle_password(&mut self, stream: &mut TcpStream, password: String) -> Result<bool> {
+    async fn handle_password(&mut self, stream: &mut SecureStream, password: String) -> Result<bool> {
         let username = self
             .username
             .as_ref()
@@ -469,7 +497,7 @@ impl Session {
         }
     }
 
-    async fn handle_query(&mut self, stream: &mut TcpStream, sql: &str) -> Result<()> {
+    async fn handle_query(&mut self, stream: &mut SecureStream, sql: &str) -> Result<()> {
         info!("Query from {}: {}", self.addr, sql);
 
         // Check rate limiting for this query
@@ -783,7 +811,7 @@ impl Session {
 
     async fn send_query_result(
         &mut self,
-        stream: &mut TcpStream,
+        stream: &mut SecureStream,
         result: crate::executor::QueryResult,
     ) -> Result<()> {
         use crate::executor::QueryResult;
@@ -898,7 +926,7 @@ impl Session {
         Ok(())
     }
 
-    async fn send_ready_for_query(&self, stream: &mut TcpStream) -> Result<()> {
+    async fn send_ready_for_query(&self, stream: &mut SecureStream) -> Result<()> {
         let msg = Message::ReadyForQuery {
             status: self.transaction_status.to_byte(),
         };
@@ -907,7 +935,7 @@ impl Session {
 
     async fn send_parameter_status(
         &self,
-        stream: &mut TcpStream,
+        stream: &mut SecureStream,
         name: &str,
         value: &str,
     ) -> Result<()> {
@@ -918,7 +946,7 @@ impl Session {
         self.send_message(stream, &msg).await
     }
 
-    async fn send_message(&self, stream: &mut TcpStream, msg: &Message) -> Result<()> {
+    async fn send_message(&self, stream: &mut SecureStream, msg: &Message) -> Result<()> {
         let bytes = protocol::codec::encode_message(msg);
         stream.write_all(&bytes).await?;
         stream.flush().await?;
@@ -957,7 +985,7 @@ fn determine_query_type(sql: &str) -> String {
 impl Session {
     async fn handle_parse(
         &mut self,
-        stream: &mut TcpStream,
+        stream: &mut SecureStream,
         name: String,
         sql: String,
         param_types: Vec<i32>,
@@ -990,7 +1018,7 @@ impl Session {
 
     async fn handle_bind(
         &mut self,
-        stream: &mut TcpStream,
+        stream: &mut SecureStream,
         portal_name: String,
         statement_name: String,
         param_formats: Vec<i16>,
@@ -1030,7 +1058,7 @@ impl Session {
 
     async fn handle_execute(
         &mut self,
-        stream: &mut TcpStream,
+        stream: &mut SecureStream,
         portal_name: String,
         max_rows: i32,
     ) -> Result<()> {
@@ -1134,7 +1162,7 @@ impl Session {
 
     async fn handle_describe(
         &mut self,
-        stream: &mut TcpStream,
+        stream: &mut SecureStream,
         object_type: u8,
         name: String,
     ) -> Result<()> {
@@ -1195,7 +1223,7 @@ impl Session {
 
     async fn handle_close(
         &mut self,
-        stream: &mut TcpStream,
+        stream: &mut SecureStream,
         object_type: u8,
         name: String,
     ) -> Result<()> {
