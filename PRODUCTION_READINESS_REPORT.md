@@ -107,63 +107,64 @@ Based on comprehensive testing:
 - **Workaround**: Deploy behind TLS-terminating proxy (nginx, HAProxy)
 - **Standard practice**: Most databases deploy this way in production
 
-## Production Deployment Assessment
+## Development/Testing Assessment
 
-### ✅ **RECOMMENDED FOR:**
-1. **Web Applications** - Excellent PostgreSQL compatibility
-2. **API Backends** - Fast SELECT performance, proper data types
-3. **Analytics Workloads** - Great aggregate function performance
-4. **Microservices** - Reliable transaction support
-5. **Development/Staging** - Full SQL compatibility
-6. **Audit-Critical Systems** - Event-sourced architecture preserves history
+### ✅ **SUITABLE FOR:**
+1. **Development Environments** - Good PostgreSQL compatibility
+2. **Testing/QA Workloads** - Decent SELECT performance, improved data types
+3. **Prototyping** - Functional aggregate operations
+4. **Local Development** - Basic transaction support (BEGIN/COMMIT)
+5. **Educational/Learning** - SQL compatibility for learning
+6. **Proof of Concepts** - Event-sourced architecture demonstration
 
 ### ⚠️ **CONSIDERATIONS FOR:**
 1. **High-Update Workloads** - Monitor UPDATE performance (3ms per operation)
 2. **ROLLBACK-Dependent Apps** - Implement application-level rollback logic
 3. **Internet-Facing** - Requires TLS proxy deployment
 
-### ❌ **NOT RECOMMENDED FOR:**
-1. **High-Frequency Trading** - UPDATE latency requirements
-2. **Legacy Apps Depending on Column Positions** - Minor ordering differences
+### ❌ **NOT SUITABLE FOR:**
+1. **Production Systems** - Alpha software, needs more validation
+2. **Mission-Critical Applications** - Requires extensive testing first
+3. **High-Frequency Trading** - UPDATE latency and stability concerns
+4. **Legacy Apps Depending on Column Positions** - Ordering inconsistencies
 
 ## Security Assessment
 
-### 🔒 **SECURITY GRADE: A-**
+### 🔒 **SECURITY STATUS: IMPROVED**
 
-**Strengths:**
-- ✅ **Comprehensive SQL injection protection** (7/7 attack types blocked)
-- ✅ **Strong authentication** (MD5 with rate limiting)
-- ✅ **DDoS protection** (adaptive rate limiting)
-- ✅ **Audit trails** (complete operation logging)
+**Improvements Made:**
+- ✅ **Enhanced SQL injection protection** (7/7 attack types blocked)
+- ✅ **Basic authentication** (MD5 with rate limiting)
+- ✅ **Rate limiting** (adaptive connection/query limits)
+- ✅ **Logging capabilities** (operation audit trails)
 
-**Requirements:**
-- Deploy behind TLS proxy for encryption
-- Change default passwords
-- Configure monitoring alerts
+**Still Needs:**
+- TLS proxy for any network deployment
+- Default password changes
+- Extensive testing and validation
+- Production-grade monitoring and alerting
 
-## Deployment Guide
+## Development/Testing Setup
 
-### Quick Production Setup
+### Quick Development Setup
 
 ```bash
-# 1. Build optimized release
+# 1. Build for development/testing
 cargo build --release
 
-# 2. Configure environment
-export DRIFTDB_DATA_DIR=/var/lib/driftdb
-export DRIFTDB_HOST=127.0.0.1  # Internal only
+# 2. Configure for local testing
+export DRIFTDB_DATA_DIR=./data
+export DRIFTDB_HOST=127.0.0.1  # Local only
 export DRIFTDB_PORT=5433
-export DRIFTDB_MAX_CONNECTIONS=100
+export DRIFTDB_MAX_CONNECTIONS=10  # Conservative for testing
 
-# 3. Deploy with TLS proxy
-# nginx/HAProxy → DriftDB
-# TLS termination at proxy layer
-
-# 4. Start service
+# 3. Start for local development
 ./target/release/driftdb-server
 
-# 5. Health check
+# 4. Basic health check
 curl http://localhost:8080/health/live
+
+# Note: For any network access, use TLS proxy
 ```
 
 ### Monitoring Setup
