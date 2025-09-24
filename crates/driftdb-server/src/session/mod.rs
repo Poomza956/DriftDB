@@ -17,6 +17,7 @@ use self::prepared::PreparedStatementManager;
 use crate::executor::QueryExecutor;
 use crate::protocol::{self, Message, TransactionStatus};
 use crate::security::SqlValidator;
+use crate::transaction::TransactionManager;
 use driftdb_core::{EngineGuard, EnginePool, RateLimitManager};
 
 pub struct SessionManager {
@@ -84,6 +85,10 @@ impl SessionManager {
         let process_id = self.next_process_id.fetch_add(1, Ordering::SeqCst) as i32;
         let secret_key = rand::random::<i32>();
 
+        // Create a shared transaction manager for this session
+        let engine_for_txn = engine_guard.get_engine_ref();
+        let transaction_manager = Arc::new(TransactionManager::new(engine_for_txn));
+
         let session = Session {
             process_id,
             secret_key,
@@ -98,6 +103,7 @@ impl SessionManager {
             auth_challenge: None,
             prepared_statements: PreparedStatementManager::new(),
             sql_validator: SqlValidator::new(),
+            transaction_manager,
         };
 
         // Handle session
@@ -130,6 +136,7 @@ struct Session {
     auth_challenge: Option<Vec<u8>>,
     prepared_statements: PreparedStatementManager,
     sql_validator: SqlValidator,
+    transaction_manager: Arc<TransactionManager>,
 }
 
 impl Session {
@@ -501,8 +508,13 @@ impl Session {
             return Ok(());
         }
 
-        // Execute query using our SQL executor
-        let executor = QueryExecutor::new_with_guard(&self.engine_guard);
+        // Execute query using our SQL executor with shared transaction manager
+        let session_id = format!("session_{}", self.process_id);
+        let executor = QueryExecutor::new_with_guard_and_transaction_manager(
+            &self.engine_guard,
+            self.transaction_manager.clone(),
+            session_id,
+        );
         match executor.execute(sql).await {
             Ok(result) => {
                 let duration = start_time.elapsed().as_secs_f64();
@@ -778,11 +790,15 @@ impl Session {
 
         match result {
             QueryResult::Select { columns, rows } => {
-                // Send row description
+                // Infer proper PostgreSQL data types from the actual data
+                let column_types = Self::infer_column_types(&columns, &rows);
+
+                // Send row description with proper data types
                 let fields = columns
                     .iter()
-                    .map(|col| {
-                        protocol::FieldDescription::new(col.clone(), protocol::DataType::Text)
+                    .zip(column_types.iter())
+                    .map(|(col, &data_type)| {
+                        protocol::FieldDescription::new(col.clone(), data_type)
                     })
                     .collect();
 
@@ -1055,8 +1071,13 @@ impl Session {
                     return Ok(());
                 }
 
-                // Execute the query using our SQL executor
-                let executor = QueryExecutor::new_with_guard(&self.engine_guard);
+                // Execute the query using our SQL executor with shared transaction manager
+                let session_id = format!("session_{}", self.process_id);
+                let executor = QueryExecutor::new_with_guard_and_transaction_manager(
+                    &self.engine_guard,
+                    self.transaction_manager.clone(),
+                    session_id,
+                );
                 match executor.execute(&sql).await {
                     Ok(result) => {
                         let duration = start_time.elapsed().as_secs_f64();
@@ -1209,5 +1230,52 @@ impl Session {
         }
 
         Ok(())
+    }
+
+    /// Infer PostgreSQL data type from a sample value
+    fn infer_postgres_type(value: &Value) -> protocol::DataType {
+        match value {
+            Value::Bool(_) => protocol::DataType::Bool,
+            Value::Number(n) => {
+                if n.is_i64() {
+                    let val = n.as_i64().unwrap();
+                    if val >= i32::MIN as i64 && val <= i32::MAX as i64 {
+                        protocol::DataType::Int4  // 32-bit integer
+                    } else {
+                        protocol::DataType::Int8  // 64-bit integer
+                    }
+                } else if n.is_f64() {
+                    protocol::DataType::Float8  // Double precision
+                } else {
+                    protocol::DataType::Text  // Fallback
+                }
+            }
+            Value::String(_) => protocol::DataType::Text,
+            Value::Array(_) | Value::Object(_) => protocol::DataType::Json,
+            Value::Null => protocol::DataType::Text,  // Default for NULL values
+        }
+    }
+
+    /// Infer PostgreSQL data types for columns from sample data
+    fn infer_column_types(columns: &[String], rows: &[Vec<Value>]) -> Vec<protocol::DataType> {
+        if rows.is_empty() {
+            // No data, default to Text for all columns
+            return vec![protocol::DataType::Text; columns.len()];
+        }
+
+        columns
+            .iter()
+            .enumerate()
+            .map(|(col_idx, _)| {
+                // Sample the first few non-null values to infer type
+                for row in rows.iter().take(5) {  // Sample up to 5 rows
+                    if col_idx < row.len() && !row[col_idx].is_null() {
+                        return Self::infer_postgres_type(&row[col_idx]);
+                    }
+                }
+                // If all sampled values are null, default to Text
+                protocol::DataType::Text
+            })
+            .collect()
     }
 }

@@ -518,6 +518,23 @@ impl<'a> QueryExecutor<'a> {
         }
     }
 
+    /// Create a new executor with a shared transaction manager
+    pub fn new_with_guard_and_transaction_manager(
+        engine_guard: &'a EngineGuard,
+        transaction_manager: Arc<TransactionManager>,
+        session_id: String,
+    ) -> Self {
+        Self {
+            engine_guard: Some(engine_guard),
+            engine: None,
+            subquery_cache: Arc::new(Mutex::new(HashMap::new())),
+            use_indexes: true,
+            prepared_statements: Arc::new(ParkingMutex::new(HashMap::new())),
+            transaction_manager,
+            session_id,
+        }
+    }
+
     /// Set the session ID for this executor
     pub fn set_session_id(&mut self, session_id: String) {
         self.session_id = session_id;
@@ -1813,13 +1830,13 @@ impl<'a> QueryExecutor<'a> {
         // Format results - ensure consistent column ordering
         if !filtered_data.is_empty() {
             let first = &filtered_data[0];
-            // Use a deterministic column order (alphabetical for now)
-            let mut columns: Vec<String> = if let Value::Object(map) = first {
+            // Extract columns without sorting to preserve natural order
+            let columns: Vec<String> = if let Value::Object(map) = first {
+                // Use the iteration order of the first record
                 map.keys().cloned().collect()
             } else {
                 vec!["value".to_string()]
             };
-            columns.sort(); // Ensure consistent ordering
 
             let mut rows: Vec<Vec<Value>> = filtered_data
                 .into_iter()
